@@ -151,9 +151,11 @@ class GitHub:
                 return prs
             after = result["pageInfo"]["endCursor"]
 
-    def get_file(self, org: str, repo: str, path: str) -> str | None:
+    def get_file(self, org: str, repo: str, path: str, ref: str | None = None) -> str | None:
         try:
-            data = self._json("GET", f"/repos/{org}/{repo}/contents/{path}")
+            data = self._json(
+                "GET", f"/repos/{org}/{repo}/contents/{path}", params={"ref": ref} if ref else None
+            )
         except GitHubError as e:
             if e.status == 404:
                 return None

@@ -1,7 +1,7 @@
 # Used by `vulgard enforce --mode workflow`: an org ruleset runs this workflow on
 # every PR in every repo, with no per-repo files needed. Requires org rulesets with
 # required workflows (GitHub Enterprise Cloud) and the dependency graph on target repos.
-name: dependency-review
+name: guard
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  review:
+  scan:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:

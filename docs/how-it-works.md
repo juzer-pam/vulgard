@@ -41,7 +41,7 @@ across the company actually matter. vulgard is the part that makes humans act.
 vulgard attacks the problem from two sides.
 
 **1. Stop new vulnerabilities from getting in (prevention).** vulgard adds a check called
-`dependency-review / review` to every repo. It runs on each pull request and fails if the PR
+`vulgard / guard / scan` to every repo. It runs on each pull request and fails if the PR
 adds a package with a known vulnerability. An org ruleset makes the check required, so the PR
 can't merge while it fails.
 
@@ -50,13 +50,13 @@ every open alert in the org, works out which ones are late, and tells the owners
 GitHub issue, Slack, and Linear. It keeps reminding them until the alerts are gone.
 
 It also makes cleanup cheaper. It configures Dependabot to bundle small updates into one PR
-per ecosystem, and auto-merges those PRs when CI passes. Fewer PRs and less clicking means
-more of them get merged.
+per ecosystem. Repos that opt in also auto-merge those PRs when CI passes. Fewer PRs and less
+clicking means more of them get merged.
 
 ```mermaid
 flowchart LR
     subgraph prevention["Prevention (every PR)"]
-        PR[Pull request] --> Check["dependency-review / review"]
+        PR[Pull request] --> Check["vulgard / guard / scan"]
         Check -->|vulnerable package added| Block[PR blocked]
         Check -->|clean| Merge[PR can merge]
     end
@@ -92,12 +92,16 @@ run first.
    ignores vendored folders like `node_modules/`.
 3. Generates `.github/dependabot.yml` for those ecosystems, unless the repo already has one.
    The file tells Dependabot to group minor and patch updates into one PR per ecosystem.
-4. Generates `.github/workflows/vulgard.yml`, a short workflow that calls two reusable
+4. Generates `.github/workflows/vulgard.yml`, a short workflow that calls reusable
    workflows living in the vulgard repo:
-   - `dependency-review.yml` is the PR check that blocks vulnerable packages.
-   - `dependabot-automerge.yml` approves Dependabot's minor and patch PRs and turns on
-     GitHub's auto-merge, so they merge as soon as required checks pass. Major version bumps
-     are left for a human, because they're more likely to break things.
+   - `guard.yml` is the PR check that blocks vulnerable packages. Its job is `scan`, so on a
+     PR it shows up as `vulgard / guard / scan` (the caller's name, the job that calls
+     `guard.yml`, then the job inside it).
+   - `automerge.yml` is only called in repos listed in `rollout.auto_merge`, which is empty
+     by default. It approves Dependabot's minor and patch PRs and turns on GitHub's
+     auto-merge, so they merge as soon as required checks pass. Major version bumps are left
+     for a human, because they're more likely to break things. Its check is
+     `vulgard / automerge / approve`, and it shows as *skipped* on PRs Dependabot didn't open.
 5. Turns on Dependabot alerts and security updates for the repo, and opens a PR with the new
    files.
 
@@ -107,7 +111,7 @@ file, not 200.
 ## Enforce: making the check required
 
 A check that can be ignored will be ignored. `vulgard enforce` creates one org ruleset named
-*"vulgard: block vulnerable dependencies"*. It requires `dependency-review / review` to pass
+*"vulgard: block vulnerable dependencies"*. It requires `guard / scan` to pass
 on each repo's default branch.
 
 It only covers repos that already have the workflow file. If it required the check in a repo
@@ -147,7 +151,7 @@ For every alert, vulgard works out:
 And for every Dependabot PR:
 
 - **Ready**: CI passed, no conflicts, not a draft, and open for at least 2 days. The 2 days
-  give auto-merge a chance to handle it first. A ready PR that's still open is waiting on a
+  give auto-merge (in repos that opted in) a chance to handle it first. A ready PR that's still open is waiting on a
   person, and that person should hear about it.
 - **Stale**: open for 14 days or more.
 
@@ -230,8 +234,10 @@ sends:
 - one message per team channel, listing that team's repos,
 - one DM per individual owner, covering all their repos,
 - one message to the escalation channel, if anything escalated,
-- a digest: org-wide totals, the worst repos, alerts fixed in the last 7 days, and anyone who
-  dismissed a critical or high alert without writing a reason.
+- a leaderboard in `slack.default_channel`, the org-wide channel such as `#engineering`. It
+  ranks teams by alerts fixed in the last 7 days and by alerts past deadline, lists the worst
+  repos, and names anyone who dismissed a critical or high alert without writing a reason.
+  Teams are named, not pinged, so the whole channel isn't notified.
 
 Grouping means a person gets one message per run, not one per alert.
 
@@ -259,7 +265,7 @@ would have escalated on November 5.
 Sometimes an alert doesn't apply, for example when the vulnerable function is never called.
 There are two honest ways to say so:
 
-- **Dismiss it in GitHub** with a reason. This is permanent. The Slack digest names anyone
+- **Dismiss it in GitHub** with a reason. This is permanent. The Slack leaderboard names anyone
   who dismisses a critical or high alert without writing a comment, so dismissals stay
   visible.
 - **Add an exception** to `vulgard.yml`. It must have a reason and an expiry date. When it
@@ -337,8 +343,9 @@ exception.
 **Why didn't the issue get assigned to my team?** GitHub only lets issues be assigned to
 people, not teams. Teams are mentioned instead.
 
-**Where did the Slack message go?** vulgard looks up the channel by repo name, then by each
-owner, then falls back to `slack.default_channel`. Check `slack.channels` in `vulgard.yml`.
+**Where did the Slack message go?** vulgard looks up the channel by exact repo name, then by
+repo glob (such as `payments-*`), then by each owner, then falls back to
+`slack.default_channel`. Check `slack.channels` in `vulgard.yml`.
 
 **Can I edit the tracking issue?** Comments are fine. Edits to the description get
 overwritten on the next run, because vulgard rewrites it from current data.

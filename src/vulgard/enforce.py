@@ -7,8 +7,8 @@ from .config import Config
 from .rollout import WORKFLOW_PATH
 
 RULESET_NAME = "vulgard: block vulnerable dependencies"
-STATUS_CHECK_CONTEXT = "dependency-review / review"
-REQUIRED_WORKFLOW_PATH = ".github/workflows/required-dependency-review.yml"
+STATUS_CHECK_CONTEXT = "guard / scan"
+REQUIRED_WORKFLOW_PATH = ".github/workflows/guard-required.yml"
 
 
 @dataclass

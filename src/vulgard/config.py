@@ -32,7 +32,7 @@ class RolloutConfig:
     workflow_ref: str = "main"
     fail_on_severity: str = "high"
     engine: str = "github"
-    auto_merge: bool = True
+    auto_merge: list[str] = field(default_factory=list)  # repo names or globs that opt in
     auto_merge_update_types: list[str] = field(
         default_factory=lambda: ["version-update:semver-patch", "version-update:semver-minor"]
     )
@@ -44,8 +44,7 @@ class RolloutConfig:
 class SlackConfig:
     webhook_env: str = "SLACK_WEBHOOK_URL"
     token_env: str = "SLACK_BOT_TOKEN"
-    digest_channel: str | None = None
-    default_channel: str | None = None
+    default_channel: str | None = None  # org-wide: the leaderboard, plus unmapped repos
     escalation_channel: str | None = None
     channels: dict[str, str] = field(default_factory=dict)
     users: dict[str, str] = field(default_factory=dict)
@@ -111,10 +110,17 @@ class Config:
             return False
         return any(fnmatch.fnmatch(name, pat) for pat in self.include)
 
+    def auto_merges(self, repo: str) -> bool:
+        return any(fnmatch.fnmatch(repo, pat) for pat in self.rollout.auto_merge)
+
 
 def route(mapping: dict[str, str], repo: str, owners: list[str], default: str | None) -> str | None:
+    """Exact repo name, then repo glob (e.g. `payments-*`), then the first mapped owner."""
     if repo in mapping:
         return mapping[repo]
+    for key, value in mapping.items():
+        if not key.startswith("@") and fnmatch.fnmatch(repo, key):
+            return value
     for owner in owners:
         if owner in mapping:
             return mapping[owner]
@@ -159,6 +165,13 @@ def parse_config(raw: dict[str, Any], org_override: str | None = None) -> Config
     bad = set(sla) - set(SEVERITIES)
     if bad:
         raise ValueError(f"Unknown severities in sla_days: {', '.join(sorted(bad))}")
+
+    auto_merge = (raw.get("rollout") or {}).get("auto_merge", [])
+    if not isinstance(auto_merge, list):
+        raise ValueError(
+            "rollout.auto_merge is a list of repos that opt in to auto-merge, "
+            'for example ["payments-api", "web-*"], or ["*"] for every repo'
+        )
 
     return Config(
         org=org,

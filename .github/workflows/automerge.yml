@@ -1,6 +1,7 @@
 # Reusable: approve low-risk Dependabot PRs and turn on auto-merge, so they land as
-# soon as the repo's required checks pass. Major updates are left for a human.
-name: dependabot-automerge
+# soon as the repo's required checks pass. Major updates are left for a human. Only
+# repos listed in `rollout.auto_merge` call it; the check is "vulgard / automerge / approve".
+name: automerge
 
 on:
   workflow_call:
@@ -18,7 +19,7 @@ permissions:
   contents: read
 
 jobs:
-  automerge:
+  approve:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:

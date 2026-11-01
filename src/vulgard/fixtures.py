@@ -54,7 +54,7 @@ class FixtureGitHub:
     def list_dependabot_prs(self, org: str) -> list[dict[str, Any]]:
         return self.data.get("dependabot_prs", [])
 
-    def get_file(self, org: str, repo: str, path: str) -> str | None:
+    def get_file(self, org: str, repo: str, path: str, ref: str | None = None) -> str | None:
         return self.data.get("files", {}).get(repo, {}).get(path)
 
     def list_tree_paths(self, org: str, repo: str, branch: str) -> list[str]:

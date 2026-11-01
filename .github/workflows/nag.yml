@@ -1,7 +1,7 @@
 # Scheduled job that updates per-repo tracking issues, pings owners in GitHub and Slack,
-# mirrors issues into Linear, escalates overdue alerts, and posts a Slack digest. Needs a
-# GitHub App installed on the org; Slack and Linear are skipped if their secrets are unset.
-name: vulgard-nag
+# mirrors issues into Linear, escalates overdue alerts, and posts a Slack leaderboard. Needs
+# a GitHub App installed on the org; Slack and Linear are skipped if their secrets are unset.
+name: nag
 
 on:
   schedule:

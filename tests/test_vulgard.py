@@ -8,22 +8,23 @@ import pytest
 import yaml
 
 from vulgard.cli import collect, main
-from vulgard.config import parse_config
+from vulgard.config import parse_config, route
 from vulgard.enforce import STATUS_CHECK_CONTEXT, plan_enforce
 from vulgard.fixtures import FakeLinear, FakeSlack, FixtureGitHub, fixture_clients
 from vulgard.nag import nag, plan_repo
-from vulgard.plan import IssueOp, LinearRef, TrackingState
+from vulgard.plan import ActionKind, IssueOp, LinearRef, TrackingState
 from vulgard.policy import SlaStatus, evaluate, parse_codeowners_default, summarize_closed
 from vulgard.render import render_issue_body
 from vulgard.rollout import (
     DEPENDABOT_PATH,
     WORKFLOW_PATH,
+    apply_rollout,
     detect_ecosystems,
     plan_rollout,
     render_caller_workflow,
     render_dependabot_config,
 )
-from vulgard.slack import digest_message, notify_slack
+from vulgard.slack import leaderboard_message, notify_slack, send_leaderboard
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
 NOW = datetime(2026, 11, 1, 12, tzinfo=UTC)
@@ -373,9 +374,27 @@ def test_weekly_summary_flags_unexplained_dismissals():
     assert [(d.repo, d.by) for d in closed.unexplained] == [("data-pipeline", "mchen")]
 
     config = example_config()
-    text, blocks = digest_message(config, collect(gh, config), closed)
-    rendered = json.dumps(blocks)
+    text, blocks = leaderboard_message(config, collect(gh, config), closed)
+    rendered = json.dumps(blocks, ensure_ascii=False)
     assert "1 fixed" in rendered and "no justification" in rendered and "mchen" in rendered
+    assert "Most fixed this week" in rendered and "🥇 @acme/payments: 1" in rendered
+    assert "Most overdue" in rendered and "<@" not in text  # names teams without pinging
+
+
+def test_leaderboard_goes_to_the_org_default_channel():
+    config = example_config()
+    slack = FakeSlack()
+    action = send_leaderboard(slack, None, config, "hi", [], apply=True)
+    assert action.kind == ActionKind.SLACK and slack.messages[0][0] == "#eng-alerts"
+    config.slack.default_channel = None
+    assert send_leaderboard(slack, None, config, "hi", [], True).kind == ActionKind.SLACK_SKIP
+
+
+def test_channel_routing_matches_repo_globs_before_owners():
+    mapping = {"payments-*": "#payments", "@acme/frontend": "#frontend"}
+    assert route(mapping, "payments-api", ["@acme/frontend"], "#eng") == "#payments"
+    assert route(mapping, "web", ["@acme/frontend"], "#eng") == "#frontend"
+    assert route(mapping, "data", [], "#eng") == "#eng"
 
 
 def test_detect_ecosystems_skips_vendored_dirs():
@@ -405,13 +424,41 @@ def test_dependabot_config_groups_updates():
     assert npm["groups"]["security"]["applies-to"] == "security-updates"
 
 
-def test_caller_workflow_is_valid_yaml(config):
-    wf = yaml.safe_load(render_caller_workflow(config))
-    jobs = wf["jobs"]
-    assert jobs["dependency-review"]["uses"].startswith("acme/vulgard/")
-    assert "dependabot-automerge" in jobs
-    config.rollout.auto_merge = False
-    assert "dependabot-automerge" not in yaml.safe_load(render_caller_workflow(config))["jobs"]
+def test_caller_workflow_is_valid_yaml_and_auto_merge_is_opt_in(config):
+    jobs = yaml.safe_load(render_caller_workflow(config, "api"))["jobs"]
+    assert jobs["guard"]["uses"] == "acme/vulgard/.github/workflows/guard.yml@main"
+    assert "automerge" not in jobs  # off unless the repo opts in
+    config.rollout.auto_merge = ["web-*"]
+    assert "automerge" not in yaml.safe_load(render_caller_workflow(config, "api"))["jobs"]
+    jobs = yaml.safe_load(render_caller_workflow(config, "web-app"))["jobs"]
+    assert jobs["automerge"]["uses"].endswith("/automerge.yml@main")
+
+
+def test_auto_merge_rejects_the_old_boolean_form():
+    with pytest.raises(ValueError, match="list of repos"):
+        parse_config({"org": "acme", "rollout": {"auto_merge": True}})
+
+
+def test_rollout_refreshes_managed_workflow_but_not_hand_written_ones():
+    config = example_config()
+    gh = FixtureGitHub.from_file(EXAMPLES / "demo-org.json")
+    repos = {r["name"]: r for r in gh.list_repos("acme")}
+    files = gh.data["files"]["inventory-service"]
+    files[WORKFLOW_PATH] = "# Managed by vulgard (acme/vulgard). old\nname: vulgard\n"
+    plan = plan_rollout(gh, config, repos["inventory-service"])
+    assert plan.files == {WORKFLOW_PATH: render_caller_workflow(config, "inventory-service")}
+    files[WORKFLOW_PATH] = plan.files[WORKFLOW_PATH]
+    assert plan_rollout(gh, config, repos["inventory-service"]).skipped_reason == "up to date"
+
+
+def test_rollout_enables_repo_auto_merge_only_when_opted_in():
+    config = example_config()
+    gh = FixtureGitHub.from_file(EXAMPLES / "demo-org.json")
+    repos = {r["name"]: r for r in gh.list_repos("acme")}
+    for name in ("payments-api", "web-storefront"):
+        apply_rollout(gh, config, plan_rollout(gh, config, repos[name]))
+    calls = [args for op, args in gh.writes if op == "enable_security_features"]
+    assert calls == [("payments-api", True), ("web-storefront", False)]
 
 
 def test_rollout_plan_only_adds_missing_files():

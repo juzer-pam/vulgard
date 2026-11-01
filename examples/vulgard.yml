@@ -12,8 +12,8 @@ escalation:
 rollout:
   workflow_repo: vulgard
   engine: osv
+  auto_merge: ["payments-*"]
 slack:
-  digest_channel: "#security"
   escalation_channel: "#security-escalations"
   default_channel: "#eng-alerts"
   channels:

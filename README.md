@@ -8,10 +8,10 @@ Turning on Dependabot isn't enough if nobody merges its PRs. vulgard covers the 
 | Alerts pile up and nobody owns them | Opens **one tracking issue per repo**, assigns and mentions the owners, and **comments when an alert goes past its SLA**. Re-pings on a schedule and **escalates** to security leads when criticals or highs stay overdue. |
 | GitHub notifications get ignored | Posts **one Slack message per team channel** per run, sends each owner one DM covering all their repos, and posts escalations to a security channel. **Mirrors each tracking issue into Linear** in the owning team, with priority and due date taken from the worst alert. If someone closes the Linear issue while alerts are still open, vulgard reopens it. |
 | Everything looks equally urgent | Alerts whose CVE is on **CISA's Known Exploited Vulnerabilities** list get a 3-day deadline and escalate as soon as they're overdue. |
-| "Won't fix" decisions are invisible and permanent | **Exceptions in `vulgard.yml` need a reason and an expiry date.** Accepted risks stay listed in the tracking issue and come back when they expire. The digest names anyone who dismissed a critical or high alert without a comment. |
-| Fixes go unnoticed | The Slack digest counts alerts fixed in the last 7 days per repo, next to the repos with the most overdue alerts. |
-| Dependabot PRs rot | Dependabot config that **groups minor and patch updates into one PR per ecosystem**, plus a workflow that **auto-approves and auto-merges** them once CI passes. **A PR that passes CI but is still open after 2 days** pings its owners in GitHub, Slack, and Linear, listing the alerts it would fix. The tracking issue lists stale PRs. |
-| New vulnerabilities get merged | A reusable **`dependency-review / review`** check fails any PR that adds a dependency with a known vulnerability, and an **org ruleset** makes it required. |
+| "Won't fix" decisions are invisible and permanent | **Exceptions in `vulgard.yml` need a reason and an expiry date.** Accepted risks stay listed in the tracking issue and come back when they expire. The leaderboard names anyone who dismissed a critical or high alert without a comment. |
+| Fixes go unnoticed | A **leaderboard** in the org-wide Slack channel ranks teams by alerts fixed in the last 7 days and by alerts past deadline. |
+| Dependabot PRs rot | Dependabot config that **groups minor and patch updates into one PR per ecosystem**. Repos that opt in also **auto-approve and auto-merge** them once CI passes. **A PR that passes CI but is still open after 2 days** pings its owners in GitHub, Slack, and Linear, listing the alerts it would fix. The tracking issue lists stale PRs. |
+| New vulnerabilities get merged | A reusable **`vulgard / guard / scan`** check fails any PR that adds a dependency with a known vulnerability, and an **org ruleset** makes it required. |
 
 Everything that writes to GitHub runs as a **dry run by default**. Add `--apply` to make changes.
 
@@ -23,15 +23,18 @@ This README is the setup and reference guide.
 
 ```
 this repo (acme/vulgard)
-├── .github/workflows/nag.yml                  scheduled: vulgard nag --apply --slack
-├── .github/workflows/dependency-review.yml    reusable PR gate (GitHub or OSV engine)
-├── .github/workflows/dependabot-automerge.yml reusable auto-merge for Dependabot PRs
-└── .github/workflows/required-dependency-review.yml  for `enforce --mode workflow`
+├── .github/workflows/nag.yml             scheduled: vulgard nag --apply --slack --linear
+├── .github/workflows/guard.yml           reusable PR check (GitHub or OSV engine)
+├── .github/workflows/automerge.yml       reusable auto-merge for Dependabot PRs
+└── .github/workflows/guard-required.yml  for `enforce --mode workflow`
 
 every other repo (installed by `vulgard rollout`)
 ├── .github/dependabot.yml          generated from detected ecosystems
-└── .github/workflows/vulgard.yml calls the two reusable workflows above
+└── .github/workflows/vulgard.yml   calls guard.yml, plus automerge.yml if the repo opts in
 ```
+
+On a pull request the checks show up as `vulgard / guard / scan` and, in repos that opt in
+to auto-merge, `vulgard / automerge / approve` (skipped on PRs not opened by Dependabot).
 
 ## Try it locally (no token needed)
 
@@ -76,7 +79,7 @@ the demo never goes stale.
 3. **Connect Slack and Linear** (both optional; each is skipped if its secret is missing):
    - **Slack:** create a Slack app with bot scopes `chat:write`, `chat:write.public`, and
      `im:write`, install it, and save the bot token as the secret `SLACK_BOT_TOKEN`. An
-     incoming webhook in `SLACK_WEBHOOK_URL` still works for the digest alone.
+     incoming webhook in `SLACK_WEBHOOK_URL` still works for the leaderboard alone.
    - **Linear:** create an API key for a bot or service account (*Settings → Security &
      access → Personal API keys*) and save it as the secret `LINEAR_API_KEY`.
 
@@ -86,9 +89,14 @@ the demo never goes stale.
    `gh variable set VULGARD_CONFIG -R <org>/vulgard < org.yml`. The nag job writes this
    variable to `vulgard.yml` before it runs. Settings to fill in: SLA days, owners,
    escalation contacts, included and excluded repos, `rollout.engine` (see the caveats
-   below), and the `slack` and `linear` routing:
-   - `slack.channels` maps a repo name or owner handle (from config or `CODEOWNERS`) to a
-     Slack channel. Repos with no match post to `slack.default_channel`.
+   below), `rollout.auto_merge`, and the `slack` and `linear` routing:
+   - `rollout.auto_merge` lists the repos (names or globs like `web-*`) whose minor and
+     patch Dependabot PRs merge automatically. It's empty by default, so nothing
+     auto-merges until a repo is added. `["*"]` turns it on everywhere.
+   - `slack.default_channel` is the org-wide channel, for example `#engineering`. It gets
+     the weekly leaderboard, plus updates for repos that `slack.channels` doesn't map.
+   - `slack.channels` maps a repo name, a repo glob, or an owner handle (from config or
+     `CODEOWNERS`) to a team channel. Matching order: exact repo, repo glob, then owner.
    - `linear.teams` maps a repo name or owner handle to a Linear team key. Repos with no
      match go to `linear.default_team`.
    - `slack.users` maps GitHub handles to Slack user IDs, used for mentions and DMs, or to
@@ -103,13 +111,17 @@ the demo never goes stale.
    uv run vulgard --config org.yml --org acme rollout          # review the plan
    uv run vulgard --config org.yml --org acme rollout --apply  # open PRs; enables alerts,
                                                                  # security updates, and
-                                                                 # auto-merge per repo
+                                                                 # auto-merge if opted in
    ```
 
    To pilot first, set `repos.include` to a few repos in `org.yml`, update the variable,
    and widen it later.
 
-   Re-running is safe: repos that already have the files, or an open rollout PR, are skipped.
+   Re-running is safe. Repos that are up to date are skipped. A `vulgard.yml` that vulgard
+   wrote (it starts with `# Managed by vulgard`) is refreshed when config changes, for
+   example after opting a repo in to auto-merge. If the rollout PR is still open, the new
+   files are pushed to it instead of opening another. A workflow file without that header
+   is never overwritten, and neither is an existing `dependabot.yml`.
 
 6. **Make the check required** once those PRs are merged:
 
@@ -118,9 +130,9 @@ the demo never goes stale.
    ```
 
    This creates or updates the org ruleset *"vulgard: block vulnerable dependencies"*,
-   requiring `dependency-review / review` on default branches of repos that have the
+   requiring `guard / scan` on default branches of repos that have the
    workflow. Re-run it after more rollout PRs merge. On GitHub Enterprise Cloud, use
-   `--mode workflow` instead: the ruleset runs `required-dependency-review.yml` on every repo
+   `--mode workflow` instead: the ruleset runs `guard-required.yml` on every repo
    directly, with no per-repo files.
 
 7. **Turn on the nag job.** `nag.yml` runs weekdays at 15:00 UTC with `--slack --linear`.
@@ -157,7 +169,7 @@ with a worked example.
 - When every alert is resolved, the issue is closed with a thank-you.
 
 To silence an alert legitimately, either dismiss it in GitHub with a reason (permanent; the
-digest flags high-severity dismissals with no comment), or add an exception that expires:
+leaderboard flags high-severity dismissals with no comment), or add an exception that expires:
 
 ```yaml
 exceptions:
@@ -172,7 +184,7 @@ exceptions:
 - **The `github` engine** (GitHub's dependency-review action) needs the dependency graph,
   which on **private repos requires GitHub Code Security (GHAS)**. Without it, set
   `rollout.engine: osv` to use OSV-Scanner, which works everywhere.
-- **Auto-merge** only waits for checks that are *required*. If a repo has no required
+- **Auto-merge** (opt-in per repo) only waits for checks that are *required*. If a repo has no required
   checks, Dependabot PRs merge right away. If PR reviews are required, enable *"Allow GitHub
   Actions to create and approve pull requests"* in the org's Actions settings.
 - **Org rulesets** need a GitHub plan that supports them, and `--mode workflow` needs
@@ -191,7 +203,7 @@ For a suggested reading order, see [Reading the code](docs/how-it-works.md#readi
 Code lives in `src/vulgard/`: `policy.py` (SLA evaluation, exceptions, escalation rules,
 weekly fixed and dismissed summary), `plan.py` (per-repo decisions and the state stored in the
 tracking issue), `render.py` (issue, comment, and summary markdown), `nag.py` (tracking issues
-and comments), `linear.py` (Linear client and sync), `slack.py` (routed messages, DMs, digest),
+and comments), `linear.py` (Linear client and sync), `slack.py` (routed messages, DMs, leaderboard),
 `kev.py` (CISA KEV feed), `clients.py` (live API clients), `rollout.py`
 (Dependabot config and workflow generation), `enforce.py` (org rulesets), `github.py` (REST
 client), and `fixtures.py` (offline fakes for GitHub, Linear, and Slack used by the demo and

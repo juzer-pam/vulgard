@@ -22,7 +22,7 @@ from .plan import ActionKind
 from .policy import RepoReport, evaluate, now_utc, parse_codeowners_default, summarize_closed
 from .render import render_org_summary
 from .rollout import apply_rollout, plan_rollout
-from .slack import SlackError, digest_message, notify_slack, send_digest
+from .slack import SlackError, leaderboard_message, notify_slack, send_leaderboard
 
 CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")
 
@@ -160,9 +160,12 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
             )
         else:
             actions += notify_slack(clients.slack, config, runs, args.apply)
-        text, blocks = digest_message(config, reports, closed)
+        for repo in closed.fixed:
+            if not reports[repo].owners:
+                reports[repo].owners = resolve_owners(gh, config, repo)
+        text, blocks = leaderboard_message(config, reports, closed)
         actions.append(
-            send_digest(clients.slack, clients.slack_webhook, config, text, blocks, args.apply)
+            send_leaderboard(clients.slack, clients.slack_webhook, config, text, blocks, args.apply)
         )
 
     prefix = "" if args.apply else "[dry-run] "
@@ -188,19 +191,17 @@ def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> i
         if plan.skipped_reason:
             print(f"{prefix}{plan.repo}: skip ({plan.skipped_reason})")
             continue
-        if plan.existing_pr:
-            print(f"{prefix}{plan.repo}: rollout PR already open: {plan.existing_pr}")
-            continue
         files = ", ".join(plan.files)
+        target = f"open rollout PR {plan.existing_pr}" if plan.existing_pr else "a new PR"
         if not args.apply:
-            print(f"{prefix}{plan.repo}: would open PR adding {files}")
+            print(f"{prefix}{plan.repo}: would write {files} to {target}")
             if args.show:
                 for path, content in plan.files.items():
                     print(f"\n--- {path} ---\n{content}")
             continue
         try:
             url = apply_rollout(gh, config, plan)
-            print(f"{plan.repo}: opened {url}")
+            print(f"{plan.repo}: {'updated' if plan.existing_pr else 'opened'} {url}")
         except GitHubError as e:
             print(f"{plan.repo}: failed: {e}", file=sys.stderr)
     return 0
@@ -252,7 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("nag", help="open/update tracking issues, ping owners, escalate")
     p.add_argument("--apply", action="store_true", help="make changes (default is dry-run)")
     p.add_argument(
-        "--slack", action="store_true", help="notify team channels, DM owners, post a digest"
+        "--slack", action="store_true", help="notify team channels, DM owners, post the leaderboard"
     )
     p.add_argument(
         "--linear", action="store_true", help="mirror tracking issues into Linear"

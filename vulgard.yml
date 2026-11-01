@@ -33,12 +33,13 @@ issue:
 
 slack:
   token_env: SLACK_BOT_TOKEN      # bot scopes: chat:write, chat:write.public, im:write
-  webhook_env: SLACK_WEBHOOK_URL  # digest fallback when there's no bot token
-  digest_channel: null            # e.g. "#security"; weekly-style org digest
+  webhook_env: SLACK_WEBHOOK_URL  # leaderboard fallback when there's no bot token
+  default_channel: null           # org-wide, e.g. "#engineering": gets the team leaderboard,
+                                  # plus updates for repos with no channel mapping
   escalation_channel: null        # e.g. "#security-escalations"
-  default_channel: null           # repos with no channel mapping post here
-  channels: {}                    # repo name or owner handle -> channel
-#   "@your-org/payments": "#payments-eng"
+  channels: {}                    # repo name/glob or owner handle -> channel
+#   payments-api: "#payments-eng"
+#   "@your-org/frontend": "#frontend"
   users: {}                       # GitHub handle -> Slack user (U…) or user group (S…) ID
 #   "@octocat": U012ABCDEF
 #   "@your-org/security": S012ABCDEF
@@ -67,7 +68,7 @@ rollout:
   workflow_ref: main
   fail_on_severity: high          # low | medium | high | critical
   engine: github                  # github (needs GHAS on private repos) | osv
-  auto_merge: true
+  auto_merge: []                  # repos (names or globs) that opt in, e.g. ["web-*"]; ["*"] = all
   auto_merge_update_types:
     - version-update:semver-patch
     - version-update:semver-minor

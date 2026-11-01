@@ -1,0 +1,88 @@
+# Reusable PR check. Fails when a PR adds or upgrades to a dependency with a known
+# vulnerability. Repos call it from the workflow that `vulgard rollout` installs, and the
+# check shows up as "vulgard / guard / scan" (required context: "guard / scan").
+name: guard
+
+on:
+  workflow_call:
+    inputs:
+      fail-on-severity:
+        description: "low | moderate | high | critical (github engine only)"
+        type: string
+        default: high
+      engine:
+        description: >-
+          "github" uses GitHub's dependency graph (needs GitHub Code Security / GHAS on
+          private repos). "osv" uses OSV-Scanner and works on any repo.
+        type: string
+        default: github
+      allow-ghsas:
+        description: Comma-separated advisory IDs to accept (with a documented reason).
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check engine
+        if: inputs.engine != 'github' && inputs.engine != 'osv'
+        run: |
+          echo "::error::Unknown engine '${{ inputs.engine }}'. Use 'github' or 'osv'."
+          exit 1
+
+      - name: Scan with GitHub dependency review
+        if: inputs.engine == 'github'
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: ${{ inputs.fail-on-severity == 'medium' && 'moderate' || inputs.fail-on-severity }}
+          allow-ghsas: ${{ inputs.allow-ghsas }}
+          comment-summary-in-pr: on-failure
+
+      # OSV: scan the base branch and the PR, then fail only on vulnerabilities the PR adds.
+      - if: inputs.engine == 'osv'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check out base branch
+        if: inputs.engine == 'osv'
+        run: git checkout "$GITHUB_BASE_REF"
+      - name: Scan base branch with OSV-Scanner
+        if: inputs.engine == 'osv'
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@8dded7155905cd666190a12dc9997000e58d163d # v2.0.2
+        with:
+          scan-args: |-
+            --format=json
+            --output=old-results.json
+            -r
+            ./
+      - name: Check out PR
+        if: inputs.engine == 'osv'
+        run: git checkout -f "$GITHUB_SHA"
+      - name: Scan PR with OSV-Scanner
+        if: inputs.engine == 'osv'
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@8dded7155905cd666190a12dc9997000e58d163d # v2.0.2
+        with:
+          scan-args: |-
+            --format=json
+            --output=new-results.json
+            -r
+            ./
+      - name: Fail on vulnerabilities this PR adds
+        if: inputs.engine == 'osv'
+        uses: google/osv-scanner-action/osv-reporter-action@8dded7155905cd666190a12dc9997000e58d163d # v2.0.2
+        with:
+          scan-args: |-
+            --output=results.sarif
+            --old=old-results.json
+            --new=new-results.json
+            --gh-annotations=true
+            --fail-on-vuln=true
