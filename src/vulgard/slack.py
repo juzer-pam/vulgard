@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 from .config import Config, route
-from .events import Action, RepoPlan
+from .events import Action, ActionKind, RepoPlan
 from .policy import ClosedSummary, RepoReport
 
 API_URL = "https://slack.com/api"
@@ -99,7 +99,6 @@ def _escalation_line(plan: RepoPlan, config: Config) -> str:
 
 
 def notify_slack(client: Any, config: Config, plans: list[RepoPlan], apply: bool) -> list[Action]:
-    """One message per team channel, one DM per owner, and one escalation message per run."""
     channels: dict[str, list[str]] = defaultdict(list)
     dms: dict[str, list[str]] = defaultdict(list)
     escalations: list[str] = []
@@ -129,7 +128,7 @@ def notify_slack(client: Any, config: Config, plans: list[RepoPlan], apply: bool
         header = f"{leads}🚨 Escalation: these alerts are well past their fix deadline."
         messages.append((config.slack.escalation_channel, header, escalations))
     messages += [
-        (user, "Repos you own have vulnerable dependencies that need you:", lines)
+        (user, "Updates on vulnerable dependencies in repos you own:", lines)
         for user, lines in dms.items()
     ]
 
@@ -139,9 +138,9 @@ def notify_slack(client: Any, config: Config, plans: list[RepoPlan], apply: bool
             try:
                 client.post(target, header + "\n" + "\n".join(lines))
             except (SlackError, httpx.HTTPError) as e:
-                actions.append(Action("(slack)", "slack-error", f"{target}: {e}"))
+                actions.append(Action("(slack)", ActionKind.SLACK_ERROR, f"{target}: {e}"))
                 continue
-        actions.append(Action("(slack)", "slack", f"{target}: {len(lines)} repo(s)"))
+        actions.append(Action("(slack)", ActionKind.SLACK, f"{target}: {len(lines)} repo(s)"))
     return actions
 
 
@@ -170,8 +169,9 @@ def digest_message(
     )
     blocks: list[dict[str, Any]] = [_section(header)]
     if ready:
-        quick_wins = f"*✅ {ready} Dependabot PR(s) pass CI and only need a review and merge.*"
-        blocks.append(_section(quick_wins + " These are the quickest wins on the board."))
+        blocks.append(
+            _section(f"*✅ {ready} Dependabot PR(s) pass CI and only need a review and merge.*")
+        )
 
     if closed is not None:
         fixed_total = sum(closed.fixed.values())
@@ -225,4 +225,4 @@ def send_digest(
             post_webhook(webhook_url, text, blocks)
     else:
         return None
-    return Action("(slack)", "slack", f"digest to {target}")
+    return Action("(slack)", ActionKind.SLACK, f"digest to {target}")

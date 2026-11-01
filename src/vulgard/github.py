@@ -121,7 +121,6 @@ class GitHub:
         return items
 
     def list_dependabot_prs(self, org: str) -> list[dict[str, Any]]:
-        """Open Dependabot PRs with CI and merge status, via GraphQL search (one call per 100)."""
         search = f"org:{org} is:pr is:open author:app/dependabot archived:false"
         prs: list[dict[str, Any]] = []
         after: str | None = None

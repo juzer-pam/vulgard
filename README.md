@@ -6,11 +6,11 @@ Turning on Dependabot isn't enough if nobody merges its PRs. vulgard covers the 
 | Problem | What vulgard does |
 |---|---|
 | Alerts pile up and nobody owns them | Opens **one tracking issue per repo**, assigns and mentions the owners, and **comments when an alert goes past its SLA**. Re-pings on a schedule and **escalates** to security leads when criticals or highs stay overdue. |
-| GitHub notifications get ignored | Meets teams where they work: **one Slack message per team channel**, **one DM per owner** summarizing all their repos, and an **escalation channel** for security leads. **Mirrors each tracking issue into Linear** in the owning team with priority and due date set from the worst alert, and reopens it if someone closes it while alerts are still open. |
-| Everything looks equally urgent | Alerts on **CISA's Known Exploited Vulnerabilities** list get a 3-day deadline and escalate as soon as they're overdue. |
-| "Won't fix" decisions are invisible and permanent | **Exceptions with a required reason and expiry date** in `vulgard.yml`. Accepted risks stay listed in the issue and come back when they lapse. The digest calls out **high-severity dismissals with no justification**. |
-| Security work goes unnoticed | The Slack digest credits **alerts fixed in the last 7 days**, per repo, next to the worst offenders. |
-| Dependabot PRs rot | Dependabot config that **groups minor and patch updates into one PR per ecosystem**, plus a workflow that **auto-approves and auto-merges** them once CI passes. PRs that **pass CI but are still waiting on a human** get owners pinged (GitHub, Slack, and Linear) with the alerts they'd fix. Stale PRs are called out in the tracking issue. |
+| GitHub notifications get ignored | Posts **one Slack message per team channel** per run, sends each owner one DM covering all their repos, and posts escalations to a security channel. **Mirrors each tracking issue into Linear** in the owning team, with priority and due date taken from the worst alert. If someone closes the Linear issue while alerts are still open, vulgard reopens it. |
+| Everything looks equally urgent | Alerts whose CVE is on **CISA's Known Exploited Vulnerabilities** list get a 3-day deadline and escalate as soon as they're overdue. |
+| "Won't fix" decisions are invisible and permanent | **Exceptions in `vulgard.yml` need a reason and an expiry date.** Accepted risks stay listed in the tracking issue and come back when they expire. The digest names anyone who dismissed a critical or high alert without a comment. |
+| Fixes go unnoticed | The Slack digest counts alerts fixed in the last 7 days per repo, next to the repos with the most overdue alerts. |
+| Dependabot PRs rot | Dependabot config that **groups minor and patch updates into one PR per ecosystem**, plus a workflow that **auto-approves and auto-merges** them once CI passes. **A PR that passes CI but is still open after 2 days** pings its owners in GitHub, Slack, and Linear, listing the alerts it would fix. The tracking issue lists stale PRs. |
 | New vulnerabilities get merged | A reusable **`dependency-review / review`** check fails any PR that adds a dependency with a known vulnerability, and an **org ruleset** makes it required. |
 
 Everything that writes to GitHub runs as a **dry run by default**. Add `--apply` to make changes.
@@ -72,12 +72,13 @@ the demo never goes stale.
 
 4. **Edit `vulgard.yml`**: SLA days, owners, escalation contacts, excluded repos,
    `rollout.engine` (see the caveats below), and the `slack` and `linear` routing:
-   - `slack.channels` / `linear.teams` map a repo name or owner handle (from config or
-     `CODEOWNERS`) to a Slack channel / Linear team key. Unmapped repos use
-     `slack.default_channel` / `linear.default_team`.
-   - `slack.users` maps GitHub handles to Slack user IDs (for mentions and DMs) or user group
-     IDs (`S…`, for team mentions). `linear.users` maps GitHub handles to Linear emails, used
-     to assign issues.
+   - `slack.channels` maps a repo name or owner handle (from config or `CODEOWNERS`) to a
+     Slack channel. Repos with no match post to `slack.default_channel`.
+   - `linear.teams` maps a repo name or owner handle to a Linear team key. Repos with no
+     match go to `linear.default_team`.
+   - `slack.users` maps GitHub handles to Slack user IDs, used for mentions and DMs, or to
+     user group IDs (`S…`) for team mentions.
+   - `linear.users` maps GitHub handles to Linear emails, used to assign issues.
 
 5. **Roll out to repos.** Run with a token that has the permissions above (for example
    `export GITHUB_TOKEN=$(gh auth token)` for an org admin):
@@ -113,7 +114,7 @@ the demo never goes stale.
   lists overdue, due-soon, and within-SLA alerts, the patched version, the Dependabot PR
   that fixes each one, and any accepted risks with their expiry.
 - Owners come from `owners:` in config, then the `*` rule in `CODEOWNERS`, then
-  `default_owners`. Individual owners (not teams) are assigned to the issue.
+  `default_owners`. vulgard assigns individual owners, but not teams, to the issue.
 - Comments and Slack messages, which are what notify people, are only sent when:
   - a tracking issue is first opened,
   - an alert newly passes its deadline,
@@ -123,10 +124,11 @@ the demo never goes stale.
   - an alert is more than `escalation.after_days_overdue` past due, or a KEV alert is past
     due at all (each alert escalates once).
 - Slack messages are batched: each channel and each owner gets at most one message per run.
-- The Linear issue's description, priority (urgent for exploited or overdue criticals), and
-  due date (earliest alert deadline) are kept in sync. It gets comments for newly overdue
-  and escalated alerts, is reopened if closed while alerts remain, and closes with the
-  GitHub issue.
+- vulgard rewrites the Linear issue's description, priority, and due date on each run.
+  Priority is urgent for exploited alerts or overdue criticals, and the due date is the
+  earliest alert deadline. vulgard comments on the Linear issue for newly overdue alerts,
+  newly ready PRs, and escalations. It reopens the issue if someone closes it while alerts
+  remain, and closes it when the GitHub issue closes.
 - State, including the Linear issue link, lives in a hidden HTML comment in the GitHub issue
   body, so the bot needs no database.
 - When every alert is resolved, the issue is closed with a thank-you.

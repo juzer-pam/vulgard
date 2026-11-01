@@ -12,6 +12,7 @@ import httpx
 
 from .config import SEVERITIES, Config, load_config
 from .enforce import apply_enforce, plan_enforce
+from .events import ActionKind
 from .fixtures import FakeLinear, FakeSlack, FixtureGitHub
 from .github import GitHub, GitHubError
 from .kev import fetch_kev
@@ -189,13 +190,13 @@ def cmd_nag(gh: Any, config: Config, args: argparse.Namespace) -> int:
 
     prefix = "" if args.apply else "[dry-run] "
     for a in actions:
-        if a.kind != "noop":
+        if a.kind != ActionKind.NOOP:
             print(f"{prefix}{a.repo}: {a.kind} ({a.detail})")
-    changed = sum(1 for a in actions if a.kind != "noop")
+    changed = sum(1 for a in actions if a.kind != ActionKind.NOOP)
     print(f"{prefix}{changed} action(s) across {len(reports)} repos.")
     summary = render_org_summary(config, reports, closed)
     write_step_summary(summary, args.summary_file)
-    return 1 if any(a.kind.endswith("-error") for a in actions) else 0
+    return 1 if any(a.kind.is_error for a in actions) else 0
 
 
 def cmd_rollout(gh: Any, config: Config, args: argparse.Namespace) -> int:

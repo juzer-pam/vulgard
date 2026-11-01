@@ -47,9 +47,7 @@ class SlackConfig:
     digest_channel: str | None = None
     default_channel: str | None = None
     escalation_channel: str | None = None
-    # Keyed by repo name or GitHub owner handle; repo wins, then owners in order.
     channels: dict[str, str] = field(default_factory=dict)
-    # GitHub handle -> Slack user ID (U…/W…) or user group ID (S…).
     users: dict[str, str] = field(default_factory=dict)
     dm_owners: bool = True
 
@@ -58,9 +56,7 @@ class SlackConfig:
 class LinearConfig:
     api_key_env: str = "LINEAR_API_KEY"
     default_team: str | None = None
-    # Keyed by repo name or GitHub owner handle -> Linear team key (e.g. "SEC").
     teams: dict[str, str] = field(default_factory=dict)
-    # GitHub handle -> Linear user email, used to assign the issue.
     users: dict[str, str] = field(default_factory=dict)
     label: str = "vulgard"
 

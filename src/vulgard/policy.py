@@ -284,7 +284,6 @@ def evaluate(
     severity_rank = {s: i for i, s in enumerate(SEVERITIES)}
     for report in reports.values():
         report.alerts.sort(key=lambda a: (a.days_left, severity_rank[a.severity]))
-        # Green PRs that fix alerts first: they're the cheapest risk reduction available.
         report.dependabot_prs.sort(key=lambda p: (not p.ci_passing, not p.fixes, -p.age_days))
     return reports
 
@@ -303,8 +302,6 @@ class Dismissal:
 
 @dataclass
 class ClosedSummary:
-    """Alerts fixed or dismissed in a window, for positive feedback and accountability."""
-
     since: datetime
     fixed: Counter[str] = field(default_factory=Counter)
     dismissed: list[Dismissal] = field(default_factory=list)

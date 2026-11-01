@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 from .config import SEVERITIES, Config, route
-from .events import Action, RepoPlan
+from .events import Action, ActionKind, RepoPlan
 from .policy import RepoReport, SlaStatus
 
 API_URL = "https://api.linear.app/graphql"
@@ -22,8 +22,6 @@ class LinearError(RuntimeError):
 
 
 class Linear:
-    """Thin Linear GraphQL client covering only what vulgard needs."""
-
     def __init__(self, api_key: str, url: str = API_URL):
         self._url = url
         self._http = httpx.Client(
@@ -236,7 +234,6 @@ def _comments(plan: RepoPlan, config: Config, reopened: bool) -> list[str]:
 def sync_linear(
     client: Any, config: Config, plan: RepoPlan, apply: bool
 ) -> tuple[list[Action], dict[str, Any] | None]:
-    """Mirror a repo's tracking issue into Linear. Returns actions and the new Linear ref."""
     repo = plan.repo
     ref = plan.state.get("linear")
 
@@ -249,7 +246,7 @@ def sync_linear(
                 client.comment(ref["id"], "✅ All Dependabot alerts are resolved. Closing.")
                 team = client.team(issue["team"]["key"])
                 client.update_issue(ref["id"], {"stateId": state_id(team, "completed")})
-        return [Action(repo, "linear-close", ref["identifier"])], ref
+        return [Action(repo, ActionKind.LINEAR_CLOSE, ref["identifier"])], ref
 
     fields = issue_fields(plan.report, config, plan.issue_url)
     digest = _digest(fields)
@@ -260,9 +257,10 @@ def sync_linear(
             config.linear.teams, repo, plan.report.owners, config.linear.default_team
         )
         if not team_key:
-            return [Action(repo, "linear-skip", "no team mapped; set linear.default_team")], ref
+            skip = Action(repo, ActionKind.LINEAR_SKIP, "no team mapped; set linear.default_team")
+            return [skip], ref
         if not apply:
-            return [Action(repo, "linear-create", f"in team {team_key}")], ref
+            return [Action(repo, ActionKind.LINEAR_CREATE, f"in team {team_key}")], ref
         team = client.team(team_key)
         if team is None:
             raise LinearError(f"Linear team '{team_key}' not found")
@@ -283,7 +281,7 @@ def sync_linear(
             "url": created["url"],
             "digest": digest,
         }
-        return [Action(repo, "linear-create", created["identifier"])], new_ref
+        return [Action(repo, ActionKind.LINEAR_CREATE, created["identifier"])], new_ref
 
     reopened = existing["state"]["type"] in CLOSED_STATES
     comments = _comments(plan, config, reopened)
@@ -292,7 +290,7 @@ def sync_linear(
         return [], ref
     detail = ref["identifier"] + (" (reopened)" if reopened else "")
     if not apply:
-        return [Action(repo, "linear-update", detail)], ref
+        return [Action(repo, ActionKind.LINEAR_UPDATE, detail)], ref
     if changed or reopened:
         update = dict(fields)
         if reopened:
@@ -300,4 +298,4 @@ def sync_linear(
         client.update_issue(ref["id"], update)
     for comment in comments:
         client.comment(ref["id"], comment)
-    return [Action(repo, "linear-update", detail)], {**ref, "digest": digest}
+    return [Action(repo, ActionKind.LINEAR_UPDATE, detail)], {**ref, "digest": digest}

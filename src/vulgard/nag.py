@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from .config import SEVERITIES, Config
-from .events import Action, RepoPlan
+from .events import Action, ActionKind, RepoPlan
 from .linear import LinearError, sync_linear
 from .policy import Alert, ClosedSummary, RepoReport, SlaStatus, now_utc, parse_time
 
@@ -127,13 +127,14 @@ def plan_repo(
         if issue:
             return RepoPlan(
                 report,
-                [Action(report.repo, "close", "all alerts resolved")],
+                [Action(report.repo, ActionKind.CLOSE, "all alerts resolved")],
                 None,
                 ["✅ All Dependabot alerts are resolved. Thanks! Closing this issue."],
                 state=prev,
                 closing=True,
             )
-        return RepoPlan(report, [Action(report.repo, "noop", "clean")], None, [], state=prev)
+        noop = Action(report.repo, ActionKind.NOOP, "clean")
+        return RepoPlan(report, [noop], None, [], state=prev)
 
     overdue_ids = sorted(a.number for a in report.overdue)
     newly_overdue = [a for a in report.overdue if a.number not in set(prev.get("overdue", []))]
@@ -170,7 +171,7 @@ def plan_repo(
             )
         comments.append(f"{mentions} " + "\n\n".join(sections))
         detail = f"{len(newly_overdue)} newly overdue, {len(newly_ready)} newly ready PR(s)"
-        actions.append(Action(report.repo, "comment", detail))
+        actions.append(Action(report.repo, ActionKind.COMMENT, detail))
     elif issue and reminder_due and (report.overdue or stale or ready):
         parts = []
         if report.overdue:
@@ -183,7 +184,7 @@ def plan_repo(
             f"{mentions} Reminder: this repo still has {' and '.join(parts)}. "
             "See the list in the issue description."
         )
-        actions.append(Action(report.repo, "comment", "periodic reminder"))
+        actions.append(Action(report.repo, ActionKind.COMMENT, "periodic reminder"))
         reminder = True
 
     if escalate:
@@ -193,7 +194,7 @@ def plan_repo(
             "or are being actively exploited.\n\n"
             + "\n".join(a.markdown_line() for a in escalate)
         )
-        actions.append(Action(report.repo, "escalate", f"{len(escalate)} alert(s)"))
+        actions.append(Action(report.repo, ActionKind.ESCALATE, f"{len(escalate)} alert(s)"))
 
     reminded = bool(comments) or issue is None
     state: dict[str, Any] = {
@@ -209,9 +210,9 @@ def plan_repo(
         state["linear"] = prev["linear"]
     body = render_issue_body(report, config, state, now)
     if issue is None:
-        actions.insert(0, Action(report.repo, "create", f"{len(report.alerts)} alert(s)"))
+        actions.insert(0, Action(report.repo, ActionKind.CREATE, f"{len(report.alerts)} alert(s)"))
     elif body != issue.get("body"):
-        actions.insert(0, Action(report.repo, "update", f"{len(report.alerts)} alert(s)"))
+        actions.insert(0, Action(report.repo, ActionKind.UPDATE, f"{len(report.alerts)} alert(s)"))
     return RepoPlan(
         report,
         actions,
@@ -263,7 +264,7 @@ def _sync_linear(linear: Any, config: Config, plan: RepoPlan, now: datetime, app
     try:
         actions, ref = sync_linear(linear, config, plan, apply)
     except (LinearError, httpx.HTTPError) as e:
-        plan.actions.append(Action(plan.repo, "linear-error", str(e)))
+        plan.actions.append(Action(plan.repo, ActionKind.LINEAR_ERROR, str(e)))
         return False
     plan.actions.extend(actions)
     if plan.closing or ref == plan.state.get("linear"):

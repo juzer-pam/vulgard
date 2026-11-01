@@ -1,25 +1,41 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from .policy import Alert, DependabotPR, RepoReport
 
 
+class ActionKind(StrEnum):
+    CREATE = "create"
+    UPDATE = "update"
+    COMMENT = "comment"
+    ESCALATE = "escalate"
+    CLOSE = "close"
+    NOOP = "noop"
+    LINEAR_CREATE = "linear-create"
+    LINEAR_UPDATE = "linear-update"
+    LINEAR_CLOSE = "linear-close"
+    LINEAR_SKIP = "linear-skip"
+    LINEAR_ERROR = "linear-error"
+    SLACK = "slack"
+    SLACK_ERROR = "slack-error"
+
+    @property
+    def is_error(self) -> bool:
+        return self in (ActionKind.LINEAR_ERROR, ActionKind.SLACK_ERROR)
+
+
 @dataclass
 class Action:
     repo: str
-    # create | update | comment | escalate | close | noop
-    # | linear-create | linear-update | linear-close | linear-skip | linear-error
-    # | slack | slack-error
-    kind: str
+    kind: ActionKind
     detail: str = ""
 
 
 @dataclass
 class RepoPlan:
-    """What one nag run decided for a repo; consumed by the GitHub, Linear, and Slack writers."""
-
     report: RepoReport
     actions: list[Action]
     body: str | None
