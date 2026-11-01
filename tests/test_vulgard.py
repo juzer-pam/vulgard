@@ -445,6 +445,16 @@ def test_enforce_workflow_mode_uses_repo_id():
     assert "vulgard" in p.ruleset["conditions"]["repository_name"]["exclude"]
 
 
+def test_cli_nag_redact_hides_repo_names(capsys, tmp_path):
+    summary = tmp_path / "summary.md"
+    fixtures = ["--fixtures", str(EXAMPLES / "demo-org.json")]
+    main(["--config", str(EXAMPLES / "vulgard.yml"), *fixtures, "nag", "--redact",
+          "--summary-file", str(summary)])
+    out = capsys.readouterr().out
+    assert "create: " in out and "action(s) across" in out
+    assert "payments-api" not in out and not summary.exists()
+
+
 def test_cli_report_json(capsys):
     code = main(
         [

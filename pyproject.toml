@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "Org-wide enforcement for dependency vulnerabilities: SLA nagging, Dependabot auto-merge, and PR blocking."
 readme = "README.md"
 authors = [
-    { name = "Cursor Agent", email = "cursoragent@cursor.com" }
+    { name = "Juzer Nomani" }
 ]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.1",

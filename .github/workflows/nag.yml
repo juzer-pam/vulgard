@@ -51,6 +51,6 @@ jobs:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           APPLY: ${{ github.event_name == 'schedule' || inputs.apply }}
         run: |
-          args=(--org "${{ github.repository_owner }}" nag --slack --linear)
+          args=(--org "${{ github.repository_owner }}" nag --slack --linear --redact)
           if [ "$APPLY" = "true" ]; then args+=(--apply); fi
           uv run vulgard "${args[@]}"

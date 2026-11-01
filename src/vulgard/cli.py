@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from collections import Counter
 from dataclasses import asdict
 from datetime import timedelta
 from typing import Any
@@ -165,13 +166,15 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
         )
 
     prefix = "" if args.apply else "[dry-run] "
-    for a in actions:
-        if a.kind != ActionKind.NOOP:
+    taken = [a for a in actions if a.kind != ActionKind.NOOP]
+    if args.redact:
+        for kind, n in sorted(Counter(a.kind for a in taken).items()):
+            print(f"{prefix}{kind}: {n}")
+    else:
+        for a in taken:
             print(f"{prefix}{a.repo or 'slack'}: {a.kind} ({a.detail})")
-    changed = sum(1 for a in actions if a.kind != ActionKind.NOOP)
-    print(f"{prefix}{changed} action(s) across {len(reports)} repos.")
-    summary = render_org_summary(config, reports, closed)
-    write_step_summary(summary, args.summary_file)
+        write_step_summary(render_org_summary(config, reports, closed), args.summary_file)
+    print(f"{prefix}{len(taken)} action(s) across {len(reports)} repos.")
     return 1 if any(a.kind.is_error for a in actions) else 0
 
 
@@ -256,6 +259,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--summary-file", help="write markdown summary here (default $GITHUB_STEP_SUMMARY)"
+    )
+    p.add_argument(
+        "--redact",
+        action="store_true",
+        help="print only action counts and skip the summary, for public workflow logs",
     )
     add_repo_filter(p)
     p.set_defaults(func=cmd_nag)
