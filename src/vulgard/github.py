@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 import time
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -84,6 +85,26 @@ class GitHub:
     def list_open_alerts(self, org: str) -> list[dict[str, Any]]:
         return self._paginate(f"/orgs/{org}/dependabot/alerts", {"state": "open"})
 
+    def list_closed_alerts(self, org: str, since: datetime) -> list[dict[str, Any]]:
+        """Alerts fixed or dismissed since `since`, newest first (stops paging once older)."""
+        items: list[dict[str, Any]] = []
+        next_url: str | None = f"/orgs/{org}/dependabot/alerts"
+        params: dict[str, Any] | None = {
+            "state": "fixed,dismissed",
+            "sort": "updated",
+            "direction": "desc",
+            "per_page": 100,
+        }
+        while next_url:
+            resp = self._request("GET", next_url, params=params)
+            for alert in resp.json():
+                if datetime.fromisoformat(alert["updated_at"].replace("Z", "+00:00")) < since:
+                    return items
+                items.append(alert)
+            next_url = resp.links.get("next", {}).get("url")
+            params = None
+        return items
+
     def list_dependabot_prs(self, org: str) -> list[dict[str, Any]]:
         query = f"org:{org} is:pr is:open author:app/dependabot archived:false"
         return self._paginate("/search/issues", {"q": query})
@@ -153,13 +174,25 @@ class GitHub:
                 raise
 
     def create_issue(
-        self, org: str, repo: str, title: str, body: str, labels: list[str]
+        self,
+        org: str,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str],
+        assignees: list[str] | None = None,
     ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/repos/{org}/{repo}/issues",
-            json={"title": title, "body": body, "labels": labels},
-        )
+        payload: dict[str, Any] = {"title": title, "body": body, "labels": labels}
+        if assignees:
+            try:
+                return self._json(
+                    "POST", f"/repos/{org}/{repo}/issues", json={**payload, "assignees": assignees}
+                )
+            except GitHubError as e:
+                # An owner without repo access can't be assigned; still open the issue.
+                if e.status != 422:
+                    raise
+        return self._json("POST", f"/repos/{org}/{repo}/issues", json=payload)
 
     def update_issue(self, org: str, repo: str, number: int, **fields: Any) -> dict[str, Any]:
         return self._json("PATCH", f"/repos/{org}/{repo}/issues/{number}", json=fields)

@@ -73,6 +73,36 @@
       "security_vulnerability": {"package": {"ecosystem": "npm", "name": "minimist"}, "severity": "critical", "first_patched_version": {"identifier": "1.2.6"}}
     }
   ],
+  "kev": ["CVE-2022-23539"],
+  "closed_alerts": [
+    {
+      "number": 11,
+      "state": "fixed",
+      "repository": {"name": "payments-api"},
+      "created_at": "@-30d",
+      "updated_at": "@-2d",
+      "fixed_at": "@-2d",
+      "html_url": "https://github.com/acme/payments-api/security/dependabot/11",
+      "dependency": {"package": {"ecosystem": "npm", "name": "follow-redirects"}, "manifest_path": "package-lock.json"},
+      "security_advisory": {"ghsa_id": "GHSA-cxjh-pqwp-8mfp", "cve_id": "CVE-2024-28849", "summary": "Proxy-Authorization header kept across hosts", "severity": "medium"},
+      "security_vulnerability": {"package": {"ecosystem": "npm", "name": "follow-redirects"}, "severity": "medium", "first_patched_version": {"identifier": "1.15.6"}}
+    },
+    {
+      "number": 6,
+      "state": "dismissed",
+      "repository": {"name": "data-pipeline"},
+      "created_at": "@-40d",
+      "updated_at": "@-1d",
+      "dismissed_at": "@-1d",
+      "dismissed_reason": "tolerable_risk",
+      "dismissed_comment": null,
+      "dismissed_by": {"login": "mchen"},
+      "html_url": "https://github.com/acme/data-pipeline/security/dependabot/6",
+      "dependency": {"package": {"ecosystem": "pip", "name": "requests"}, "manifest_path": "requirements.txt"},
+      "security_advisory": {"ghsa_id": "GHSA-9wx4-h78v-vm56", "cve_id": "CVE-2024-35195", "summary": "Session verify=False persists for the connection", "severity": "high"},
+      "security_vulnerability": {"package": {"ecosystem": "pip", "name": "requests"}, "severity": "high", "first_patched_version": {"identifier": "2.32.0"}}
+    }
+  ],
   "dependabot_prs": [
     {
       "number": 88,

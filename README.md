@@ -5,7 +5,11 @@ Turning on Dependabot isn't enough if nobody merges its PRs. vulgard covers the 
 
 | Problem | What vulgard does |
 |---|---|
-| Alerts pile up and nobody owns them | Opens **one tracking issue per repo**, mentions the owners, and **comments when an alert goes past its SLA**. Re-pings on a schedule and **escalates** to security leads when criticals or highs stay overdue. Posts a **Slack digest** ranking the worst repos. |
+| Alerts pile up and nobody owns them | Opens **one tracking issue per repo**, assigns and mentions the owners, and **comments when an alert goes past its SLA**. Re-pings on a schedule and **escalates** to security leads when criticals or highs stay overdue. |
+| GitHub notifications get ignored | Meets teams where they work: **one Slack message per team channel**, **one DM per owner** summarizing all their repos, and an **escalation channel** for security leads. **Mirrors each tracking issue into Linear** in the owning team with priority and due date set from the worst alert, and reopens it if someone closes it while alerts are still open. |
+| Everything looks equally urgent | Alerts on **CISA's Known Exploited Vulnerabilities** list get a 3-day deadline and escalate as soon as they're overdue. |
+| "Won't fix" decisions are invisible and permanent | **Exceptions with a required reason and expiry date** in `vulgard.yml`. Accepted risks stay listed in the issue and come back when they lapse. The digest calls out **high-severity dismissals with no justification**. |
+| Security work goes unnoticed | The Slack digest credits **alerts fixed in the last 7 days**, per repo, next to the worst offenders. |
 | Dependabot PRs rot | Dependabot config that **groups minor and patch updates into one PR per ecosystem**, plus a workflow that **auto-approves and auto-merges** them once CI passes. Stale PRs are called out in the tracking issue. |
 | New vulnerabilities get merged | A reusable **`dependency-review / review`** check fails any PR that adds a dependency with a known vulnerability, and an **org ruleset** makes it required. |
 
@@ -35,6 +39,7 @@ V="uv run vulgard --config examples/vulgard.yml --fixtures examples/demo-org.jso
 $V report                    # SLA status per repo
 $V report --format markdown  # what goes in the Actions job summary
 $V nag                       # what issues/comments/escalations it would make
+$V nag --slack --linear      # plus Slack messages and Linear issues (fakes, no tokens)
 $V rollout --show            # PRs it would open, with generated files
 $V enforce                   # the org ruleset it would create
 uv run pytest
@@ -56,12 +61,25 @@ the demo never goes stale.
    - Organization: Administration (read/write), needed only for `enforce`
 
    Save its ID as the Actions variable `VULGARD_APP_ID` and its private key as the secret
-   `VULGARD_APP_PRIVATE_KEY`. Optionally add a Slack incoming webhook as `SLACK_WEBHOOK_URL`.
+   `VULGARD_APP_PRIVATE_KEY`.
 
-3. **Edit `vulgard.yml`**: SLA days, owners, escalation contacts, excluded repos, and
-   `rollout.engine` (see the caveats below).
+3. **Connect Slack and Linear** (both optional; each is skipped if its secret is missing):
+   - **Slack:** create a Slack app with bot scopes `chat:write`, `chat:write.public`, and
+     `im:write`, install it, and save the bot token as the secret `SLACK_BOT_TOKEN`. An
+     incoming webhook in `SLACK_WEBHOOK_URL` still works for the digest alone.
+   - **Linear:** create an API key for a bot or service account (*Settings → Security &
+     access → Personal API keys*) and save it as the secret `LINEAR_API_KEY`.
 
-4. **Roll out to repos.** Run with a token that has the permissions above (for example
+4. **Edit `vulgard.yml`**: SLA days, owners, escalation contacts, excluded repos,
+   `rollout.engine` (see the caveats below), and the `slack` and `linear` routing:
+   - `slack.channels` / `linear.teams` map a repo name or owner handle (from config or
+     `CODEOWNERS`) to a Slack channel / Linear team key. Unmapped repos use
+     `slack.default_channel` / `linear.default_team`.
+   - `slack.users` maps GitHub handles to Slack user IDs (for mentions and DMs) or user group
+     IDs (`S…`, for team mentions). `linear.users` maps GitHub handles to Linear emails, used
+     to assign issues.
+
+5. **Roll out to repos.** Run with a token that has the permissions above (for example
    `export GITHUB_TOKEN=$(gh auth token)` for an org admin):
 
    ```bash
@@ -72,7 +90,7 @@ the demo never goes stale.
 
    Re-running is safe: repos that already have the files, or an open rollout PR, are skipped.
 
-5. **Make the check required** once those PRs are merged:
+6. **Make the check required** once those PRs are merged:
 
    ```bash
    uv run vulgard --org acme enforce --apply
@@ -84,27 +102,43 @@ the demo never goes stale.
    `--mode workflow` instead: the ruleset runs `required-dependency-review.yml` on every repo
    directly, with no per-repo files.
 
-6. **Turn on the nag job.** `nag.yml` runs weekdays at 15:00 UTC. Trigger it once manually
-   with *apply* unchecked to preview.
+7. **Turn on the nag job.** `nag.yml` runs weekdays at 15:00 UTC with `--slack --linear`.
+   Trigger it once manually with *apply* unchecked to preview.
 
 ## How nagging works
 
 - Each alert gets a deadline: `sla_days[severity]` days after it opened (default: critical 7,
-  high 30, medium 90, low 180).
+  high 30, medium 90, low 180). CVEs on CISA's KEV list get `kev.sla_days` (default 3).
 - Each repo with open alerts or stale Dependabot PRs gets one issue labeled `vulgard`. It
-  lists overdue, due-soon, and within-SLA alerts, the patched version, and the Dependabot PR
-  that fixes each one.
+  lists overdue, due-soon, and within-SLA alerts, the patched version, the Dependabot PR
+  that fixes each one, and any accepted risks with their expiry.
 - Owners come from `owners:` in config, then the `*` rule in `CODEOWNERS`, then
-  `default_owners`.
-- Comments, which are what notify people, are only posted when:
+  `default_owners`. Individual owners (not teams) are assigned to the issue.
+- Comments and Slack messages, which are what notify people, are only sent when:
+  - a tracking issue is first opened,
   - an alert newly passes its deadline,
   - `reminder_interval_days` have passed and something is still overdue or stale, or
-  - an alert is more than `escalation.after_days_overdue` past due (each alert escalates once).
-- State lives in a hidden HTML comment in the issue body, so the bot needs no database.
+  - an alert is more than `escalation.after_days_overdue` past due, or a KEV alert is past
+    due at all (each alert escalates once).
+- Slack messages are batched: each channel and each owner gets at most one message per run.
+- The Linear issue's description, priority (urgent for exploited or overdue criticals), and
+  due date (earliest alert deadline) are kept in sync. It gets comments for newly overdue
+  and escalated alerts, is reopened if closed while alerts remain, and closes with the
+  GitHub issue.
+- State, including the Linear issue link, lives in a hidden HTML comment in the GitHub issue
+  body, so the bot needs no database.
 - When every alert is resolved, the issue is closed with a thank-you.
 
-To silence an alert legitimately, dismiss it in GitHub with a reason. It stops showing up on
-the next run.
+To silence an alert legitimately, either dismiss it in GitHub with a reason (permanent; the
+digest flags high-severity dismissals with no comment), or add an exception that expires:
+
+```yaml
+exceptions:
+  - repo: payments-api            # glob, default "*"
+    advisory: GHSA-xxxx-xxxx-xxxx # or a CVE id, and/or `package: lodash`
+    reason: Not reachable from user input; see SEC-123
+    expires: 2027-03-31
+```
 
 ## Caveats
 
@@ -126,7 +160,9 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-Code lives in `src/vulgard/`: `policy.py` (SLA evaluation), `nag.py` (issues, comments,
-Slack), `rollout.py` (Dependabot config and workflow generation), `enforce.py` (org
-rulesets), `github.py` (REST client), and `fixtures.py` (offline fake used by the demo and
+Code lives in `src/vulgard/`: `policy.py` (SLA evaluation, exceptions, weekly fixed and
+dismissed summary), `nag.py` (tracking issues and comments), `linear.py` (Linear client and
+sync), `slack.py` (routed messages, DMs, digest), `kev.py` (CISA KEV feed), `rollout.py`
+(Dependabot config and workflow generation), `enforce.py` (org rulesets), `github.py` (REST
+client), and `fixtures.py` (offline fakes for GitHub, Linear, and Slack used by the demo and
 tests).

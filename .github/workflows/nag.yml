@@ -1,5 +1,6 @@
-# Scheduled job that updates per-repo tracking issues, pings owners, escalates overdue
-# alerts, and posts a Slack digest. Needs a GitHub App installed on the org (see README).
+# Scheduled job that updates per-repo tracking issues, pings owners in GitHub and Slack,
+# mirrors issues into Linear, escalates overdue alerts, and posts a Slack digest. Needs a
+# GitHub App installed on the org; Slack and Linear are skipped if their secrets are unset.
 name: vulgard-nag
 
 on:
@@ -37,9 +38,11 @@ jobs:
       - name: Run vulgard
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           APPLY: ${{ github.event_name == 'schedule' || inputs.apply }}
         run: |
-          args=(--org "${{ github.repository_owner }}" nag --slack)
+          args=(--org "${{ github.repository_owner }}" nag --slack --linear)
           if [ "$APPLY" = "true" ]; then args+=(--apply); fi
           uv run vulgard "${args[@]}"

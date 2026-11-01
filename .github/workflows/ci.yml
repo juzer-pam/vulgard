@@ -17,3 +17,6 @@ jobs:
       - run: uv run ruff check .
       - run: uv run pytest -q
       - run: uv run vulgard --config examples/vulgard.yml --fixtures examples/demo-org.json report
+      - run: >-
+          uv run vulgard --config examples/vulgard.yml --fixtures examples/demo-org.json
+          nag --slack --linear

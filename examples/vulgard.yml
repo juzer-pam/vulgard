@@ -12,3 +12,24 @@ escalation:
 rollout:
   workflow_repo: vulgard
   engine: osv
+slack:
+  digest_channel: "#security"
+  escalation_channel: "#security-escalations"
+  default_channel: "#eng-alerts"
+  channels:
+    "@acme/payments": "#payments-eng"
+    "@acme/frontend": "#frontend"
+  users:
+    "@jlee": U012JLEE
+    "@acme/security": S01SECURITY
+linear:
+  default_team: SEC
+  teams:
+    "@acme/payments": PAY
+  users:
+    "@jlee": jlee@acme.com
+exceptions:
+  - repo: web-storefront
+    package: nanoid
+    reason: Only used by build tooling; never shipped to browsers.
+    expires: 2030-12-31

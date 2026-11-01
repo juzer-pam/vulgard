@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,49 @@ class RolloutConfig:
 
 
 @dataclass
+class SlackConfig:
+    webhook_env: str = "SLACK_WEBHOOK_URL"
+    token_env: str = "SLACK_BOT_TOKEN"
+    digest_channel: str | None = None
+    default_channel: str | None = None
+    escalation_channel: str | None = None
+    # Keyed by repo name or GitHub owner handle; repo wins, then owners in order.
+    channels: dict[str, str] = field(default_factory=dict)
+    # GitHub handle -> Slack user ID (U…/W…) or user group ID (S…).
+    users: dict[str, str] = field(default_factory=dict)
+    dm_owners: bool = True
+
+
+@dataclass
+class LinearConfig:
+    api_key_env: str = "LINEAR_API_KEY"
+    default_team: str | None = None
+    # Keyed by repo name or GitHub owner handle -> Linear team key (e.g. "SEC").
+    teams: dict[str, str] = field(default_factory=dict)
+    # GitHub handle -> Linear user email, used to assign the issue.
+    users: dict[str, str] = field(default_factory=dict)
+    label: str = "vulgard"
+
+
+@dataclass
+class KevConfig:
+    enabled: bool = True
+    sla_days: int = 3
+    feed_url: str = (
+        "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+    )
+
+
+@dataclass
+class RiskException:
+    reason: str
+    expires: date
+    advisory: str | None = None  # GHSA or CVE id
+    package: str | None = None
+    repo: str = "*"
+
+
+@dataclass
 class Config:
     org: str
     include: list[str] = field(default_factory=lambda: ["*"])
@@ -53,12 +97,24 @@ class Config:
     escalation: EscalationConfig = field(default_factory=EscalationConfig)
     issue: IssueConfig = field(default_factory=IssueConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
-    slack_webhook_env: str = "SLACK_WEBHOOK_URL"
+    slack: SlackConfig = field(default_factory=SlackConfig)
+    linear: LinearConfig = field(default_factory=LinearConfig)
+    kev: KevConfig = field(default_factory=KevConfig)
+    exceptions: list[RiskException] = field(default_factory=list)
 
     def repo_selected(self, name: str) -> bool:
         if any(fnmatch.fnmatch(name, pat) for pat in self.exclude):
             return False
         return any(fnmatch.fnmatch(name, pat) for pat in self.include)
+
+
+def route(mapping: dict[str, str], repo: str, owners: list[str], default: str | None) -> str | None:
+    if repo in mapping:
+        return mapping[repo]
+    for owner in owners:
+        if owner in mapping:
+            return mapping[owner]
+    return default
 
 
 def _section(raw: dict[str, Any], key: str, cls: type) -> Any:
@@ -68,6 +124,24 @@ def _section(raw: dict[str, Any], key: str, cls: type) -> Any:
     if unknown:
         raise ValueError(f"Unknown keys in '{key}': {', '.join(sorted(unknown))}")
     return cls(**data)
+
+
+def _parse_exceptions(items: list[dict[str, Any]] | None) -> list[RiskException]:
+    known = set(RiskException.__dataclass_fields__)
+    parsed = []
+    for i, item in enumerate(items or []):
+        unknown = set(item) - known
+        if unknown:
+            raise ValueError(f"Unknown keys in exceptions[{i}]: {', '.join(sorted(unknown))}")
+        if not item.get("reason") or not item.get("expires"):
+            raise ValueError(f"exceptions[{i}] needs a 'reason' and an 'expires' date")
+        if not (item.get("advisory") or item.get("package")):
+            raise ValueError(f"exceptions[{i}] needs an 'advisory' or a 'package'")
+        expires = item["expires"]
+        if isinstance(expires, str):
+            expires = date.fromisoformat(expires)
+        parsed.append(RiskException(**{**item, "expires": expires}))
+    return parsed
 
 
 def parse_config(raw: dict[str, Any], org_override: str | None = None) -> Config:
@@ -95,7 +169,10 @@ def parse_config(raw: dict[str, Any], org_override: str | None = None) -> Config
         escalation=_section(raw, "escalation", EscalationConfig),
         issue=_section(raw, "issue", IssueConfig),
         rollout=_section(raw, "rollout", RolloutConfig),
-        slack_webhook_env=(raw.get("slack") or {}).get("webhook_env", "SLACK_WEBHOOK_URL"),
+        slack=_section(raw, "slack", SlackConfig),
+        linear=_section(raw, "linear", LinearConfig),
+        kev=_section(raw, "kev", KevConfig),
+        exceptions=_parse_exceptions(raw.get("exceptions")),
     )
 
 

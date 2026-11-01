@@ -5,15 +5,21 @@ import json
 import os
 import sys
 from dataclasses import asdict
+from datetime import timedelta
 from typing import Any
+
+import httpx
 
 from .config import SEVERITIES, Config, load_config
 from .enforce import apply_enforce, plan_enforce
-from .fixtures import FixtureGitHub
+from .fixtures import FakeLinear, FakeSlack, FixtureGitHub
 from .github import GitHub, GitHubError
-from .nag import nag, post_slack_digest, render_org_summary
-from .policy import RepoReport, evaluate, parse_codeowners_default
+from .kev import fetch_kev
+from .linear import Linear, LinearError
+from .nag import nag, render_org_summary
+from .policy import RepoReport, evaluate, now_utc, parse_codeowners_default, summarize_closed
 from .rollout import apply_rollout, plan_rollout
+from .slack import Slack, SlackError, digest_message, notify_slack, send_digest
 
 CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")
 
@@ -41,10 +47,31 @@ def resolve_owners(gh: Any, config: Config, repo: str) -> list[str]:
     return config.default_owners
 
 
-def collect(gh: Any, config: Config, only: list[str] | None = None) -> dict[str, RepoReport]:
+def load_kev(gh: Any, config: Config) -> frozenset[str]:
+    if not config.kev.enabled:
+        return frozenset()
+    if isinstance(gh, FixtureGitHub):
+        return gh.known_exploited()
+    try:
+        return fetch_kev(config.kev.feed_url)
+    except (httpx.HTTPError, ValueError, KeyError) as e:
+        print(f"warning: couldn't load the CISA KEV catalog, skipping: {e}", file=sys.stderr)
+        return frozenset()
+
+
+def collect(
+    gh: Any,
+    config: Config,
+    only: list[str] | None = None,
+    kev: frozenset[str] = frozenset(),
+) -> dict[str, RepoReport]:
     repos = [r["name"] for r in selected_repos(gh, config, only)]
     reports = evaluate(
-        config, gh.list_open_alerts(config.org), gh.list_dependabot_prs(config.org), repos
+        config,
+        gh.list_open_alerts(config.org),
+        gh.list_dependabot_prs(config.org),
+        repos,
+        kev=kev,
     )
     for report in reports.values():
         if report.alerts or report.dependabot_prs:
@@ -59,7 +86,7 @@ def print_table(reports: dict[str, RepoReport], stale_days: int) -> None:
     if not rows:
         print(f"No open alerts or Dependabot PRs across {len(reports)} repos.")
         return
-    header = ["repo", *SEVERITIES, "overdue", "due soon", "stale PRs", "owners"]
+    header = ["repo", *SEVERITIES, "overdue", "due soon", "exploited", "stale PRs", "owners"]
     table = [header]
     for r in rows:
         c = r.severity_counts()
@@ -69,6 +96,7 @@ def print_table(reports: dict[str, RepoReport], stale_days: int) -> None:
                 *(str(c[s]) for s in SEVERITIES),
                 str(len(r.overdue)),
                 str(len(r.due_soon)),
+                str(len(r.known_exploited)),
                 str(len(r.stale_prs(stale_days))),
                 " ".join(r.owners) or "-",
             ]
@@ -98,7 +126,7 @@ def write_step_summary(markdown: str, path: str | None) -> None:
 
 
 def cmd_report(gh: Any, config: Config, args: argparse.Namespace) -> int:
-    reports = collect(gh, config, args.repo)
+    reports = collect(gh, config, args.repo, load_kev(gh, config))
     if args.format == "json":
         print(report_json(reports))
     elif args.format == "markdown":
@@ -108,29 +136,63 @@ def cmd_report(gh: Any, config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def linear_client(gh: Any, config: Config) -> Any:
+    if isinstance(gh, FixtureGitHub):
+        return FakeLinear()
+    key = os.environ.get(config.linear.api_key_env)
+    if not key:
+        print(f"Skipping Linear: ${config.linear.api_key_env} is not set.", file=sys.stderr)
+        return None
+    return Linear(key)
+
+
+def slack_client(gh: Any, config: Config) -> Any:
+    if isinstance(gh, FixtureGitHub):
+        return FakeSlack()
+    token = os.environ.get(config.slack.token_env)
+    return Slack(token) if token else None
+
+
 def cmd_nag(gh: Any, config: Config, args: argparse.Namespace) -> int:
-    reports = collect(gh, config, args.repo)
-    actions = nag(gh, config, reports, apply=args.apply)
+    now = now_utc()
+    reports = collect(gh, config, args.repo, load_kev(gh, config))
+    linear = linear_client(gh, config) if args.linear else None
+    plans = nag(gh, config, reports, apply=args.apply, now=now, linear=linear)
+    actions = [a for p in plans for a in p.actions]
+
+    since = now - timedelta(days=7)
+    closed = summarize_closed(gh.list_closed_alerts(config.org, since), set(reports), since)
+
+    if args.slack:
+        slack = slack_client(gh, config)
+        if slack is None:
+            print(
+                f"Skipping Slack channel and DM messages: ${config.slack.token_env} is not set.",
+                file=sys.stderr,
+            )
+        else:
+            actions += notify_slack(slack, config, plans, args.apply)
+        text, blocks = digest_message(config.org, reports, config.stale_pr_days, closed)
+        webhook = os.environ.get(config.slack.webhook_env)
+        digest = send_digest(slack, webhook, config, text, blocks, args.apply)
+        if digest:
+            actions.append(digest)
+        else:
+            print(
+                "Skipping Slack digest: set slack.digest_channel (with a bot token) "
+                f"or ${config.slack.webhook_env}.",
+                file=sys.stderr,
+            )
+
     prefix = "" if args.apply else "[dry-run] "
     for a in actions:
         if a.kind != "noop":
             print(f"{prefix}{a.repo}: {a.kind} ({a.detail})")
     changed = sum(1 for a in actions if a.kind != "noop")
     print(f"{prefix}{changed} action(s) across {len(reports)} repos.")
-    summary = render_org_summary(config.org, reports, config.stale_pr_days)
+    summary = render_org_summary(config.org, reports, config.stale_pr_days, closed)
     write_step_summary(summary, args.summary_file)
-    if args.slack:
-        webhook = os.environ.get(config.slack_webhook_env)
-        if not webhook:
-            print(
-                f"Skipping Slack digest: ${config.slack_webhook_env} is not set.", file=sys.stderr
-            )
-        elif args.apply:
-            post_slack_digest(webhook, config.org, reports, config.stale_pr_days)
-            print("Posted Slack digest.")
-        else:
-            print("[dry-run] would post Slack digest.")
-    return 0
+    return 1 if any(a.kind.endswith("-error") for a in actions) else 0
 
 
 def cmd_rollout(gh: Any, config: Config, args: argparse.Namespace) -> int:
@@ -204,7 +266,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("nag", help="open/update tracking issues, ping owners, escalate")
     p.add_argument("--apply", action="store_true", help="make changes (default is dry-run)")
-    p.add_argument("--slack", action="store_true", help="post an org digest to Slack")
+    p.add_argument(
+        "--slack", action="store_true", help="notify team channels, DM owners, post a digest"
+    )
+    p.add_argument(
+        "--linear", action="store_true", help="mirror tracking issues into Linear"
+    )
     p.add_argument(
         "--summary-file", help="write markdown summary here (default $GITHUB_STEP_SUMMARY)"
     )
@@ -230,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config, args.org)
         gh = FixtureGitHub.from_file(args.fixtures) if args.fixtures else GitHub()
         return args.func(gh, config, args)
-    except (ValueError, FileNotFoundError, GitHubError) as e:
+    except (ValueError, FileNotFoundError, GitHubError, LinearError, SlackError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 

@@ -31,7 +31,35 @@ issue:
   title: "Security debt: vulnerable dependencies need attention"
 
 slack:
-  webhook_env: SLACK_WEBHOOK_URL
+  token_env: SLACK_BOT_TOKEN      # bot scopes: chat:write, chat:write.public, im:write
+  webhook_env: SLACK_WEBHOOK_URL  # digest fallback when there's no bot token
+  digest_channel: null            # e.g. "#security"; weekly-style org digest
+  escalation_channel: null        # e.g. "#security-escalations"
+  default_channel: null           # repos with no channel mapping post here
+  channels: {}                    # repo name or owner handle -> channel
+#   "@your-org/payments": "#payments-eng"
+  users: {}                       # GitHub handle -> Slack user (U…) or user group (S…) ID
+#   "@octocat": U012ABCDEF
+#   "@your-org/security": S012ABCDEF
+  dm_owners: true                 # DM individual owners one summary per run
+
+linear:
+  api_key_env: LINEAR_API_KEY
+  default_team: null              # Linear team key, e.g. SEC; required to create issues
+  teams: {}                       # repo name or owner handle -> Linear team key
+  users: {}                       # GitHub handle -> Linear user email (issue assignee)
+  label: vulgard
+
+kev:
+  enabled: true                   # CISA Known Exploited Vulnerabilities catalog
+  sla_days: 3                     # deadline for exploited CVEs; they escalate once overdue
+
+# Accepted risks. Each needs a reason and an expiry; the alert returns when it lapses.
+exceptions: []
+#  - repo: payments-api           # glob, default "*"
+#    advisory: GHSA-xxxx-xxxx-xxxx  # or CVE id; and/or `package: lodash`
+#    reason: Not reachable; see SEC-123
+#    expires: 2027-03-31
 
 rollout:
   workflow_repo: vulgard        # the repo hosting these reusable workflows

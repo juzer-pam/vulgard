@@ -47,6 +47,12 @@ class FixtureGitHub:
     def list_open_alerts(self, org: str) -> list[dict[str, Any]]:
         return self.data.get("alerts", [])
 
+    def list_closed_alerts(self, org: str, since: datetime) -> list[dict[str, Any]]:
+        return self.data.get("closed_alerts", [])
+
+    def known_exploited(self) -> frozenset[str]:
+        return frozenset(self.data.get("kev", []))
+
     def list_dependabot_prs(self, org: str) -> list[dict[str, Any]]:
         return self.data.get("dependabot_prs", [])
 
@@ -73,10 +79,23 @@ class FixtureGitHub:
         self._record("ensure_label", repo, label)
 
     def create_issue(
-        self, org: str, repo: str, title: str, body: str, labels: list[str]
+        self,
+        org: str,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str],
+        assignees: list[str] | None = None,
     ) -> dict[str, Any]:
         self._next_issue += 1
-        issue = {"number": self._next_issue, "title": title, "body": body, "state": "open"}
+        issue = {
+            "number": self._next_issue,
+            "title": title,
+            "body": body,
+            "state": "open",
+            "html_url": f"https://github.com/{org}/{repo}/issues/{self._next_issue}",
+            "assignees": assignees or [],
+        }
         self.data.setdefault("issues", {})[repo] = issue
         self._record("create_issue", repo, title, body)
         return issue
@@ -113,3 +132,69 @@ class FixtureGitHub:
 
     def update_org_ruleset(self, org: str, ruleset_id: int, ruleset: dict[str, Any]) -> None:
         self._record("update_org_ruleset", ruleset_id, ruleset)
+
+
+STATE_TYPES = {"todo": "unstarted", "doing": "started", "done": "completed", "wontdo": "canceled"}
+
+
+class FakeLinear:
+    """In-memory Linear: every team key exists, with Todo/Doing/Done/Won't-do states."""
+
+    def __init__(self) -> None:
+        self.issues: dict[str, dict[str, Any]] = {}
+        self.writes: list[tuple[str, tuple[Any, ...]]] = []
+
+    def team(self, key: str) -> dict[str, Any]:
+        return {
+            "id": f"team-{key}",
+            "key": key,
+            "states": [
+                {"id": f"{key}:{name}", "type": kind, "position": i}
+                for i, (name, kind) in enumerate(STATE_TYPES.items())
+            ],
+        }
+
+    def user_id(self, email: str) -> str:
+        return f"user:{email}"
+
+    def label_id(self, name: str) -> str:
+        return f"label:{name}"
+
+    def get_issue(self, issue_id: str) -> dict[str, Any] | None:
+        return self.issues.get(issue_id)
+
+    def create_issue(self, fields: dict[str, Any]) -> dict[str, Any]:
+        key = fields["teamId"].removeprefix("team-")
+        number = len(self.issues) + 1
+        issue = {
+            "id": f"lin-{number}",
+            "identifier": f"{key}-{number}",
+            "url": f"https://linear.app/acme/issue/{key}-{number}",
+            "state": {"type": "unstarted"},
+            "team": {"key": key},
+            "fields": dict(fields),
+        }
+        self.issues[issue["id"]] = issue
+        self.writes.append(("create_issue", (issue["identifier"], fields)))
+        return issue
+
+    def update_issue(self, issue_id: str, fields: dict[str, Any]) -> None:
+        issue = self.issues[issue_id]
+        issue["fields"].update(fields)
+        if "stateId" in fields:
+            issue["state"] = {"type": STATE_TYPES[fields["stateId"].split(":", 1)[1]]}
+        self.writes.append(("update_issue", (issue_id, fields)))
+
+    def comment(self, issue_id: str, body: str) -> None:
+        self.writes.append(("comment", (issue_id, body)))
+
+    def attach_url(self, issue_id: str, url: str, title: str) -> None:
+        self.writes.append(("attach_url", (issue_id, url)))
+
+
+class FakeSlack:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str]] = []
+
+    def post(self, channel: str, text: str, blocks: list[dict[str, Any]] | None = None) -> None:
+        self.messages.append((channel, text))
