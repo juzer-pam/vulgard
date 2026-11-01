@@ -2,23 +2,43 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Protocol, assert_never
 
 import httpx
 
 from .config import SEVERITIES, Config, route
-from .events import Action, ActionKind, RepoPlan
+from .plan import Action, ActionKind, IssueOp, LinearRef, RepoPlan
 from .policy import RepoReport, SlaStatus
+from .render import (
+    alert_sections,
+    escalation_md,
+    newly_overdue_md,
+    newly_ready_md,
+    pr_sections,
+    severity_summary,
+)
 
 API_URL = "https://api.linear.app/graphql"
 PRIORITY = {"critical": 1, "high": 2, "medium": 3, "low": 4}  # Linear: 1 urgent … 4 low
 CLOSED_STATES = ("completed", "canceled")
 
-ISSUE_FIELDS = "id identifier url state { type } team { key }"
+ISSUE_FIELDS = "id identifier url title state { type } team { key }"
 
 
 class LinearError(RuntimeError):
     pass
+
+
+class LinearClient(Protocol):
+    def team(self, key: str) -> dict[str, Any]: ...
+    def user_id(self, email: str) -> str | None: ...
+    def label_id(self, name: str) -> str: ...
+    def get_issue(self, issue_id: str) -> dict[str, Any] | None: ...
+    def create_issue(self, fields: dict[str, Any]) -> dict[str, Any]: ...
+    def update_issue(self, issue_id: str, fields: dict[str, Any]) -> None: ...
+    def comment(self, issue_id: str, body: str) -> None: ...
+    def attach_url(self, issue_id: str, url: str, title: str) -> None: ...
 
 
 class Linear:
@@ -28,7 +48,7 @@ class Linear:
             headers={"Authorization": api_key, "Content-Type": "application/json"},
             timeout=30.0,
         )
-        self._teams: dict[str, dict[str, Any] | None] = {}
+        self._teams: dict[str, dict[str, Any]] = {}
         self._labels: dict[str, str] = {}
         self._users: dict[str, str | None] = {}
 
@@ -43,7 +63,7 @@ class Linear:
             raise LinearError(f"Linear API {resp.status_code}: {messages or resp.text[:200]}")
         return data["data"]
 
-    def team(self, key: str) -> dict[str, Any] | None:
+    def team(self, key: str) -> dict[str, Any]:
         if key not in self._teams:
             data = self._gql(
                 "query($key: String!) { teams(filter: { key: { eq: $key } }) "
@@ -51,12 +71,11 @@ class Linear:
                 {"key": key},
             )
             nodes = data["teams"]["nodes"]
-            if nodes:
-                team = nodes[0]
-                team["states"] = team["states"]["nodes"]
-                self._teams[key] = team
-            else:
-                self._teams[key] = None
+            if not nodes:
+                raise LinearError(f"Linear team '{key}' not found")
+            team = nodes[0]
+            team["states"] = team["states"]["nodes"]
+            self._teams[key] = team
         return self._teams[key]
 
     def user_id(self, email: str) -> str | None:
@@ -139,32 +158,17 @@ def state_id(team: dict[str, Any], state_type: str) -> str:
     return states[0]["id"]
 
 
-def render_description(report: RepoReport, config: Config, issue_url: str | None) -> str:
-    counts = report.severity_counts()
+def issue_title(repo: str, config: Config) -> str:
+    return f"{repo}: {config.issue.title}"
+
+
+def render_description(report: RepoReport) -> str:
+    n = len(report.alerts)
     lines = [
-        f"**{report.repo}** has {len(report.alerts)} open vulnerable dependenc"
-        f"{'y' if len(report.alerts) == 1 else 'ies'}: "
-        + ", ".join(f"{counts[s]} {s}" for s in SEVERITIES if counts[s])
-        + ".",
-    ]
-    if issue_url:
-        lines += ["", f"GitHub tracking issue: {issue_url}"]
-    for title, alerts in (
-        ("🚨 Overdue", report.overdue),
-        ("⏳ Due soon", report.due_soon),
-        ("Within SLA", report.by_status(SlaStatus.OK)),
-    ):
-        if alerts:
-            lines += ["", f"### {title} ({len(alerts)})", *[a.markdown_line() for a in alerts]]
-    ready = report.ready_prs(config.ready_pr_days)
-    if ready:
-        lines += ["", f"### ✅ Ready to merge ({len(ready)})"]
-        lines += [p.markdown_line(config.stale_pr_days) for p in ready]
-    stale = [p for p in report.stale_prs(config.stale_pr_days) if p not in ready]
-    if stale:
-        lines += ["", f"### Dependabot PRs open {config.stale_pr_days}+ days ({len(stale)})"]
-        lines += [p.markdown_line(config.stale_pr_days) for p in stale]
-    lines += [
+        f"**{report.repo}** has {n} open vulnerable dependenc{'y' if n == 1 else 'ies'}: "
+        f"{severity_summary(report.severity_counts())}.",
+        *alert_sections(report, relative=False),
+        *pr_sections(report, relative=False),
         "",
         "---",
         "_Synced by vulgard from GitHub. The description, priority, and due date are "
@@ -173,7 +177,7 @@ def render_description(report: RepoReport, config: Config, issue_url: str | None
     return "\n".join(lines)
 
 
-def issue_fields(report: RepoReport, config: Config, issue_url: str | None) -> dict[str, Any]:
+def issue_fields(report: RepoReport, config: Config) -> dict[str, Any]:
     counts = report.severity_counts()
     worst = next((s for s in SEVERITIES if counts[s]), "low")
     urgent = any(
@@ -181,8 +185,8 @@ def issue_fields(report: RepoReport, config: Config, issue_url: str | None) -> d
         for a in report.alerts
     )
     fields: dict[str, Any] = {
-        "title": f"{report.repo}: {config.issue.title}",
-        "description": render_description(report, config, issue_url),
+        "title": issue_title(report.repo, config),
+        "description": render_description(report),
         "priority": 1 if urgent else PRIORITY[worst],
     }
     deadlines = [a.deadline for a in report.alerts if a.deadline]
@@ -195,7 +199,45 @@ def _digest(fields: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()[:12]
 
 
-def _assignee_id(client: Any, config: Config, owners: list[str]) -> str | None:
+@dataclass
+class LinearResult:
+    ref: LinearRef | None
+    actions: list[Action] = field(default_factory=list)
+    created: bool = False
+
+
+def _owned_issue(
+    client: LinearClient, plan: RepoPlan
+) -> tuple[LinearRef, dict[str, Any]] | None:
+    """The tracked Linear issue, if it still exists and belongs to this repo.
+
+    The ref comes from the GitHub issue body, which anyone with write access can edit, so a
+    ref pointing at an unrelated issue is ignored instead of overwritten.
+    """
+    ref = plan.state.linear
+    if ref is None:
+        return None
+    issue = client.get_issue(ref.id)
+    if issue is None or not issue["title"].startswith(f"{plan.repo}: "):
+        return None
+    return ref, issue
+
+
+def _close(client: LinearClient, plan: RepoPlan, apply: bool) -> LinearResult:
+    owned = _owned_issue(client, plan)
+    if owned is None:
+        return LinearResult(plan.state.linear)
+    ref, issue = owned
+    if issue["state"]["type"] in CLOSED_STATES:
+        return LinearResult(ref)
+    if apply:
+        client.comment(ref.id, "✅ All Dependabot alerts are resolved. Closing.")
+        done = state_id(client.team(issue["team"]["key"]), "completed")
+        client.update_issue(ref.id, {"stateId": done})
+    return LinearResult(ref, [Action(plan.repo, ActionKind.LINEAR_CLOSE, ref.identifier)])
+
+
+def _assignee_id(client: LinearClient, config: Config, owners: list[str]) -> str | None:
     for owner in owners:
         email = config.linear.users.get(owner)
         if email:
@@ -205,7 +247,32 @@ def _assignee_id(client: Any, config: Config, owners: list[str]) -> str | None:
     return None
 
 
-def _comments(plan: RepoPlan, config: Config, reopened: bool) -> list[str]:
+def _create(
+    client: LinearClient, config: Config, plan: RepoPlan, fields: dict[str, Any], apply: bool
+) -> LinearResult:
+    repo = plan.repo
+    team_key = route(config.linear.teams, repo, plan.report.owners, config.linear.default_team)
+    if not team_key:
+        skip = Action(repo, ActionKind.LINEAR_SKIP, "no team mapped; set linear.default_team")
+        return LinearResult(None, [skip])
+    if not apply:
+        return LinearResult(None, [Action(repo, ActionKind.LINEAR_CREATE, f"in team {team_key}")])
+    payload = {
+        **fields,
+        "teamId": client.team(team_key)["id"],
+        "labelIds": [client.label_id(config.linear.label)],
+    }
+    assignee = _assignee_id(client, config, plan.report.owners)
+    if assignee:
+        payload["assigneeId"] = assignee
+    created = client.create_issue(payload)
+    ref = LinearRef(created["id"], created["identifier"], created["url"], _digest(fields))
+    if plan.escalate:
+        client.comment(ref.id, escalation_md(plan.escalate, config.escalation, relative=False))
+    return LinearResult(ref, [Action(repo, ActionKind.LINEAR_CREATE, ref.identifier)], True)
+
+
+def _update_comments(plan: RepoPlan, config: Config, reopened: bool) -> list[str]:
     comments = []
     if reopened:
         comments.append(
@@ -214,88 +281,55 @@ def _comments(plan: RepoPlan, config: Config, reopened: bool) -> list[str]:
             "alert in GitHub with a reason or add an exception with an expiry date to vulgard.yml."
         )
     if plan.newly_overdue:
-        comments.append(
-            f"{len(plan.newly_overdue)} alert(s) just went past their fix deadline:\n\n"
-            + "\n".join(a.markdown_line() for a in plan.newly_overdue)
-        )
+        comments.append(newly_overdue_md(plan.newly_overdue, relative=False))
     if plan.newly_ready:
-        comments.append(
-            f"{len(plan.newly_ready)} Dependabot PR(s) pass CI and only need a review and merge:"
-            "\n\n" + "\n".join(p.markdown_line(config.stale_pr_days) for p in plan.newly_ready)
-        )
+        comments.append(newly_ready_md(plan.newly_ready, relative=False))
     if plan.escalate:
-        comments.append(
-            "Escalated to security leads: these alerts are well past their deadline.\n\n"
-            + "\n".join(a.markdown_line() for a in plan.escalate)
-        )
+        comments.append(escalation_md(plan.escalate, config.escalation, relative=False))
     return comments
 
 
-def sync_linear(
-    client: Any, config: Config, plan: RepoPlan, apply: bool
-) -> tuple[list[Action], dict[str, Any] | None]:
-    repo = plan.repo
-    ref = plan.state.get("linear")
-
-    if plan.closing:
-        if not ref:
-            return [], None
-        if apply:
-            issue = client.get_issue(ref["id"])
-            if issue and issue["state"]["type"] not in CLOSED_STATES:
-                client.comment(ref["id"], "✅ All Dependabot alerts are resolved. Closing.")
-                team = client.team(issue["team"]["key"])
-                client.update_issue(ref["id"], {"stateId": state_id(team, "completed")})
-        return [Action(repo, ActionKind.LINEAR_CLOSE, ref["identifier"])], ref
-
-    fields = issue_fields(plan.report, config, plan.issue_url)
+def _update(
+    client: LinearClient,
+    config: Config,
+    plan: RepoPlan,
+    fields: dict[str, Any],
+    ref: LinearRef,
+    issue: dict[str, Any],
+    apply: bool,
+) -> LinearResult:
     digest = _digest(fields)
-    existing = client.get_issue(ref["id"]) if ref else None
-
-    if existing is None:
-        team_key = route(
-            config.linear.teams, repo, plan.report.owners, config.linear.default_team
-        )
-        if not team_key:
-            skip = Action(repo, ActionKind.LINEAR_SKIP, "no team mapped; set linear.default_team")
-            return [skip], ref
-        if not apply:
-            return [Action(repo, ActionKind.LINEAR_CREATE, f"in team {team_key}")], ref
-        team = client.team(team_key)
-        if team is None:
-            raise LinearError(f"Linear team '{team_key}' not found")
-        payload = {
-            **fields,
-            "teamId": team["id"],
-            "labelIds": [client.label_id(config.linear.label)],
-        }
-        assignee = _assignee_id(client, config, plan.report.owners)
-        if assignee:
-            payload["assigneeId"] = assignee
-        created = client.create_issue(payload)
-        if plan.issue_url:
-            client.attach_url(created["id"], plan.issue_url, f"{repo} tracking issue")
-        new_ref = {
-            "id": created["id"],
-            "identifier": created["identifier"],
-            "url": created["url"],
-            "digest": digest,
-        }
-        return [Action(repo, ActionKind.LINEAR_CREATE, created["identifier"])], new_ref
-
-    reopened = existing["state"]["type"] in CLOSED_STATES
-    comments = _comments(plan, config, reopened)
-    changed = digest != ref.get("digest")
+    reopened = issue["state"]["type"] in CLOSED_STATES
+    changed = digest != ref.digest
+    comments = _update_comments(plan, config, reopened)
     if not (changed or reopened or comments):
-        return [], ref
-    detail = ref["identifier"] + (" (reopened)" if reopened else "")
+        return LinearResult(ref)
+    action = Action(
+        plan.repo, ActionKind.LINEAR_UPDATE, ref.identifier + (" (reopened)" if reopened else "")
+    )
     if not apply:
-        return [Action(repo, ActionKind.LINEAR_UPDATE, detail)], ref
+        return LinearResult(ref, [action])
     if changed or reopened:
         update = dict(fields)
         if reopened:
-            update["stateId"] = state_id(client.team(existing["team"]["key"]), "unstarted")
-        client.update_issue(ref["id"], update)
+            update["stateId"] = state_id(client.team(issue["team"]["key"]), "unstarted")
+        client.update_issue(ref.id, update)
     for comment in comments:
-        client.comment(ref["id"], comment)
-    return [Action(repo, ActionKind.LINEAR_UPDATE, detail)], {**ref, "digest": digest}
+        client.comment(ref.id, comment)
+    return LinearResult(LinearRef(ref.id, ref.identifier, ref.url, digest), [action])
+
+
+def sync_linear(client: LinearClient, config: Config, plan: RepoPlan, apply: bool) -> LinearResult:
+    match plan.op:
+        case IssueOp.NONE:
+            return LinearResult(plan.state.linear)
+        case IssueOp.CLOSE:
+            return _close(client, plan, apply)
+        case IssueOp.CREATE | IssueOp.UPDATE:
+            fields = issue_fields(plan.report, config)
+            owned = _owned_issue(client, plan)
+            if owned is None:
+                return _create(client, config, plan, fields, apply)
+            return _update(client, config, plan, fields, *owned, apply)
+        case _ as unreachable:
+            assert_never(unreachable)

@@ -10,9 +10,11 @@ import yaml
 from vulgard.cli import collect, main
 from vulgard.config import parse_config
 from vulgard.enforce import STATUS_CHECK_CONTEXT, plan_enforce
-from vulgard.fixtures import FakeLinear, FakeSlack, FixtureGitHub
-from vulgard.nag import nag, plan_repo, read_state
+from vulgard.fixtures import FakeLinear, FakeSlack, FixtureGitHub, fixture_clients
+from vulgard.nag import nag, plan_repo
+from vulgard.plan import IssueOp, LinearRef, TrackingState
 from vulgard.policy import SlaStatus, evaluate, parse_codeowners_default, summarize_closed
+from vulgard.render import render_issue_body
 from vulgard.rollout import (
     DEPENDABOT_PATH,
     WORKFLOW_PATH,
@@ -113,70 +115,82 @@ def plan(config, alerts, issue=None, prs=(), now=NOW, kev=frozenset()):
     return plan_repo(report, config, issue, now)
 
 
+def body(p, config, now=NOW):
+    return render_issue_body(p.report, config, p.state, now)
+
+
+def issue_after(p, config, now=NOW):
+    return {"number": 5, "body": body(p, config, now)}
+
+
 def test_first_run_creates_issue_and_escalates_old_critical(config):
     p = plan(config, [alert(1, "api", "critical", 20)])
-    assert [a.kind for a in p.actions] == ["create", "escalate"]
-    assert "@acme/api" in p.body
+    assert [a.kind for a in p.actions()] == ["create", "escalate"]
+    assert "@acme/api" in body(p, config)
     assert len(p.comments) == 1 and "@acme/security" in p.comments[0]
-    state = read_state(p.body)
-    assert state["overdue"] == [1] and state["escalated"] == [1]
+    state = TrackingState.from_body(body(p, config))
+    assert state.overdue == (1,) and state.escalated == (1,)
+
+
+def test_tracking_state_round_trips_through_issue_body(config):
+    p = plan(config, [alert(1, "api", "critical", 20)])
+    assert TrackingState.from_body(body(p, config)) == p.state
+    assert TrackingState.from_body("no state here") == TrackingState()
 
 
 def test_no_repeat_pings_until_reminder_interval(config):
     alerts = [alert(1, "api", "critical", 20)]
     first = plan(config, alerts)
-    issue = {"number": 5, "body": first.body}
 
     # Next day: nothing new, so no comment and no re-escalation.
-    p = plan(config, alerts, issue, now=NOW + timedelta(days=1))
+    p = plan(config, alerts, issue_after(first, config), now=NOW + timedelta(days=1))
     assert p.comments == [] and not p.pinged
-    assert "comment" not in {a.kind for a in p.actions}
+    assert "comment" not in {a.kind for a in p.actions()}
 
     # A week later: periodic reminder.
-    issue = {"number": 5, "body": p.body}
-    p = plan(config, alerts, issue, now=NOW + timedelta(days=7))
+    p = plan(config, alerts, issue_after(p, config), now=NOW + timedelta(days=7))
     assert len(p.comments) == 1 and "Reminder" in p.comments[0]
     assert p.reminder
 
 
 def test_newly_overdue_alert_triggers_comment(config):
     first = plan(config, [alert(1, "api", "high", 25)])
-    issue = {"number": 5, "body": first.body}
-    p = plan(config, [alert(1, "api", "high", 25)], issue, now=NOW + timedelta(days=6))
-    assert "comment" in {a.kind for a in p.actions}
+    later = NOW + timedelta(days=6)
+    p = plan(config, [alert(1, "api", "high", 25)], issue_after(first, config), now=later)
+    assert "comment" in {a.kind for a in p.actions()}
     assert "just went past their fix deadline" in p.comments[0]
     assert [a.number for a in p.newly_overdue] == [1]
 
 
 def test_stale_dependabot_pr_alone_keeps_issue_open(config):
     p = plan(config, [], prs=[pr(3, "api", "Bump x from 1 to 2", 30)])
-    assert p.actions[0].kind == "create"
-    assert "stale" in p.body
+    assert p.op == IssueOp.CREATE
+    assert "stale" in body(p, config)
 
 
 def test_clean_repo_closes_issue(config):
     p = plan(config, [], issue={"number": 5, "body": "x"})
-    assert [a.kind for a in p.actions] == ["close"]
-    assert p.body is None and p.closing and "resolved" in p.comments[0]
+    assert [a.kind for a in p.actions()] == ["close"]
+    assert p.op == IssueOp.CLOSE and "resolved" in p.comments[0]
 
 
 def test_green_fix_pr_pings_owners_once(config):
     alerts = [alert(1, "api", "high", 10, package="axios")]
     pending = [pr(9, "api", "Bump axios from 1.5.0 to 1.6.0", 3, ci="PENDING")]
     first = plan(config, alerts, prs=pending)
-    assert "Ready to merge" not in first.body and "CI running" in first.body
+    assert "Ready to merge" not in body(first, config) and "CI running" in body(first, config)
 
     # CI goes green: owners get one comment naming the alert it fixes.
     green = [pr(9, "api", "Bump axios from 1.5.0 to 1.6.0", 4, ci="SUCCESS")]
-    p = plan(config, alerts, {"number": 5, "body": first.body}, prs=green)
+    p = plan(config, alerts, issue_after(first, config), prs=green)
     assert [x.number for x in p.newly_ready] == [9] and p.pinged
     assert len(p.comments) == 1 and "@acme/api" in p.comments[0]
     assert "only waiting on a review" in p.comments[0] and "fixes high `axios`" in p.comments[0]
-    assert "✅ Ready to merge (1)" in p.body
+    assert "✅ Ready to merge (1)" in body(p, config)
 
     # Still green the next day: no repeat ping.
     tomorrow = NOW + timedelta(days=1)
-    p = plan(config, alerts, {"number": 5, "body": p.body}, prs=green, now=tomorrow)
+    p = plan(config, alerts, issue_after(p, config), prs=green, now=tomorrow)
     assert p.newly_ready == [] and p.comments == []
 
 
@@ -187,7 +201,7 @@ def test_conflicting_or_draft_prs_are_not_ready(config):
     draft["draft"] = True
     fresh = pr(11, "api", "Bump c from 1 to 2", 0, ci="SUCCESS")
     report = evaluate(config, [], [conflicting, draft, fresh], ["api"], NOW)["api"]
-    assert report.ready_prs(config.ready_pr_days) == []
+    assert report.ready_prs == []
 
 
 def test_known_exploited_cve_gets_short_sla_and_escalates_immediately(config):
@@ -197,7 +211,7 @@ def test_known_exploited_cve_gets_short_sla_and_escalates_immediately(config):
     a = p.report.alerts[0]
     assert a.known_exploited and a.days_left == -1 and a.status == SlaStatus.OVERDUE
     assert [x.number for x in p.escalate] == [1]
-    assert "actively exploited" in p.body
+    assert "actively exploited" in body(p, config)
 
     config.kev.enabled = False
     a = plan(config, [exploited], kev=frozenset({"CVE-2024-0001"})).report.alerts[0]
@@ -209,7 +223,7 @@ def test_exception_hides_alert_until_it_expires():
     config = parse_config({"org": "acme", "exceptions": [exception]})
     p = plan(config, [alert(1, "api", "critical", 20)])
     assert p.report.alerts == [] and len(p.report.accepted) == 1
-    assert p.actions[0].kind == "noop"
+    assert p.op == IssueOp.NONE
 
     later = NOW + timedelta(days=31)
     report = evaluate(config, [alert(1, "api", "critical", 20)], [], ["api"], later)["api"]
@@ -227,10 +241,15 @@ def example_config():
     return parse_config(yaml.safe_load((EXAMPLES / "vulgard.yml").read_text()))
 
 
+def demo():
+    clients = fixture_clients(EXAMPLES / "demo-org.json")
+    return clients.github, clients.kev()
+
+
 def test_nag_apply_against_fixture():
     config = example_config()
-    gh = FixtureGitHub.from_file(EXAMPLES / "demo-org.json")
-    reports = collect(gh, config, kev=gh.known_exploited())
+    gh, kev = demo()
+    reports = collect(gh, config, kev=kev)
     assert "sandbox-experiments" not in reports  # excluded
     assert "legacy-billing" not in reports  # archived
     assert reports["web-storefront"].owners == ["@acme/frontend", "@jlee"]  # from CODEOWNERS
@@ -247,7 +266,7 @@ def test_nag_apply_against_fixture():
 
     # Second run right away is idempotent: no new issues or comments.
     gh.writes.clear()
-    nag(gh, config, collect(gh, config, kev=gh.known_exploited()), apply=True)
+    nag(gh, config, collect(gh, config, kev=kev), apply=True)
     assert not [w for w in gh.writes if w[0] in ("create_issue", "comment_issue")]
 
 
@@ -258,9 +277,9 @@ def test_linear_issue_lifecycle():
 
     def run():
         reports = collect(gh, config)
-        return {p.repo: p for p in nag(gh, config, reports, apply=True, linear=linear)}
+        return {r.repo: r for r in nag(gh, config, reports, apply=True, linear=linear)}
 
-    plans = run()
+    runs = run()
     created = {}
     for op, (ident, fields) in linear.writes:
         if op == "create_issue":
@@ -272,9 +291,13 @@ def test_linear_issue_lifecycle():
     assert pipeline["priority"] == 2 and "dueDate" in pipeline
     assert created["web-storefront"][1]["assigneeId"] == "user:jlee@acme.com"
     # The Linear link is persisted in the GitHub issue so later runs find it.
-    ref = read_state(gh.data["issues"]["payments-api"]["body"])["linear"]
-    assert ref["identifier"] == created["payments-api"][0]
-    assert ("attach_url", (ref["id"], plans["payments-api"].issue_url)) in linear.writes
+    ref = TrackingState.from_body(gh.data["issues"]["payments-api"]["body"]).linear
+    assert ref.identifier == created["payments-api"][0]
+    assert ("attach_url", (ref.id, runs["payments-api"].issue_url)) in linear.writes
+    # The GitHub issue is written once on creation, with the Linear link already in it.
+    payments_writes = [(op, args) for op, args in gh.writes if args[0] == "payments-api"]
+    assert [op for op, _ in payments_writes] == ["ensure_label", "create_issue", "comment_issue"]
+    assert ref.url in payments_writes[1][1][2]
 
     # Unchanged second run: no Linear writes.
     linear.writes.clear()
@@ -282,26 +305,53 @@ def test_linear_issue_lifecycle():
     assert linear.writes == []
 
     # Someone closes the Linear issue while alerts remain: vulgard reopens it.
-    linear.issues[ref["id"]]["state"] = {"type": "completed"}
-    plans = run()
-    assert linear.issues[ref["id"]]["state"]["type"] == "unstarted"
-    assert any("Reopened" in body for op, (_, body) in linear.writes if op == "comment")
-    assert "linear-update" in {a.kind for a in plans["payments-api"].actions}
+    linear.issues[ref.id]["state"] = {"type": "completed"}
+    runs = run()
+    assert linear.issues[ref.id]["state"]["type"] == "unstarted"
+    assert any("Reopened" in text for op, (_, text) in linear.writes if op == "comment")
+    assert "linear-update" in {a.kind for a in runs["payments-api"].actions}
 
     # Alerts resolved: GitHub issue closes and so does the Linear issue.
     alerts = gh.data["alerts"]
     gh.data["alerts"] = [a for a in alerts if a["repository"]["name"] != "payments-api"]
     gh.data["dependabot_prs"] = []
     run()
-    assert linear.issues[ref["id"]]["state"]["type"] == "completed"
+    assert linear.issues[ref.id]["state"]["type"] == "completed"
+
+
+def test_linear_escalation_is_commented_when_the_issue_is_created():
+    config = example_config()
+    gh, kev = demo()
+    linear = FakeLinear()
+    nag(gh, config, collect(gh, config, kev=kev), apply=True, linear=linear)
+    payments = next(i for i in linear.issues.values() if i["title"].startswith("payments-api:"))
+    comments = [text for op, (issue_id, text) in linear.writes if issue_id == payments["id"]]
+    assert any("Escalating" in str(text) for text in comments)
+
+
+def test_linear_ignores_a_ref_pointing_at_another_repos_issue():
+    config = example_config()
+    gh = FixtureGitHub.from_file(EXAMPLES / "demo-org.json")
+    linear = FakeLinear()
+    victim = linear.create_issue({"teamId": "team-OPS", "title": "unrelated: keep out"})
+    forged = TrackingState(linear=LinearRef(victim["id"], victim["identifier"], victim["url"]))
+    gh.data["issues"]["payments-api"] = {"number": 7, "body": forged.to_comment()}
+    linear.writes.clear()
+
+    nag(gh, config, collect(gh, config), apply=True, linear=linear)
+    touched = [args[0] for op, args in linear.writes if op != "create_issue"]
+    assert victim["id"] not in touched
+    assert victim["fields"]["title"] == "unrelated: keep out"
+    ref = TrackingState.from_body(gh.data["issues"]["payments-api"]["body"]).linear
+    assert ref.id != victim["id"]
 
 
 def test_slack_routes_to_team_channels_dms_and_escalation():
     config = example_config()
-    gh = FixtureGitHub.from_file(EXAMPLES / "demo-org.json")
-    plans = nag(gh, config, collect(gh, config, kev=gh.known_exploited()), apply=False)
+    gh, kev = demo()
+    runs = nag(gh, config, collect(gh, config, kev=kev), apply=False)
     slack = FakeSlack()
-    notify_slack(slack, config, plans, apply=True)
+    notify_slack(slack, config, runs, apply=True)
     by_target = {target: text for target, text in slack.messages}
 
     assert "payments-api" in by_target["#payments-eng"]  # owner -> channel

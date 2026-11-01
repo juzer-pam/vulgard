@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from typing import Any
+from collections.abc import Callable
+from functools import partial
+from typing import Any, Protocol
 
 import httpx
 
 from .config import Config, route
-from .events import Action, ActionKind, RepoPlan
-from .policy import ClosedSummary, RepoReport
+from .plan import Action, ActionKind, IssueOp, RepoRun
+from .policy import ClosedSummary, RepoReport, org_totals
 
 API_URL = "https://slack.com/api"
 MAX_ROWS = 15
@@ -16,6 +18,12 @@ MAX_ROWS = 15
 
 class SlackError(RuntimeError):
     pass
+
+
+class SlackClient(Protocol):
+    def post(
+        self, channel: str, text: str, blocks: list[dict[str, Any]] | None = None
+    ) -> None: ...
 
 
 class Slack:
@@ -49,13 +57,13 @@ def post_webhook(url: str, text: str, blocks: list[dict[str, Any]] | None = None
     httpx.post(url, json=payload, timeout=15).raise_for_status()
 
 
-def mention(handle: str, config: Config) -> str:
-    slack_id = config.slack.users.get(handle)
-    if not slack_id:
-        return handle
-    if slack_id.startswith("S"):
-        return f"<!subteam^{slack_id}>"
-    return f"<@{slack_id}>"
+def _post(target: str, detail: str, send: Callable[[], None], apply: bool) -> Action:
+    if apply:
+        try:
+            send()
+        except (SlackError, httpx.HTTPError) as e:
+            return Action(None, ActionKind.SLACK_ERROR, f"{target}: {e}")
+    return Action(None, ActionKind.SLACK, f"{target}: {detail}")
 
 
 def _repo_link(org: str, repo: str, issue_url: str | None) -> str:
@@ -63,9 +71,13 @@ def _repo_link(org: str, repo: str, issue_url: str | None) -> str:
     return f"<{url}|{repo}>"
 
 
-def _repo_line(plan: RepoPlan, config: Config) -> str:
-    r = plan.report
-    parts = ["new tracking issue"] if plan.opened else []
+def _owner_mentions(owners: list[str], config: Config) -> str:
+    return " ".join(config.slack.mention(o) for o in owners)
+
+
+def _repo_line(run: RepoRun, config: Config) -> str:
+    plan, r = run.plan, run.plan.report
+    parts = ["new tracking issue"] if plan.op == IssueOp.CREATE else []
     if plan.newly_overdue:
         parts.append(f"*{len(plan.newly_overdue)} newly overdue*")
     if r.overdue:
@@ -74,49 +86,49 @@ def _repo_line(plan: RepoPlan, config: Config) -> str:
         parts.append(f"{len(r.due_soon)} due soon")
     if r.known_exploited:
         parts.append(f"🔥 {len(r.known_exploited)} actively exploited")
-    ready = r.ready_prs(config.ready_pr_days)
-    if ready:
-        links = ", ".join(f"<{p.html_url}|#{p.number}>" for p in ready[:5])
-        parts.append(f"*✅ {len(ready)} Dependabot PR(s) ready to merge* ({links})")
-    stale = r.stale_prs(config.stale_pr_days)
-    if stale:
-        parts.append(f"{len(stale)} stale Dependabot PR(s)")
-    owners = " ".join(mention(o, config) for o in r.owners)
-    line = f"• *{_repo_link(config.org, r.repo, plan.issue_url)}*: {', '.join(parts)}"
+    if r.ready_prs:
+        links = ", ".join(f"<{p.html_url}|#{p.number}>" for p in r.ready_prs[:5])
+        parts.append(f"*✅ {len(r.ready_prs)} Dependabot PR(s) ready to merge* ({links})")
+    if r.stale_prs:
+        parts.append(f"{len(r.stale_prs)} stale Dependabot PR(s)")
+    owners = _owner_mentions(r.owners, config)
+    line = f"• *{_repo_link(config.org, r.repo, run.issue_url)}*: {', '.join(parts)}"
     return line + (f" · {owners}" if owners else "")
 
 
-def _escalation_line(plan: RepoPlan, config: Config) -> str:
+def _escalation_line(run: RepoRun, config: Config) -> str:
+    escalate = run.plan.escalate
     worst = ", ".join(
         f"{a.severity} `{a.package}` {-a.days_left}d overdue"
         + (" 🔥" if a.known_exploited else "")
-        for a in plan.escalate[:3]
+        for a in escalate[:3]
     )
-    more = f" (+{len(plan.escalate) - 3} more)" if len(plan.escalate) > 3 else ""
-    owners = " ".join(mention(o, config) for o in plan.report.owners)
-    link = _repo_link(config.org, plan.repo, plan.issue_url)
+    more = f" (+{len(escalate) - 3} more)" if len(escalate) > 3 else ""
+    owners = _owner_mentions(run.plan.report.owners, config)
+    link = _repo_link(config.org, run.repo, run.issue_url)
     return f"• *{link}*: {worst}{more}" + (f" · owners {owners}" if owners else "")
 
 
-def notify_slack(client: Any, config: Config, plans: list[RepoPlan], apply: bool) -> list[Action]:
+def notify_slack(
+    client: SlackClient, config: Config, runs: list[RepoRun], apply: bool
+) -> list[Action]:
     channels: dict[str, list[str]] = defaultdict(list)
     dms: dict[str, list[str]] = defaultdict(list)
     escalations: list[str] = []
-    for plan in plans:
-        if not plan.pinged:
+    for run in runs:
+        if not run.plan.pinged:
             continue
-        line = _repo_line(plan, config)
-        channel = route(
-            config.slack.channels, plan.repo, plan.report.owners, config.slack.default_channel
-        )
+        owners = run.plan.report.owners
+        line = _repo_line(run, config)
+        channel = route(config.slack.channels, run.repo, owners, config.slack.default_channel)
         if channel:
             channels[channel].append(line)
-        if plan.escalate:
-            escalations.append(_escalation_line(plan, config))
+        if run.plan.escalate:
+            escalations.append(_escalation_line(run, config))
         if config.slack.dm_owners:
-            for owner in plan.report.owners:
-                user = config.slack.users.get(owner, "")
-                if user[:1] in ("U", "W") and line not in dms[user]:
+            for owner in owners:
+                user = config.slack.dm_target(owner)
+                if user and line not in dms[user]:
                     dms[user].append(line)
 
     messages: list[tuple[str, str, list[str]]] = [
@@ -124,61 +136,58 @@ def notify_slack(client: Any, config: Config, plans: list[RepoPlan], apply: bool
         for channel, lines in channels.items()
     ]
     if escalations and config.slack.escalation_channel:
-        leads = "".join(f"{mention(m, config)} " for m in config.escalation.mentions)
+        leads = "".join(f"{config.slack.mention(m)} " for m in config.escalation.mentions)
         header = f"{leads}🚨 Escalation: these alerts are well past their fix deadline."
         messages.append((config.slack.escalation_channel, header, escalations))
     messages += [
         (user, "Updates on vulnerable dependencies in repos you own:", lines)
         for user, lines in dms.items()
     ]
+    return [
+        _post(
+            target,
+            f"{len(lines)} repo(s)",
+            partial(client.post, target, header + "\n" + "\n".join(lines)),
+            apply,
+        )
+        for target, header, lines in messages
+    ]
 
-    actions = []
-    for target, header, lines in messages:
-        if apply:
-            try:
-                client.post(target, header + "\n" + "\n".join(lines))
-            except (SlackError, httpx.HTTPError) as e:
-                actions.append(Action("(slack)", ActionKind.SLACK_ERROR, f"{target}: {e}"))
-                continue
-        actions.append(Action("(slack)", ActionKind.SLACK, f"{target}: {len(lines)} repo(s)"))
-    return actions
+
+def _section(text: str) -> dict[str, Any]:
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text[:3000]}}
 
 
 def digest_message(
-    config: Config,
-    reports: dict[str, RepoReport],
-    closed: ClosedSummary | None,
+    config: Config, reports: dict[str, RepoReport], closed: ClosedSummary | None
 ) -> tuple[str, list[dict[str, Any]]]:
-    org, stale_days, ready_days = config.org, config.stale_pr_days, config.ready_pr_days
+    org = config.org
     ranked = sorted(
         (
             r
             for r in reports.values()
-            if r.overdue or r.stale_prs(stale_days) or r.known_exploited or r.ready_prs(ready_days)
+            if r.overdue or r.stale_prs or r.known_exploited or r.ready_prs
         ),
         key=lambda r: -r.risk_score,
     )
-    overdue = sum(len(r.overdue) for r in reports.values())
-    critical = sum(r.severity_counts()["critical"] for r in reports.values())
-    exploited = sum(len(r.known_exploited) for r in reports.values())
-    ready = sum(len(r.ready_prs(ready_days)) for r in reports.values())
+    totals = org_totals(reports)
     header = (
-        f"*Vulnerability digest for {org}*: {overdue} alert(s) past deadline, "
-        f"{critical} critical open, {exploited} actively exploited, "
+        f"*Vulnerability digest for {org}*: {totals.overdue} alert(s) past deadline, "
+        f"{totals.severities['critical']} critical open, {totals.exploited} actively exploited, "
         f"across {len(ranked)} repo(s)."
     )
     blocks: list[dict[str, Any]] = [_section(header)]
-    if ready:
+    if totals.ready_prs:
         blocks.append(
-            _section(f"*✅ {ready} Dependabot PR(s) pass CI and only need a review and merge.*")
+            _section(f"*✅ {totals.ready_prs} Dependabot PR(s) pass CI and only need a merge.*")
         )
 
     if closed is not None:
-        fixed_total = sum(closed.fixed.values())
         top = ", ".join(f"{repo} {n}" for repo, n in closed.fixed.most_common(5))
-        wins = f"*Last 7 days:* ✅ {fixed_total} fixed" + (f" ({top})" if top else "")
-        wins += f", {len(closed.dismissed)} dismissed."
-        blocks.append(_section(wins))
+        wins = f"*Last 7 days:* ✅ {sum(closed.fixed.values())} fixed" + (
+            f" ({top})" if top else ""
+        )
+        blocks.append(_section(f"{wins}, {len(closed.dismissed)} dismissed."))
         if closed.unexplained:
             rows = [
                 f"• <{d.html_url}|{d.repo}#{d.number}> {d.severity} `{d.package}` dismissed as "
@@ -190,8 +199,8 @@ def digest_message(
 
     rows = [
         f"• <https://github.com/{org}/{r.repo}/security/dependabot|{r.repo}>: "
-        f"{len(r.overdue)} overdue, {len(r.stale_prs(stale_days))} stale PR(s)"
-        + (f", ✅ {len(r.ready_prs(ready_days))} ready" if r.ready_prs(ready_days) else "")
+        f"{len(r.overdue)} overdue, {len(r.stale_prs)} stale PR(s)"
+        + (f", ✅ {len(r.ready_prs)} ready" if r.ready_prs else "")
         + (f", 🔥 {len(r.known_exploited)} exploited" if r.known_exploited else "")
         + (f" (owners: {', '.join(r.owners)})" if r.owners else "")
         for r in ranked[:MAX_ROWS]
@@ -203,26 +212,22 @@ def digest_message(
     return text, blocks
 
 
-def _section(text: str) -> dict[str, Any]:
-    return {"type": "section", "text": {"type": "mrkdwn", "text": text[:3000]}}
-
-
 def send_digest(
-    client: Any,
+    client: SlackClient | None,
     webhook_url: str | None,
     config: Config,
     text: str,
     blocks: list[dict[str, Any]],
     apply: bool,
-) -> Action | None:
-    if client is not None and config.slack.digest_channel:
-        target = config.slack.digest_channel
-        if apply:
-            client.post(target, text, blocks)
-    elif webhook_url:
-        target = "webhook"
-        if apply:
-            post_webhook(webhook_url, text, blocks)
-    else:
-        return None
-    return Action("(slack)", ActionKind.SLACK, f"digest to {target}")
+) -> Action:
+    channel = config.slack.digest_channel
+    if client is not None and channel:
+        return _post(channel, "digest", partial(client.post, channel, text, blocks), apply)
+    if webhook_url:
+        return _post("webhook", "digest", partial(post_webhook, webhook_url, text, blocks), apply)
+    return Action(
+        None,
+        ActionKind.SLACK_SKIP,
+        "no digest target: set slack.digest_channel (with a bot token) "
+        f"or ${config.slack.webhook_env}",
+    )

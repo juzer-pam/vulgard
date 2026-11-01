@@ -164,9 +164,11 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-Code lives in `src/vulgard/`: `policy.py` (SLA evaluation, exceptions, weekly fixed and
-dismissed summary), `nag.py` (tracking issues and comments), `linear.py` (Linear client and
-sync), `slack.py` (routed messages, DMs, digest), `kev.py` (CISA KEV feed), `rollout.py`
+Code lives in `src/vulgard/`: `policy.py` (SLA evaluation, exceptions, escalation rules,
+weekly fixed and dismissed summary), `plan.py` (per-repo decisions and the state stored in the
+tracking issue), `render.py` (issue, comment, and summary markdown), `nag.py` (tracking issues
+and comments), `linear.py` (Linear client and sync), `slack.py` (routed messages, DMs, digest),
+`kev.py` (CISA KEV feed), `clients.py` (live API clients), `rollout.py`
 (Dependabot config and workflow generation), `enforce.py` (org rulesets), `github.py` (REST
 client), and `fixtures.py` (offline fakes for GitHub, Linear, and Slack used by the demo and
 tests).

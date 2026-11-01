@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .clients import Clients
 from .policy import now_utc
 
 RELATIVE_RE = re.compile(r"^@-(\d+)d$")
@@ -49,9 +50,6 @@ class FixtureGitHub:
 
     def list_closed_alerts(self, org: str, since: datetime) -> list[dict[str, Any]]:
         return self.data.get("closed_alerts", [])
-
-    def known_exploited(self) -> frozenset[str]:
-        return frozenset(self.data.get("kev", []))
 
     def list_dependabot_prs(self, org: str) -> list[dict[str, Any]]:
         return self.data.get("dependabot_prs", [])
@@ -170,6 +168,7 @@ class FakeLinear:
             "id": f"lin-{number}",
             "identifier": f"{key}-{number}",
             "url": f"https://linear.app/acme/issue/{key}-{number}",
+            "title": fields["title"],
             "state": {"type": "unstarted"},
             "team": {"key": key},
             "fields": dict(fields),
@@ -198,3 +197,11 @@ class FakeSlack:
 
     def post(self, channel: str, text: str, blocks: list[dict[str, Any]] | None = None) -> None:
         self.messages.append((channel, text))
+
+
+def fixture_clients(path: str | Path) -> Clients:
+    gh = FixtureGitHub.from_file(path)
+    kev = frozenset(gh.data.get("kev", []))
+    return Clients(
+        github=gh, linear=FakeLinear(), slack=FakeSlack(), slack_webhook=None, kev=lambda: kev
+    )

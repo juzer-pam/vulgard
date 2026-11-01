@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -77,14 +78,23 @@ class GitHub:
         resp = self._request(method, url, **kwargs)
         return resp.json() if resp.content else None
 
-    def _paginate(self, url: str, params: dict[str, Any] | None = None) -> list[Any]:
+    def _paginate(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        until: Callable[[Any], bool] | None = None,
+    ) -> list[Any]:
+        """Fetch every page; with `until`, stop at the first item it matches (exclusive)."""
         items: list[Any] = []
         next_url: str | None = url
         next_params = {"per_page": 100, **(params or {})}
         while next_url:
             resp = self._request("GET", next_url, params=next_params)
             data = resp.json()
-            items.extend(data["items"] if isinstance(data, dict) and "items" in data else data)
+            for item in data["items"] if isinstance(data, dict) and "items" in data else data:
+                if until and until(item):
+                    return items
+                items.append(item)
             next_url = resp.links.get("next", {}).get("url")
             next_params = None
         return items
@@ -101,24 +111,11 @@ class GitHub:
         return self._paginate(f"/orgs/{org}/dependabot/alerts", {"state": "open"})
 
     def list_closed_alerts(self, org: str, since: datetime) -> list[dict[str, Any]]:
-        """Alerts fixed or dismissed since `since`, newest first (stops paging once older)."""
-        items: list[dict[str, Any]] = []
-        next_url: str | None = f"/orgs/{org}/dependabot/alerts"
-        params: dict[str, Any] | None = {
-            "state": "fixed,dismissed",
-            "sort": "updated",
-            "direction": "desc",
-            "per_page": 100,
-        }
-        while next_url:
-            resp = self._request("GET", next_url, params=params)
-            for alert in resp.json():
-                if datetime.fromisoformat(alert["updated_at"].replace("Z", "+00:00")) < since:
-                    return items
-                items.append(alert)
-            next_url = resp.links.get("next", {}).get("url")
-            params = None
-        return items
+        return self._paginate(
+            f"/orgs/{org}/dependabot/alerts",
+            {"state": "fixed,dismissed", "sort": "updated", "direction": "desc"},
+            until=lambda a: datetime.fromisoformat(a["updated_at"].replace("Z", "+00:00")) < since,
+        )
 
     def list_dependabot_prs(self, org: str) -> list[dict[str, Any]]:
         search = f"org:{org} is:pr is:open author:app/dependabot archived:false"

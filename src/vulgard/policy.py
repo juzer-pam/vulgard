@@ -8,9 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from .config import SEVERITIES, Config, RiskException
-
-SEVERITY_ICON = {"critical": "🟥", "high": "🟧", "medium": "🟨", "low": "⬜"}
+from .config import SEVERITIES, Config, EscalationConfig, RiskException
 
 
 class SlaStatus(StrEnum):
@@ -75,31 +73,6 @@ class Alert:
     def ident(self) -> str:
         return self.cve_id or self.ghsa_id
 
-    def markdown_line(self) -> str:
-        due = f"{-self.days_left}d overdue" if self.days_left < 0 else f"due in {self.days_left}d"
-        fix = (
-            f"upgrade to `{self.patched_version}`"
-            if self.patched_version
-            else "no patched version yet"
-        )
-        pr = ""
-        if self.fix_pr:
-            pr = f" · fix ready in [#{self.fix_pr.number}]({self.fix_pr.html_url})"
-        kev = " · 🔥 **actively exploited (CISA KEV)**" if self.known_exploited else ""
-        return (
-            f"- {SEVERITY_ICON[self.severity]} **{self.severity}** [`{self.package}`]"
-            f"({self.html_url}) ({self.ecosystem}, `{self.manifest_path}`) – {self.summary} "
-            f"[{self.ident}]{kev} · **{due}** · {fix}{pr}"
-        )
-
-    def accepted_line(self) -> str:
-        assert self.exception is not None
-        return (
-            f"- {SEVERITY_ICON[self.severity]} {self.severity} [`{self.package}`]({self.html_url}) "
-            f"[{self.ident}] – accepted until **{self.exception.expires.isoformat()}**: "
-            f"{self.exception.reason}"
-        )
-
 
 @dataclass
 class AlertRef:
@@ -119,6 +92,8 @@ class DependabotPR:
     ci_state: str | None = None  # SUCCESS | FAILURE | ERROR | PENDING | EXPECTED | None
     mergeable: str | None = None  # MERGEABLE | CONFLICTING | UNKNOWN
     draft: bool = False
+    ready: bool = False
+    stale: bool = False
     fixes: list[AlertRef] = field(default_factory=list)
 
     @classmethod
@@ -142,27 +117,6 @@ class DependabotPR:
     @property
     def ci_passing(self) -> bool:
         return self.ci_state == "SUCCESS" and not self.draft and self.mergeable != "CONFLICTING"
-
-    def status_label(self) -> str:
-        if self.mergeable == "CONFLICTING":
-            return "⚠️ merge conflicts"
-        if self.ci_passing:
-            return "✅ CI passing"
-        if self.ci_state in ("FAILURE", "ERROR"):
-            return "❌ CI failing"
-        if self.ci_state in ("PENDING", "EXPECTED"):
-            return "⏳ CI running"
-        return "no CI checks"
-
-    def markdown_line(self, stale_days: int) -> str:
-        fixes = ""
-        if self.fixes:
-            fixes = " · fixes " + ", ".join(f"{a.severity} `{a.package}`" for a in self.fixes)
-        stale = " · ⚠️ stale" if self.age_days >= stale_days else ""
-        return (
-            f"- [#{self.number}]({self.html_url}) {self.title}, open {self.age_days}d · "
-            f"{self.status_label()}{fixes}{stale}"
-        )
 
 
 @dataclass
@@ -188,19 +142,27 @@ class RepoReport:
     def known_exploited(self) -> list[Alert]:
         return [a for a in self.alerts if a.known_exploited]
 
-    def stale_prs(self, stale_days: int) -> list[DependabotPR]:
-        return [p for p in self.dependabot_prs if p.age_days >= stale_days]
+    @property
+    def stale_prs(self) -> list[DependabotPR]:
+        return [p for p in self.dependabot_prs if p.stale]
 
-    def ready_prs(self, ready_days: int) -> list[DependabotPR]:
-        """Green, mergeable PRs open long enough that they're waiting on a person, not on CI or
-        auto-merge."""
-        return [p for p in self.dependabot_prs if p.ci_passing and p.age_days >= ready_days]
+    @property
+    def ready_prs(self) -> list[DependabotPR]:
+        return [p for p in self.dependabot_prs if p.ready]
 
     def severity_counts(self) -> dict[str, int]:
         counts = dict.fromkeys(SEVERITIES, 0)
         for a in self.alerts:
             counts[a.severity] += 1
         return counts
+
+    def escalation_due(self, esc: EscalationConfig) -> list[Alert]:
+        return [
+            a
+            for a in self.overdue
+            if a.known_exploited
+            or (a.severity in esc.severities and -a.days_left >= esc.after_days_overdue)
+        ]
 
     @property
     def risk_score(self) -> int:
@@ -215,8 +177,8 @@ class RepoReport:
         return score
 
     @property
-    def is_clean(self) -> bool:
-        return not self.alerts
+    def needs_tracking(self) -> bool:
+        return bool(self.alerts or self.stale_prs)
 
 
 def find_exception(
@@ -252,6 +214,8 @@ def evaluate(
         if pr.repo not in reports:
             continue
         pr.age_days = (now - pr.created_at).days
+        pr.stale = pr.age_days >= config.stale_pr_days
+        pr.ready = pr.ci_passing and pr.age_days >= config.ready_pr_days
         reports[pr.repo].dependabot_prs.append(pr)
 
     for raw in raw_alerts:
@@ -284,8 +248,33 @@ def evaluate(
     severity_rank = {s: i for i, s in enumerate(SEVERITIES)}
     for report in reports.values():
         report.alerts.sort(key=lambda a: (a.days_left, severity_rank[a.severity]))
-        report.dependabot_prs.sort(key=lambda p: (not p.ci_passing, not p.fixes, -p.age_days))
+        report.dependabot_prs.sort(key=lambda p: (not p.ready, not p.fixes, -p.age_days))
     return reports
+
+
+@dataclass
+class OrgTotals:
+    severities: dict[str, int]
+    overdue: int
+    exploited: int
+    ready_prs: int
+
+    @property
+    def alerts(self) -> int:
+        return sum(self.severities.values())
+
+
+def org_totals(reports: dict[str, RepoReport]) -> OrgTotals:
+    severities = dict.fromkeys(SEVERITIES, 0)
+    for r in reports.values():
+        for s, n in r.severity_counts().items():
+            severities[s] += n
+    return OrgTotals(
+        severities=severities,
+        overdue=sum(len(r.overdue) for r in reports.values()),
+        exploited=sum(len(r.known_exploited) for r in reports.values()),
+        ready_prs=sum(len(r.ready_prs) for r in reports.values()),
+    )
 
 
 @dataclass

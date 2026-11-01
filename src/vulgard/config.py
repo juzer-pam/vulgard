@@ -51,6 +51,16 @@ class SlackConfig:
     users: dict[str, str] = field(default_factory=dict)
     dm_owners: bool = True
 
+    def mention(self, handle: str) -> str:
+        slack_id = self.users.get(handle)
+        if not slack_id:
+            return handle
+        return f"<!subteam^{slack_id}>" if slack_id.startswith("S") else f"<@{slack_id}>"
+
+    def dm_target(self, handle: str) -> str | None:
+        slack_id = self.users.get(handle, "")
+        return slack_id if slack_id[:1] in ("U", "W") else None
+
 
 @dataclass
 class LinearConfig:
@@ -65,9 +75,6 @@ class LinearConfig:
 class KevConfig:
     enabled: bool = True
     sla_days: int = 3
-    feed_url: str = (
-        "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-    )
 
 
 @dataclass
