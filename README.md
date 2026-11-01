@@ -59,7 +59,7 @@ the demo never goes stale.
 
 1. **Fork this repo into your org**, keeping the name `vulgard`. The fork stays public,
    which is what lets your private and internal repos call its reusable workflows.
-   Don't commit org settings to the fork (step 4 keeps them in a private Actions variable),
+   Don't commit org settings to the fork (step 4 keeps them in an Actions secret),
    so **Sync fork** always applies upstream updates cleanly.
 
    GitHub turns off workflows on new forks. Open the fork's *Actions* tab and click
@@ -83,11 +83,13 @@ the demo never goes stale.
    - **Linear:** create an API key for a bot or service account (*Settings → Security &
      access → Personal API keys*) and save it as the secret `LINEAR_API_KEY`.
 
-4. **Write your org's config** and save it as the Actions variable `VULGARD_CONFIG` on the
-   fork. Actions variables aren't visible to the public, even on a public repo. Start from
-   [`vulgard.yml`](vulgard.yml), save your copy as `org.yml`, then run
-   `gh variable set VULGARD_CONFIG -R <org>/vulgard < org.yml`. The nag job writes this
-   variable to `vulgard.yml` before it runs. Settings to fill in: SLA days, owners,
+4. **Write your org's config** and save it as the Actions **secret** `VULGARD_CONFIG` on the
+   fork. Start from [`vulgard.yml`](vulgard.yml), save your copy as `org.yml`, then run
+   `gh secret set VULGARD_CONFIG -R <org>/vulgard < org.yml`. The nag job writes it to
+   `vulgard.yml` before it runs. Don't use an Actions *variable*: Actions prints step
+   environment values in run logs, which anyone can read on a public fork, and only secrets
+   are masked. Secrets can't be read back, so keep `org.yml` somewhere private (a private
+   repo or a password manager) as the source of truth. Settings to fill in: SLA days, owners,
    escalation contacts, included and excluded repos, `rollout.engine` (see the caveats
    below), `rollout.auto_merge`, and the `slack` and `linear` routing:
    - `rollout.auto_merge` lists the repos (names or globs like `web-*`) whose minor and
@@ -114,14 +116,13 @@ the demo never goes stale.
    `export GITHUB_TOKEN=$(gh auth token)` for an org admin):
 
    ```bash
-   gh variable get VULGARD_CONFIG -R acme/vulgard > org.yml
    uv run vulgard --config org.yml --org acme rollout          # review the plan
    uv run vulgard --config org.yml --org acme rollout --apply  # open PRs; enables alerts,
                                                                  # security updates, and
                                                                  # auto-merge if opted in
    ```
 
-   To pilot first, set `repos.include` to a few repos in `org.yml`, update the variable,
+   To pilot first, set `repos.include` to a few repos in `org.yml`, update the secret,
    and widen it later.
 
    Re-running is safe. Repos that are up to date are skipped. A `vulgard.yml` that vulgard

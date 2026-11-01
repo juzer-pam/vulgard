@@ -35,13 +35,14 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      # Org settings live in the VULGARD_CONFIG Actions variable, not in the repo, so a
-      # public fork doesn't expose repo names or Slack IDs and "Sync fork" never conflicts.
+      # Org settings live in the VULGARD_CONFIG secret, not in the repo, so "Sync fork" never
+      # conflicts. It must be a secret: Actions prints step env values in public run logs and
+      # only masks secrets.
       - name: Load org config
-        if: vars.VULGARD_CONFIG != ''
         env:
-          VULGARD_CONFIG: ${{ vars.VULGARD_CONFIG }}
-        run: printf '%s\n' "$VULGARD_CONFIG" > vulgard.yml
+          VULGARD_CONFIG: ${{ secrets.VULGARD_CONFIG }}
+        run: |
+          if [ -n "$VULGARD_CONFIG" ]; then printf '%s\n' "$VULGARD_CONFIG" > vulgard.yml; fi
 
       - name: Run vulgard
         env:
