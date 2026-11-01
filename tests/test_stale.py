@@ -176,7 +176,7 @@ def test_keep_moves_a_finding_out_and_active_silences_inactivity():
         180,
     )
     report = evaluate([d], [active(days=200)], {"api": keep})["api"]
-    assert [f.name for f in report.kept[0:1]] == ["api-dev"]
+    assert [f.name for f, _ in report.kept] == ["api-dev"]
     assert [f.name for f in report.findings] == ["repo"]
     marked = fold(
         (comment("/vulgard active until 2027-01-01: stable library"),), [], lambda _: True, NOW, 180
