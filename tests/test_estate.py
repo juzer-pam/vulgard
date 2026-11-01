@@ -159,7 +159,7 @@ def test_deployments_config_validation():
         parse_config({"org": "acme", "deployments": {"enabled": True}})
     with pytest.raises(ValueError, match="both production and shared"):
         DeploymentsConfig(production_stages=["prod"], shared_stages=["prod"])
-    with pytest.raises(ValueError, match="start with @"):
+    with pytest.raises(ValueError, match="starting with @"):
         DeploymentsConfig(people={"jlee": "jlee"})
     with pytest.raises(ValueError, match="Unknown keys in 'auto'"):
         DeploymentsConfig(auto={"repoz": []})
