@@ -7,7 +7,7 @@ from typing import Any, Protocol, assert_never
 
 import httpx
 
-from .config import SEVERITIES, Config, route
+from .config import SEVERITIES, Config, LinearTarget
 from .plan import Action, ActionKind, IssueOp, LinearRef, RepoPlan
 from .policy import RepoReport, SlaStatus
 from .render import (
@@ -33,7 +33,8 @@ class LinearError(RuntimeError):
 class LinearClient(Protocol):
     def team(self, key: str) -> dict[str, Any]: ...
     def user_id(self, email: str) -> str | None: ...
-    def label_id(self, name: str) -> str: ...
+    def label_id(self, name: str, team_id: str) -> str: ...
+    def project_id(self, name: str) -> str: ...
     def get_issue(self, issue_id: str) -> dict[str, Any] | None: ...
     def create_issue(self, fields: dict[str, Any]) -> dict[str, Any]: ...
     def update_issue(self, issue_id: str, fields: dict[str, Any]) -> None: ...
@@ -49,7 +50,8 @@ class Linear:
             timeout=30.0,
         )
         self._teams: dict[str, dict[str, Any]] = {}
-        self._labels: dict[str, str] = {}
+        self._labels: dict[tuple[str, str], str] = {}
+        self._projects: dict[str, str] = {}
         self._users: dict[str, str | None] = {}
 
     def _gql(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -67,7 +69,7 @@ class Linear:
         if key not in self._teams:
             data = self._gql(
                 "query($key: String!) { teams(filter: { key: { eq: $key } }) "
-                "{ nodes { id key states { nodes { id type position } } } } }",
+                "{ nodes { id key states { nodes { id name type position } } } } }",
                 {"key": key},
             )
             nodes = data["teams"]["nodes"]
@@ -89,24 +91,41 @@ class Linear:
             self._users[email] = nodes[0]["id"] if nodes else None
         return self._users[email]
 
-    def label_id(self, name: str) -> str:
-        if name not in self._labels:
+    def label_id(self, name: str, team_id: str) -> str:
+        """The team's label with this name, else the workspace label, created if missing."""
+        key = (name.lower(), team_id)
+        if key not in self._labels:
             data = self._gql(
-                "query($name: String!) { issueLabels(filter: "
-                "{ name: { eq: $name }, team: { null: true } }) { nodes { id } } }",
-                {"name": name},
+                "query($name: String!, $team: ID!) { issueLabels(filter: "
+                "{ name: { eqIgnoreCase: $name }, "
+                "or: [{ team: { null: true } }, { team: { id: { eq: $team } } }] }) "
+                "{ nodes { id team { id } } } }",
+                {"name": name, "team": team_id},
             )
-            nodes = data["issueLabels"]["nodes"]
+            nodes = sorted(data["issueLabels"]["nodes"], key=lambda n: n["team"] is None)
             if nodes:
-                self._labels[name] = nodes[0]["id"]
+                self._labels[key] = nodes[0]["id"]
             else:
                 created = self._gql(
                     "mutation($name: String!) { issueLabelCreate(input: "
                     '{ name: $name, color: "#b60205" }) { issueLabel { id } } }',
                     {"name": name},
                 )
-                self._labels[name] = created["issueLabelCreate"]["issueLabel"]["id"]
-        return self._labels[name]
+                self._labels[key] = created["issueLabelCreate"]["issueLabel"]["id"]
+        return self._labels[key]
+
+    def project_id(self, name: str) -> str:
+        if name not in self._projects:
+            data = self._gql(
+                "query($name: String!) { projects(filter: { name: { eqIgnoreCase: $name } }) "
+                "{ nodes { id } } }",
+                {"name": name},
+            )
+            nodes = data["projects"]["nodes"]
+            if not nodes:
+                raise LinearError(f"Linear project '{name}' not found")
+            self._projects[name] = nodes[0]["id"]
+        return self._projects[name]
 
     def get_issue(self, issue_id: str) -> dict[str, Any] | None:
         try:
@@ -156,6 +175,18 @@ def state_id(team: dict[str, Any], state_type: str) -> str:
     if not states:
         raise LinearError(f"Linear team {team['key']} has no '{state_type}' workflow state")
     return states[0]["id"]
+
+
+def state_named(team: dict[str, Any], name: str) -> str:
+    for s in team["states"]:
+        if s["name"].lower() == name.lower():
+            return s["id"]
+    names = ", ".join(s["name"] for s in team["states"])
+    raise LinearError(f"Linear team {team['key']} has no '{name}' state (has: {names})")
+
+
+def _open_state(team: dict[str, Any], target: LinearTarget) -> str:
+    return state_named(team, target.state) if target.state else state_id(team, "unstarted")
 
 
 def issue_title(repo: str, config: Config) -> str:
@@ -251,17 +282,23 @@ def _create(
     client: LinearClient, config: Config, plan: RepoPlan, fields: dict[str, Any], apply: bool
 ) -> LinearResult:
     repo = plan.repo
-    team_key = route(config.linear.teams, repo, plan.report.owners, config.linear.default_team)
-    if not team_key:
+    target = config.linear.target(repo, plan.report.owners)
+    if target is None:
         skip = Action(repo, ActionKind.LINEAR_SKIP, "no team mapped; set linear.default_team")
         return LinearResult(None, [skip])
     if not apply:
-        return LinearResult(None, [Action(repo, ActionKind.LINEAR_CREATE, f"in team {team_key}")])
+        detail = f"in team {target.team}" + (f", project {target.project}" if target.project else "")
+        return LinearResult(None, [Action(repo, ActionKind.LINEAR_CREATE, detail)])
+    team = client.team(target.team)
     payload = {
         **fields,
-        "teamId": client.team(team_key)["id"],
-        "labelIds": [client.label_id(config.linear.label)],
+        "teamId": team["id"],
+        "labelIds": [client.label_id(name, team["id"]) for name in target.labels],
     }
+    if target.project:
+        payload["projectId"] = client.project_id(target.project)
+    if target.state:
+        payload["stateId"] = state_named(team, target.state)
     assignee = _assignee_id(client, config, plan.report.owners)
     if assignee:
         payload["assigneeId"] = assignee
@@ -312,7 +349,11 @@ def _update(
     if changed or reopened:
         update = dict(fields)
         if reopened:
-            update["stateId"] = state_id(client.team(issue["team"]["key"]), "unstarted")
+            team_key = issue["team"]["key"]
+            target = config.linear.target(plan.repo, plan.report.owners)
+            if target is None or target.team != team_key:
+                target = LinearTarget(team_key, (), None, config.linear.state)
+            update["stateId"] = _open_state(client.team(team_key), target)
         client.update_issue(ref.id, update)
     for comment in comments:
         client.comment(ref.id, comment)

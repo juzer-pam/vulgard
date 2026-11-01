@@ -25,7 +25,11 @@ slack:
 linear:
   default_team: SEC
   teams:
-    "@acme/payments": PAY
+    "@acme/payments":
+      team: PAY
+      labels: [vulgard, security]
+      project: Security debt
+      state: Triage
   users:
     "@jlee": jlee@acme.com
 exceptions:

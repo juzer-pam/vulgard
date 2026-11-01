@@ -48,9 +48,17 @@ slack:
 linear:
   api_key_env: LINEAR_API_KEY
   default_team: null              # Linear team key, e.g. SEC; required to create issues
-  teams: {}                       # repo name or owner handle -> Linear team key
+  labels: [vulgard]               # team label if one has the name, else a workspace label
+  project: null                   # project name new issues are added to
+  state: null                     # state for new/reopened issues, e.g. Triage; null = default
+  teams: {}                       # repo name/glob or owner handle -> team key or settings
+#   "@your-org/frontend": WEB
+#   "@your-org/payments":         # any of labels/project/state override the defaults above
+#     team: PAY
+#     labels: [vulgard, security]
+#     project: Security debt
+#     state: Triage
   users: {}                       # GitHub handle -> Linear user email (issue assignee)
-  label: vulgard
 
 kev:
   enabled: true                   # CISA Known Exploited Vulnerabilities catalog

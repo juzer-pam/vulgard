@@ -61,13 +61,63 @@ class SlackConfig:
         return slack_id if slack_id[:1] in ("U", "W") else None
 
 
+@dataclass(frozen=True)
+class LinearRoute:
+    """Where a repo's Linear issue goes. Unset fields fall back to the `linear` defaults."""
+
+    team: str
+    labels: list[str] | None = None
+    project: str | None = None
+    state: str | None = None
+
+
+@dataclass(frozen=True)
+class LinearTarget:
+    team: str
+    labels: tuple[str, ...]
+    project: str | None
+    state: str | None
+
+
 @dataclass
 class LinearConfig:
     api_key_env: str = "LINEAR_API_KEY"
     default_team: str | None = None
-    teams: dict[str, str] = field(default_factory=dict)
+    # repo name/glob or owner handle -> team key, or a mapping with team/labels/project/state
+    teams: dict[str, Any] = field(default_factory=dict)
     users: dict[str, str] = field(default_factory=dict)
-    label: str = "vulgard"
+    labels: list[str] = field(default_factory=lambda: ["vulgard"])
+    project: str | None = None  # project name for new issues
+    state: str | None = None  # workflow state name for new and reopened issues, e.g. "Triage"
+
+    def __post_init__(self) -> None:
+        known = set(LinearRoute.__dataclass_fields__)
+        for key, value in self.teams.items():
+            if isinstance(value, LinearRoute):
+                continue
+            if isinstance(value, str):
+                self.teams[key] = LinearRoute(team=value)
+                continue
+            unknown = set(value) - known if isinstance(value, dict) else set()
+            if not isinstance(value, dict) or unknown or not value.get("team"):
+                raise ValueError(
+                    f"linear.teams[{key!r}] must be a team key or a mapping with 'team' and "
+                    "optional 'labels', 'project', 'state'"
+                    + (f" (unknown: {', '.join(sorted(unknown))})" if unknown else "")
+                )
+            self.teams[key] = LinearRoute(**value)
+
+    def target(self, repo: str, owners: list[str]) -> LinearTarget | None:
+        default = LinearRoute(self.default_team) if self.default_team else None
+        found = route(self.teams, repo, owners, default)
+        if found is None:
+            return None
+        return LinearTarget(
+            team=found.team,
+            labels=tuple(self.labels if found.labels is None else found.labels),
+            project=found.project or self.project,
+            state=found.state or self.state,
+        )
 
 
 @dataclass
@@ -114,7 +164,7 @@ class Config:
         return any(fnmatch.fnmatch(repo, pat) for pat in self.rollout.auto_merge)
 
 
-def route(mapping: dict[str, str], repo: str, owners: list[str], default: str | None) -> str | None:
+def route[T](mapping: dict[str, T], repo: str, owners: list[str], default: T | None) -> T | None:
     """Exact repo name, then repo glob (e.g. `payments-*`), then the first mapped owner."""
     if repo in mapping:
         return mapping[repo]
@@ -172,6 +222,9 @@ def parse_config(raw: dict[str, Any], org_override: str | None = None) -> Config
             "rollout.auto_merge is a list of repos that opt in to auto-merge, "
             'for example ["payments-api", "web-*"], or ["*"] for every repo'
         )
+
+    if "label" in (raw.get("linear") or {}):
+        raise ValueError('linear.label is now linear.labels, a list, e.g. ["vulgard"]')
 
     return Config(
         org=org,

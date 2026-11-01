@@ -132,11 +132,17 @@ class FixtureGitHub:
         self._record("update_org_ruleset", ruleset_id, ruleset)
 
 
-STATE_TYPES = {"todo": "unstarted", "doing": "started", "done": "completed", "wontdo": "canceled"}
+STATE_TYPES = {
+    "triage": "triage",
+    "todo": "unstarted",
+    "doing": "started",
+    "done": "completed",
+    "wontdo": "canceled",
+}
 
 
 class FakeLinear:
-    """In-memory Linear: every team key exists, with Todo/Doing/Done/Won't-do states."""
+    """In-memory Linear: every team key and project exists, with Triage/Todo/…/Won't-do states."""
 
     def __init__(self) -> None:
         self.issues: dict[str, dict[str, Any]] = {}
@@ -147,7 +153,7 @@ class FakeLinear:
             "id": f"team-{key}",
             "key": key,
             "states": [
-                {"id": f"{key}:{name}", "type": kind, "position": i}
+                {"id": f"{key}:{name}", "name": name.title(), "type": kind, "position": i}
                 for i, (name, kind) in enumerate(STATE_TYPES.items())
             ],
         }
@@ -155,8 +161,11 @@ class FakeLinear:
     def user_id(self, email: str) -> str:
         return f"user:{email}"
 
-    def label_id(self, name: str) -> str:
+    def label_id(self, name: str, team_id: str) -> str:
         return f"label:{name}"
+
+    def project_id(self, name: str) -> str:
+        return f"project:{name}"
 
     def get_issue(self, issue_id: str) -> dict[str, Any] | None:
         return self.issues.get(issue_id)
@@ -169,7 +178,7 @@ class FakeLinear:
             "identifier": f"{key}-{number}",
             "url": f"https://linear.app/acme/issue/{key}-{number}",
             "title": fields["title"],
-            "state": {"type": "unstarted"},
+            "state": {"type": STATE_TYPES[fields.get("stateId", ":todo").split(":", 1)[1]]},
             "team": {"key": key},
             "fields": dict(fields),
         }

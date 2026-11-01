@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from vulgard.cli import collect, main
-from vulgard.config import parse_config, route
+from vulgard.config import LinearTarget, parse_config, route
 from vulgard.enforce import STATUS_CHECK_CONTEXT, plan_enforce
 from vulgard.fixtures import FakeLinear, FakeSlack, FixtureGitHub, fixture_clients
 from vulgard.nag import nag, plan_repo
@@ -286,9 +286,15 @@ def test_linear_issue_lifecycle():
         if op == "create_issue":
             created[fields["title"].split(":")[0]] = (ident, fields)
     # Routed by owner, defaulting to SEC; priority and due date come from the worst alert.
-    assert created["payments-api"][0].startswith("PAY-")
+    payments_ident, payments = created["payments-api"]
+    assert payments_ident.startswith("PAY-")
+    assert payments["labelIds"] == ["label:vulgard", "label:security"]
+    assert payments["projectId"] == "project:Security debt"
+    assert payments["stateId"] == "PAY:triage"
     pipeline_ident, pipeline = created["data-pipeline"]
     assert pipeline_ident.startswith("SEC-")
+    assert pipeline["labelIds"] == ["label:vulgard"]
+    assert "projectId" not in pipeline and "stateId" not in pipeline
     assert pipeline["priority"] == 2 and "dueDate" in pipeline
     assert created["web-storefront"][1]["assigneeId"] == "user:jlee@acme.com"
     # The Linear link is persisted in the GitHub issue so later runs find it.
@@ -305,10 +311,11 @@ def test_linear_issue_lifecycle():
     run()
     assert linear.writes == []
 
-    # Someone closes the Linear issue while alerts remain: vulgard reopens it.
+    # Someone closes the Linear issue while alerts remain: vulgard reopens it into the
+    # configured state.
     linear.issues[ref.id]["state"] = {"type": "completed"}
     runs = run()
-    assert linear.issues[ref.id]["state"]["type"] == "unstarted"
+    assert linear.issues[ref.id]["state"]["type"] == "triage"
     assert any("Reopened" in text for op, (_, text) in linear.writes if op == "comment")
     assert "linear-update" in {a.kind for a in runs["payments-api"].actions}
 
@@ -318,6 +325,28 @@ def test_linear_issue_lifecycle():
     gh.data["dependabot_prs"] = []
     run()
     assert linear.issues[ref.id]["state"]["type"] == "completed"
+
+
+def test_linear_targets_merge_route_overrides_with_defaults():
+    linear = parse_config(
+        {
+            "org": "acme",
+            "linear": {
+                "default_team": "SEC",
+                "labels": ["vulgard", "security"],
+                "state": "Backlog",
+                "teams": {"web-*": "WEB", "@acme/payments": {"team": "PAY", "labels": []}},
+            },
+        }
+    ).linear
+    web = LinearTarget("WEB", ("vulgard", "security"), None, "Backlog")
+    assert linear.target("web-app", []) == web
+    assert linear.target("api", ["@acme/payments"]) == LinearTarget("PAY", (), None, "Backlog")
+    assert linear.target("api", []).team == "SEC"
+    with pytest.raises(ValueError, match="mapping with 'team'"):
+        parse_config({"org": "acme", "linear": {"teams": {"x": {"labels": ["a"]}}}})
+    with pytest.raises(ValueError, match="linear.labels"):
+        parse_config({"org": "acme", "linear": {"label": "vulgard"}})
 
 
 def test_linear_escalation_is_commented_when_the_issue_is_created():
