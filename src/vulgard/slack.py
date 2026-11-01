@@ -137,7 +137,7 @@ def notify_slack(
     messages: list[tuple[str, str, list[str]]] = []
     for msgs in topics.values():
         spec = msgs.spec
-        messages += [(channel, spec.slack_header, lines) for channel, lines in msgs.channels.items()]
+        messages += [(ch, spec.slack_header, lines) for ch, lines in msgs.channels.items()]
         if msgs.escalations and config.slack.escalation_channel:
             leads = "".join(f"{config.slack.mention(m)} " for m in config.escalation.mentions)
             header = leads + spec.escalation_header
