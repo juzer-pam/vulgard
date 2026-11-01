@@ -54,9 +54,13 @@ the demo never goes stale.
 
 ## Rolling it out to a real org
 
-1. **Put this repo in your org** as `vulgard`. Under *Settings → Actions → General →
-   Access*, allow access from repositories in the organization, so other repos can call
-   the reusable workflows.
+1. **Fork this repo into your org**, keeping the name `vulgard`. The fork stays public,
+   which is what lets your private and internal repos call its reusable workflows.
+   Don't commit org settings to the fork (step 4 keeps them in a private Actions variable),
+   so **Sync fork** always applies upstream updates cleanly.
+
+   GitHub turns off workflows on new forks. Open the fork's *Actions* tab and click
+   *I understand my workflows, go ahead and enable them*.
 
 2. **Create a GitHub App** owned by the org and install it on all repositories, with these
    permissions:
@@ -76,8 +80,13 @@ the demo never goes stale.
    - **Linear:** create an API key for a bot or service account (*Settings → Security &
      access → Personal API keys*) and save it as the secret `LINEAR_API_KEY`.
 
-4. **Edit `vulgard.yml`**: SLA days, owners, escalation contacts, excluded repos,
-   `rollout.engine` (see the caveats below), and the `slack` and `linear` routing:
+4. **Write your org's config** and save it as the Actions variable `VULGARD_CONFIG` on the
+   fork. Actions variables aren't visible to the public, even on a public repo. Start from
+   [`vulgard.yml`](vulgard.yml), save your copy as `org.yml`, then run
+   `gh variable set VULGARD_CONFIG -R <org>/vulgard < org.yml`. The nag job writes this
+   variable to `vulgard.yml` before it runs. Settings to fill in: SLA days, owners,
+   escalation contacts, included and excluded repos, `rollout.engine` (see the caveats
+   below), and the `slack` and `linear` routing:
    - `slack.channels` maps a repo name or owner handle (from config or `CODEOWNERS`) to a
      Slack channel. Repos with no match post to `slack.default_channel`.
    - `linear.teams` maps a repo name or owner handle to a Linear team key. Repos with no
@@ -90,17 +99,22 @@ the demo never goes stale.
    `export GITHUB_TOKEN=$(gh auth token)` for an org admin):
 
    ```bash
-   uv run vulgard --org acme rollout                # review the plan
-   uv run vulgard --org acme rollout --apply        # open PRs; enables alerts, security
-                                                      # updates, and auto-merge per repo
+   gh variable get VULGARD_CONFIG -R acme/vulgard > org.yml
+   uv run vulgard --config org.yml --org acme rollout          # review the plan
+   uv run vulgard --config org.yml --org acme rollout --apply  # open PRs; enables alerts,
+                                                                 # security updates, and
+                                                                 # auto-merge per repo
    ```
+
+   To pilot first, set `repos.include` to a few repos in `org.yml`, update the variable,
+   and widen it later.
 
    Re-running is safe: repos that already have the files, or an open rollout PR, are skipped.
 
 6. **Make the check required** once those PRs are merged:
 
    ```bash
-   uv run vulgard --org acme enforce --apply
+   uv run vulgard --config org.yml --org acme enforce --apply
    ```
 
    This creates or updates the org ruleset *"vulgard: block vulnerable dependencies"*,
