@@ -74,6 +74,10 @@ def _repo_line(plan: RepoPlan, config: Config) -> str:
         parts.append(f"{len(r.due_soon)} due soon")
     if r.known_exploited:
         parts.append(f"🔥 {len(r.known_exploited)} actively exploited")
+    ready = r.ready_prs(config.ready_pr_days)
+    if ready:
+        links = ", ".join(f"<{p.html_url}|#{p.number}>" for p in ready[:5])
+        parts.append(f"*✅ {len(ready)} Dependabot PR(s) ready to merge* ({links})")
     stale = r.stale_prs(config.stale_pr_days)
     if stale:
         parts.append(f"{len(stale)} stale Dependabot PR(s)")
@@ -142,24 +146,32 @@ def notify_slack(client: Any, config: Config, plans: list[RepoPlan], apply: bool
 
 
 def digest_message(
-    org: str,
+    config: Config,
     reports: dict[str, RepoReport],
-    stale_days: int,
     closed: ClosedSummary | None,
 ) -> tuple[str, list[dict[str, Any]]]:
+    org, stale_days, ready_days = config.org, config.stale_pr_days, config.ready_pr_days
     ranked = sorted(
-        (r for r in reports.values() if r.overdue or r.stale_prs(stale_days) or r.known_exploited),
+        (
+            r
+            for r in reports.values()
+            if r.overdue or r.stale_prs(stale_days) or r.known_exploited or r.ready_prs(ready_days)
+        ),
         key=lambda r: -r.risk_score,
     )
     overdue = sum(len(r.overdue) for r in reports.values())
     critical = sum(r.severity_counts()["critical"] for r in reports.values())
     exploited = sum(len(r.known_exploited) for r in reports.values())
+    ready = sum(len(r.ready_prs(ready_days)) for r in reports.values())
     header = (
         f"*Vulnerability digest for {org}*: {overdue} alert(s) past deadline, "
         f"{critical} critical open, {exploited} actively exploited, "
         f"across {len(ranked)} repo(s)."
     )
     blocks: list[dict[str, Any]] = [_section(header)]
+    if ready:
+        quick_wins = f"*✅ {ready} Dependabot PR(s) pass CI and only need a review and merge.*"
+        blocks.append(_section(quick_wins + " These are the quickest wins on the board."))
 
     if closed is not None:
         fixed_total = sum(closed.fixed.values())
@@ -179,6 +191,7 @@ def digest_message(
     rows = [
         f"• <https://github.com/{org}/{r.repo}/security/dependabot|{r.repo}>: "
         f"{len(r.overdue)} overdue, {len(r.stale_prs(stale_days))} stale PR(s)"
+        + (f", ✅ {len(r.ready_prs(ready_days))} ready" if r.ready_prs(ready_days) else "")
         + (f", 🔥 {len(r.known_exploited)} exploited" if r.known_exploited else "")
         + (f" (owners: {', '.join(r.owners)})" if r.owners else "")
         for r in ranked[:MAX_ROWS]

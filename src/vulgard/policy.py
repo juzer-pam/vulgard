@@ -102,6 +102,13 @@ class Alert:
 
 
 @dataclass
+class AlertRef:
+    number: int
+    severity: str
+    package: str
+
+
+@dataclass
 class DependabotPR:
     repo: str
     number: int
@@ -109,6 +116,10 @@ class DependabotPR:
     html_url: str
     created_at: datetime
     age_days: int = 0
+    ci_state: str | None = None  # SUCCESS | FAILURE | ERROR | PENDING | EXPECTED | None
+    mergeable: str | None = None  # MERGEABLE | CONFLICTING | UNKNOWN
+    draft: bool = False
+    fixes: list[AlertRef] = field(default_factory=list)
 
     @classmethod
     def from_api(cls, raw: dict[str, Any]) -> DependabotPR:
@@ -118,12 +129,40 @@ class DependabotPR:
             title=raw["title"],
             html_url=raw["html_url"],
             created_at=parse_time(raw["created_at"]),
+            ci_state=raw.get("ci_state"),
+            mergeable=raw.get("mergeable"),
+            draft=bool(raw.get("draft")),
         )
 
     @property
     def packages(self) -> set[str]:
         # "Bump lodash from 4.17.20 to 4.17.21", "Bump the npm group ... with 3 updates"
         return {m.lower() for m in re.findall(r"[Bb]ump (\S+) from", self.title)}
+
+    @property
+    def ci_passing(self) -> bool:
+        return self.ci_state == "SUCCESS" and not self.draft and self.mergeable != "CONFLICTING"
+
+    def status_label(self) -> str:
+        if self.mergeable == "CONFLICTING":
+            return "⚠️ merge conflicts"
+        if self.ci_passing:
+            return "✅ CI passing"
+        if self.ci_state in ("FAILURE", "ERROR"):
+            return "❌ CI failing"
+        if self.ci_state in ("PENDING", "EXPECTED"):
+            return "⏳ CI running"
+        return "no CI checks"
+
+    def markdown_line(self, stale_days: int) -> str:
+        fixes = ""
+        if self.fixes:
+            fixes = " · fixes " + ", ".join(f"{a.severity} `{a.package}`" for a in self.fixes)
+        stale = " · ⚠️ stale" if self.age_days >= stale_days else ""
+        return (
+            f"- [#{self.number}]({self.html_url}) {self.title}, open {self.age_days}d · "
+            f"{self.status_label()}{fixes}{stale}"
+        )
 
 
 @dataclass
@@ -151,6 +190,11 @@ class RepoReport:
 
     def stale_prs(self, stale_days: int) -> list[DependabotPR]:
         return [p for p in self.dependabot_prs if p.age_days >= stale_days]
+
+    def ready_prs(self, ready_days: int) -> list[DependabotPR]:
+        """Green, mergeable PRs open long enough that they're waiting on a person, not on CI or
+        auto-merge."""
+        return [p for p in self.dependabot_prs if p.ci_passing and p.age_days >= ready_days]
 
     def severity_counts(self) -> dict[str, int]:
         counts = dict.fromkeys(SEVERITIES, 0)
@@ -233,12 +277,15 @@ def evaluate(
         alert.fix_pr = next(
             (p for p in report.dependabot_prs if alert.package.lower() in p.packages), None
         )
+        if alert.fix_pr:
+            alert.fix_pr.fixes.append(AlertRef(alert.number, alert.severity, alert.package))
         report.alerts.append(alert)
 
     severity_rank = {s: i for i, s in enumerate(SEVERITIES)}
     for report in reports.values():
         report.alerts.sort(key=lambda a: (a.days_left, severity_rank[a.severity]))
-        report.dependabot_prs.sort(key=lambda p: -p.age_days)
+        # Green PRs that fix alerts first: they're the cheapest risk reduction available.
+        report.dependabot_prs.sort(key=lambda p: (not p.ci_passing, not p.fixes, -p.age_days))
     return reports
 
 

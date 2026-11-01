@@ -91,6 +91,7 @@ class Config:
     sla_days: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_SLA_DAYS))
     due_soon_days: int = 5
     stale_pr_days: int = 14
+    ready_pr_days: int = 2
     reminder_interval_days: int = 7
     owners: dict[str, list[str]] = field(default_factory=dict)
     default_owners: list[str] = field(default_factory=list)
@@ -163,6 +164,7 @@ def parse_config(raw: dict[str, Any], org_override: str | None = None) -> Config
         sla_days=sla,
         due_soon_days=int(raw.get("due_soon_days", 5)),
         stale_pr_days=int(raw.get("stale_pr_days", 14)),
+        ready_pr_days=int(raw.get("ready_pr_days", 2)),
         reminder_interval_days=int(raw.get("reminder_interval_days", 7)),
         owners={k: list(v) for k, v in (raw.get("owners") or {}).items()},
         default_owners=list(raw.get("default_owners") or []),

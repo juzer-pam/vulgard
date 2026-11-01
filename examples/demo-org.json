@@ -109,14 +109,18 @@
       "title": "Bump jsonwebtoken from 8.5.1 to 9.0.0",
       "html_url": "https://github.com/acme/payments-api/pull/88",
       "repository_url": "https://api.github.com/repos/acme/payments-api",
-      "created_at": "@-18d"
+      "created_at": "@-18d",
+      "ci_state": "SUCCESS",
+      "mergeable": "MERGEABLE"
     },
     {
       "number": 41,
       "title": "Bump the npm_and_yarn group with 6 updates",
       "html_url": "https://github.com/acme/web-storefront/pull/41",
       "repository_url": "https://api.github.com/repos/acme/web-storefront",
-      "created_at": "@-33d"
+      "created_at": "@-33d",
+      "ci_state": "FAILURE",
+      "mergeable": "MERGEABLE"
     },
     {
       "number": 19,

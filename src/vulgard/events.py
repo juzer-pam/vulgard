@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .policy import Alert, RepoReport
+from .policy import Alert, DependabotPR, RepoReport
 
 
 @dataclass
@@ -26,6 +26,7 @@ class RepoPlan:
     comments: list[str]
     state: dict[str, Any]
     newly_overdue: list[Alert] = field(default_factory=list)
+    newly_ready: list[DependabotPR] = field(default_factory=list)
     escalate: list[Alert] = field(default_factory=list)
     reminder: bool = False
     opened: bool = False
@@ -38,4 +39,6 @@ class RepoPlan:
 
     @property
     def pinged(self) -> bool:
-        return bool(self.opened or self.newly_overdue or self.escalate or self.reminder)
+        return bool(
+            self.opened or self.newly_overdue or self.newly_ready or self.escalate or self.reminder
+        )

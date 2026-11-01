@@ -14,6 +14,7 @@ sla_days:
 
 due_soon_days: 5          # flag alerts this close to their deadline
 stale_pr_days: 14         # Dependabot PRs open this long get called out
+ready_pr_days: 2          # green, mergeable PRs open this long ping owners to review/merge
 reminder_interval_days: 7 # how often to re-ping owners while anything is overdue
 
 # Who gets pinged. Falls back to the `*` rule in CODEOWNERS, then default_owners.

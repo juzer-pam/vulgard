@@ -10,6 +10,21 @@ import httpx
 
 API_URL = "https://api.github.com"
 
+DEPENDABOT_PRS_QUERY = """
+query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number title url createdAt isDraft mergeable
+        repository { name }
+        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      }
+    }
+  }
+}
+"""
+
 
 class GitHubError(RuntimeError):
     def __init__(self, status: int, message: str, url: str):
@@ -106,8 +121,39 @@ class GitHub:
         return items
 
     def list_dependabot_prs(self, org: str) -> list[dict[str, Any]]:
-        query = f"org:{org} is:pr is:open author:app/dependabot archived:false"
-        return self._paginate("/search/issues", {"q": query})
+        """Open Dependabot PRs with CI and merge status, via GraphQL search (one call per 100)."""
+        search = f"org:{org} is:pr is:open author:app/dependabot archived:false"
+        prs: list[dict[str, Any]] = []
+        after: str | None = None
+        while True:
+            variables = {"q": search, "after": after}
+            data = self._json(
+                "POST", "/graphql", json={"query": DEPENDABOT_PRS_QUERY, "variables": variables}
+            )
+            if data.get("errors"):
+                messages = "; ".join(e.get("message", "") for e in data["errors"])
+                raise GitHubError(200, messages, "/graphql")
+            result = data["data"]["search"]
+            for node in result["nodes"]:
+                if not node:
+                    continue
+                commits = node["commits"]["nodes"]
+                rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
+                prs.append(
+                    {
+                        "number": node["number"],
+                        "title": node["title"],
+                        "html_url": node["url"],
+                        "repository_url": f"{API_URL}/repos/{org}/{node['repository']['name']}",
+                        "created_at": node["createdAt"],
+                        "draft": node["isDraft"],
+                        "mergeable": node["mergeable"],
+                        "ci_state": rollup["state"] if rollup else None,
+                    }
+                )
+            if not result["pageInfo"]["hasNextPage"]:
+                return prs
+            after = result["pageInfo"]["endCursor"]
 
     def get_file(self, org: str, repo: str, path: str) -> str | None:
         try:

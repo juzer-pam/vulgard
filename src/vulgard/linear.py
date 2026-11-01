@@ -158,10 +158,14 @@ def render_description(report: RepoReport, config: Config, issue_url: str | None
     ):
         if alerts:
             lines += ["", f"### {title} ({len(alerts)})", *[a.markdown_line() for a in alerts]]
-    stale = report.stale_prs(config.stale_pr_days)
+    ready = report.ready_prs(config.ready_pr_days)
+    if ready:
+        lines += ["", f"### ✅ Ready to merge ({len(ready)})"]
+        lines += [p.markdown_line(config.stale_pr_days) for p in ready]
+    stale = [p for p in report.stale_prs(config.stale_pr_days) if p not in ready]
     if stale:
         lines += ["", f"### Dependabot PRs open {config.stale_pr_days}+ days ({len(stale)})"]
-        lines += [f"- [#{p.number}]({p.html_url}) {p.title}, open {p.age_days}d" for p in stale]
+        lines += [p.markdown_line(config.stale_pr_days) for p in stale]
     lines += [
         "",
         "---",
@@ -203,7 +207,7 @@ def _assignee_id(client: Any, config: Config, owners: list[str]) -> str | None:
     return None
 
 
-def _comments(plan: RepoPlan, reopened: bool) -> list[str]:
+def _comments(plan: RepoPlan, config: Config, reopened: bool) -> list[str]:
     comments = []
     if reopened:
         comments.append(
@@ -215,6 +219,11 @@ def _comments(plan: RepoPlan, reopened: bool) -> list[str]:
         comments.append(
             f"{len(plan.newly_overdue)} alert(s) just went past their fix deadline:\n\n"
             + "\n".join(a.markdown_line() for a in plan.newly_overdue)
+        )
+    if plan.newly_ready:
+        comments.append(
+            f"{len(plan.newly_ready)} Dependabot PR(s) pass CI and only need a review and merge:"
+            "\n\n" + "\n".join(p.markdown_line(config.stale_pr_days) for p in plan.newly_ready)
         )
     if plan.escalate:
         comments.append(
@@ -277,7 +286,7 @@ def sync_linear(
         return [Action(repo, "linear-create", created["identifier"])], new_ref
 
     reopened = existing["state"]["type"] in CLOSED_STATES
-    comments = _comments(plan, reopened)
+    comments = _comments(plan, config, reopened)
     changed = digest != ref.get("digest")
     if not (changed or reopened or comments):
         return [], ref

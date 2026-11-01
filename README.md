@@ -10,7 +10,7 @@ Turning on Dependabot isn't enough if nobody merges its PRs. vulgard covers the 
 | Everything looks equally urgent | Alerts on **CISA's Known Exploited Vulnerabilities** list get a 3-day deadline and escalate as soon as they're overdue. |
 | "Won't fix" decisions are invisible and permanent | **Exceptions with a required reason and expiry date** in `vulgard.yml`. Accepted risks stay listed in the issue and come back when they lapse. The digest calls out **high-severity dismissals with no justification**. |
 | Security work goes unnoticed | The Slack digest credits **alerts fixed in the last 7 days**, per repo, next to the worst offenders. |
-| Dependabot PRs rot | Dependabot config that **groups minor and patch updates into one PR per ecosystem**, plus a workflow that **auto-approves and auto-merges** them once CI passes. Stale PRs are called out in the tracking issue. |
+| Dependabot PRs rot | Dependabot config that **groups minor and patch updates into one PR per ecosystem**, plus a workflow that **auto-approves and auto-merges** them once CI passes. PRs that **pass CI but are still waiting on a human** get owners pinged (GitHub, Slack, and Linear) with the alerts they'd fix. Stale PRs are called out in the tracking issue. |
 | New vulnerabilities get merged | A reusable **`dependency-review / review`** check fails any PR that adds a dependency with a known vulnerability, and an **org ruleset** makes it required. |
 
 Everything that writes to GitHub runs as a **dry run by default**. Add `--apply` to make changes.
@@ -117,6 +117,8 @@ the demo never goes stale.
 - Comments and Slack messages, which are what notify people, are only sent when:
   - a tracking issue is first opened,
   - an alert newly passes its deadline,
+  - a Dependabot PR newly passes CI with no conflicts and has been open `ready_pr_days`
+    (default 2, which gives auto-merge time to act) without being merged,
   - `reminder_interval_days` have passed and something is still overdue or stale, or
   - an alert is more than `escalation.after_days_overdue` past due, or a KEV alert is past
     due at all (each alert escalates once).

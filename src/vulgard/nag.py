@@ -31,7 +31,6 @@ def render_issue_body(
     report: RepoReport, config: Config, state: dict[str, Any], now: datetime
 ) -> str:
     counts = report.severity_counts()
-    stale = report.stale_prs(config.stale_pr_days)
     lines = [
         f"This repository has **{len(report.alerts)} open Dependabot alert(s)**: "
         + ", ".join(f"{counts[s]} {s}" for s in SEVERITIES if counts[s])
@@ -60,11 +59,22 @@ def render_issue_body(
         if alerts:
             lines += ["", f"### {title} ({len(alerts)})", *[a.markdown_line() for a in alerts]]
 
+    ready = report.ready_prs(config.ready_pr_days)
+    if ready:
+        lines += [
+            "",
+            f"### ✅ Ready to merge ({len(ready)})",
+            "These pass CI and have no conflicts. They only need a review and a merge.",
+            *[p.markdown_line(config.stale_pr_days) for p in ready],
+        ]
+    waiting = [p for p in report.dependabot_prs if p not in ready]
+    if waiting:
+        lines += [
+            "",
+            f"### Other open Dependabot PRs ({len(waiting)})",
+            *[p.markdown_line(config.stale_pr_days) for p in waiting],
+        ]
     if report.dependabot_prs:
-        lines += ["", f"### Open Dependabot PRs ({len(report.dependabot_prs)})"]
-        for p in report.dependabot_prs:
-            flag = " ⚠️ stale" if p in stale else ""
-            lines.append(f"- #{p.number} {p.title} – open {p.age_days}d{flag}")
         lines += [
             "",
             "Merging these is usually the fastest way to clear the list above. "
@@ -137,21 +147,36 @@ def plan_repo(
         if a.number not in set(prev.get("escalated", []))
     ]
 
+    ready = report.ready_prs(config.ready_pr_days)
+    newly_ready = [p for p in ready if p.number not in set(prev.get("ready_prs", []))]
+
     comments: list[str] = []
     actions: list[Action] = []
     mentions = " ".join(report.owners)
     reminder = False
 
-    if issue and newly_overdue:
-        comments.append(
-            f"{mentions} {len(newly_overdue)} alert(s) just went past their fix deadline:\n\n"
-            + "\n".join(a.markdown_line() for a in newly_overdue)
-        )
-        actions.append(Action(report.repo, "comment", f"{len(newly_overdue)} newly overdue"))
-    elif issue and reminder_due and (report.overdue or stale):
+    if issue and (newly_overdue or newly_ready):
+        sections = []
+        if newly_overdue:
+            sections.append(
+                f"{len(newly_overdue)} alert(s) just went past their fix deadline:\n\n"
+                + "\n".join(a.markdown_line() for a in newly_overdue)
+            )
+        if newly_ready:
+            sections.append(
+                f"{len(newly_ready)} Dependabot PR(s) pass CI and are only waiting on a review "
+                "and merge:\n\n"
+                + "\n".join(p.markdown_line(config.stale_pr_days) for p in newly_ready)
+            )
+        comments.append(f"{mentions} " + "\n\n".join(sections))
+        detail = f"{len(newly_overdue)} newly overdue, {len(newly_ready)} newly ready PR(s)"
+        actions.append(Action(report.repo, "comment", detail))
+    elif issue and reminder_due and (report.overdue or stale or ready):
         parts = []
         if report.overdue:
             parts.append(f"**{len(report.overdue)} overdue alert(s)**")
+        if ready:
+            parts.append(f"**{len(ready)} Dependabot PR(s) ready to merge**")
         if stale:
             parts.append(f"**{len(stale)} Dependabot PR(s) open for {config.stale_pr_days}+ days**")
         comments.append(
@@ -178,6 +203,7 @@ def plan_repo(
             | {a.number for a in escalate}
         ),
         "last_reminder": now.isoformat() if reminded else prev.get("last_reminder"),
+        "ready_prs": sorted(p.number for p in ready),
     }
     if prev.get("linear"):
         state["linear"] = prev["linear"]
@@ -193,6 +219,7 @@ def plan_repo(
         comments,
         state=state,
         newly_overdue=newly_overdue,
+        newly_ready=newly_ready,
         escalate=escalate,
         reminder=reminder,
         opened=issue is None,
@@ -281,11 +308,12 @@ def nag(
 
 
 def render_org_summary(
-    org: str,
+    config: Config,
     reports: dict[str, RepoReport],
-    stale_days: int,
     closed: ClosedSummary | None = None,
 ) -> str:
+    org, stale_days, ready_days = config.org, config.stale_pr_days, config.ready_pr_days
+    ready = sum(len(r.ready_prs(ready_days)) for r in reports.values())
     ranked = sorted(
         (r for r in reports.values() if r.alerts or r.stale_prs(stale_days)),
         key=lambda r: -r.risk_score,
@@ -301,7 +329,7 @@ def render_org_summary(
         "",
         f"**{sum(totals.values())} open alerts** across {len(ranked)} of {len(reports)} repos "
         f"({', '.join(f'{totals[s]} {s}' for s in SEVERITIES)}). **{overdue} past deadline**, "
-        f"**{exploited} actively exploited**.",
+        f"**{exploited} actively exploited**. **{ready} Dependabot PR(s) ready to merge.**",
     ]
     if closed is not None:
         lines += [
@@ -315,13 +343,14 @@ def render_org_summary(
         return "\n".join(lines)
     lines += [
         "",
-        "| Repo | Critical | High | Medium | Low | Overdue | Exploited | Stale Dependabot PRs |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Repo | Critical | High | Medium | Low | Overdue | Exploited | Ready PRs | Stale PRs |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in ranked:
         c = r.severity_counts()
         lines.append(
             f"| {r.repo} | {c['critical']} | {c['high']} | {c['medium']} | {c['low']} "
-            f"| {len(r.overdue)} | {len(r.known_exploited)} | {len(r.stale_prs(stale_days))} |"
+            f"| {len(r.overdue)} | {len(r.known_exploited)} | {len(r.ready_prs(ready_days))} "
+            f"| {len(r.stale_prs(stale_days))} |"
         )
     return "\n".join(lines)

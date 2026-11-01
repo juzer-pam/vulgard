@@ -46,13 +46,15 @@ def alert(number: int, repo: str, severity: str, days_ago: int, package: str = "
     }
 
 
-def pr(number: int, repo: str, title: str, days_ago: int) -> dict:
+def pr(number: int, repo: str, title: str, days_ago: int, ci: str | None = None) -> dict:
     return {
         "number": number,
         "title": title,
         "html_url": f"https://github.com/acme/{repo}/pull/{number}",
         "repository_url": f"https://api.github.com/repos/acme/{repo}",
         "created_at": iso(days_ago),
+        "ci_state": ci,
+        "mergeable": "MERGEABLE",
     }
 
 
@@ -156,6 +158,36 @@ def test_clean_repo_closes_issue(config):
     p = plan(config, [], issue={"number": 5, "body": "x"})
     assert [a.kind for a in p.actions] == ["close"]
     assert p.body is None and p.closing and "resolved" in p.comments[0]
+
+
+def test_green_fix_pr_pings_owners_once(config):
+    alerts = [alert(1, "api", "high", 10, package="axios")]
+    pending = [pr(9, "api", "Bump axios from 1.5.0 to 1.6.0", 3, ci="PENDING")]
+    first = plan(config, alerts, prs=pending)
+    assert "Ready to merge" not in first.body and "CI running" in first.body
+
+    # CI goes green: owners get one comment naming the alert it fixes.
+    green = [pr(9, "api", "Bump axios from 1.5.0 to 1.6.0", 4, ci="SUCCESS")]
+    p = plan(config, alerts, {"number": 5, "body": first.body}, prs=green)
+    assert [x.number for x in p.newly_ready] == [9] and p.pinged
+    assert len(p.comments) == 1 and "@acme/api" in p.comments[0]
+    assert "only waiting on a review" in p.comments[0] and "fixes high `axios`" in p.comments[0]
+    assert "✅ Ready to merge (1)" in p.body
+
+    # Still green the next day: no repeat ping.
+    tomorrow = NOW + timedelta(days=1)
+    p = plan(config, alerts, {"number": 5, "body": p.body}, prs=green, now=tomorrow)
+    assert p.newly_ready == [] and p.comments == []
+
+
+def test_conflicting_or_draft_prs_are_not_ready(config):
+    conflicting = pr(9, "api", "Bump a from 1 to 2", 5, ci="SUCCESS")
+    conflicting["mergeable"] = "CONFLICTING"
+    draft = pr(10, "api", "Bump b from 1 to 2", 5, ci="SUCCESS")
+    draft["draft"] = True
+    fresh = pr(11, "api", "Bump c from 1 to 2", 0, ci="SUCCESS")
+    report = evaluate(config, [], [conflicting, draft, fresh], ["api"], NOW)["api"]
+    assert report.ready_prs(config.ready_pr_days) == []
 
 
 def test_known_exploited_cve_gets_short_sla_and_escalates_immediately(config):
@@ -273,6 +305,7 @@ def test_slack_routes_to_team_channels_dms_and_escalation():
     by_target = {target: text for target, text in slack.messages}
 
     assert "payments-api" in by_target["#payments-eng"]  # owner -> channel
+    assert "1 Dependabot PR(s) ready to merge" in by_target["#payments-eng"]
     assert "web-storefront" in by_target["#frontend"]
     assert "data-pipeline" in by_target["#eng-alerts"]  # default channel
     assert "<@U012JLEE>" in by_target["#frontend"]  # GitHub handle -> Slack mention
@@ -290,7 +323,7 @@ def test_weekly_summary_flags_unexplained_dismissals():
     assert [(d.repo, d.by) for d in closed.unexplained] == [("data-pipeline", "mchen")]
 
     config = example_config()
-    text, blocks = digest_message("acme", collect(gh, config), config.stale_pr_days, closed)
+    text, blocks = digest_message(config, collect(gh, config), closed)
     rendered = json.dumps(blocks)
     assert "1 fixed" in rendered and "no justification" in rendered and "mchen" in rendered
 

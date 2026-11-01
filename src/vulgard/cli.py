@@ -79,14 +79,16 @@ def collect(
     return reports
 
 
-def print_table(reports: dict[str, RepoReport], stale_days: int) -> None:
+def print_table(reports: dict[str, RepoReport], config: Config) -> None:
     rows = sorted(
         (r for r in reports.values() if r.alerts or r.dependabot_prs), key=lambda r: -r.risk_score
     )
     if not rows:
         print(f"No open alerts or Dependabot PRs across {len(reports)} repos.")
         return
-    header = ["repo", *SEVERITIES, "overdue", "due soon", "exploited", "stale PRs", "owners"]
+    header = [
+        "repo", *SEVERITIES, "overdue", "due soon", "exploited", "ready PRs", "stale PRs", "owners"
+    ]
     table = [header]
     for r in rows:
         c = r.severity_counts()
@@ -97,7 +99,8 @@ def print_table(reports: dict[str, RepoReport], stale_days: int) -> None:
                 str(len(r.overdue)),
                 str(len(r.due_soon)),
                 str(len(r.known_exploited)),
-                str(len(r.stale_prs(stale_days))),
+                str(len(r.ready_prs(config.ready_pr_days))),
+                str(len(r.stale_prs(config.stale_pr_days))),
                 " ".join(r.owners) or "-",
             ]
         )
@@ -130,9 +133,9 @@ def cmd_report(gh: Any, config: Config, args: argparse.Namespace) -> int:
     if args.format == "json":
         print(report_json(reports))
     elif args.format == "markdown":
-        print(render_org_summary(config.org, reports, config.stale_pr_days))
+        print(render_org_summary(config, reports))
     else:
-        print_table(reports, config.stale_pr_days)
+        print_table(reports, config)
     return 0
 
 
@@ -172,7 +175,7 @@ def cmd_nag(gh: Any, config: Config, args: argparse.Namespace) -> int:
             )
         else:
             actions += notify_slack(slack, config, plans, args.apply)
-        text, blocks = digest_message(config.org, reports, config.stale_pr_days, closed)
+        text, blocks = digest_message(config, reports, closed)
         webhook = os.environ.get(config.slack.webhook_env)
         digest = send_digest(slack, webhook, config, text, blocks, args.apply)
         if digest:
@@ -190,7 +193,7 @@ def cmd_nag(gh: Any, config: Config, args: argparse.Namespace) -> int:
             print(f"{prefix}{a.repo}: {a.kind} ({a.detail})")
     changed = sum(1 for a in actions if a.kind != "noop")
     print(f"{prefix}{changed} action(s) across {len(reports)} repos.")
-    summary = render_org_summary(config.org, reports, config.stale_pr_days, closed)
+    summary = render_org_summary(config, reports, closed)
     write_step_summary(summary, args.summary_file)
     return 1 if any(a.kind.endswith("-error") for a in actions) else 0
 
