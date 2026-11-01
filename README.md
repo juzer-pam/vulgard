@@ -187,6 +187,38 @@ exceptions:
     expires: 2027-03-31
 ```
 
+## Stale deployments
+
+With `deployments.enabled`, `nag` also tracks deployments in AWS (Serverless Framework v3 and
+CDK stacks in CloudFormation, SST v3/v4 state, Amplify branches) and Vercel, and repos nobody
+commits to. [The design doc](docs/design/stale-deployments.md) has the rationale.
+
+- A deployment not deployed in `stale_days` (30), or a repo with no human commits in
+  `repo_inactive_days` (90), needs a baseline within `baseline_days` (14). The clocks come from
+  AWS, Vercel, and GitHub timestamps, so editing the issue can't reset them.
+- Each such repo gets one issue labeled `vulgard-stale`, with the same reminders, escalation,
+  Slack digests, DMs (including the person a personal stack belongs to), Linear issue, and
+  leaderboard section as alerts. Severity comes from the tier: production high, shared medium,
+  personal low.
+- Record a baseline by commenting on that issue:
+
+  ```text
+  /vulgard redeploy <name>                       bring it up to date
+  /vulgard delete <name>                         delete it (never production)
+  /vulgard keep <name> until 2027-01-31: why     leave it as it is until then
+  /vulgard active until 2027-01-31: why          the repo is maintained without commits
+  /vulgard cancel <name>                         cancel an earlier command
+  ```
+
+  Only people with write access can baseline. The thread is re-read every run, so the latest
+  command wins and expired keeps bring the finding back. Deploying, deleting, or committing by
+  hand counts too. For now `redeploy` and `delete` are recorded and listed as requested until
+  vulgard sees them done; carrying them out automatically comes with the lifecycle workflow.
+- Deployments with no known repo land in `unattributed_repo`. Tag stacks with `vulgard:repo`,
+  or map them in `deployments.attribution`.
+- `vulgard report --topic stale` lists every stale deployment and inactive repo without
+  writing anything.
+
 ## Caveats
 
 - **The `github` engine** (GitHub's dependency-review action) needs the dependency graph,

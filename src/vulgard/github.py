@@ -196,6 +196,19 @@ class GitHub:
         issues = [i for i in issues if "pull_request" not in i]
         return next((i for i in issues if i["state"] == "open"), issues[0] if issues else None)
 
+    def list_issue_comments(self, org: str, repo: str, number: int) -> list[dict[str, Any]]:
+        return self._paginate(f"/repos/{org}/{repo}/issues/{number}/comments")
+
+    def can_write(self, org: str, repo: str, user: str) -> bool:
+        """Whether `user` has write, maintain or admin access to the repo."""
+        try:
+            data = self._json("GET", f"/repos/{org}/{repo}/collaborators/{user}/permission")
+        except GitHubError as e:
+            if e.status == 404:
+                return False
+            raise
+        return data.get("permission") in ("write", "admin")
+
     def find_open_pr(self, org: str, repo: str, head_branch: str) -> dict[str, Any] | None:
         prs = self._json(
             "GET",

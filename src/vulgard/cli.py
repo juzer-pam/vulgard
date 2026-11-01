@@ -7,10 +7,13 @@ import sys
 from collections import Counter
 from dataclasses import asdict
 from datetime import timedelta
+from functools import partial
 from typing import Any
 
 import httpx
+from botocore.exceptions import BotoCoreError, ClientError
 
+from . import stale
 from .clients import Clients, live_clients
 from .config import SEVERITIES, Config, load_config
 from .enforce import apply_enforce, plan_enforce
@@ -18,14 +21,29 @@ from .estate import build_index, discover, repo_activity
 from .fixtures import fixture_clients
 from .github import GitHubError
 from .linear import LinearError
-from .plan import ActionKind, Topic
-from .policy import RepoReport, evaluate, now_utc, parse_codeowners_default, summarize_closed
+from .plan import ActionKind, RepoRun, Topic
+from .policy import (
+    ClosedSummary,
+    RepoReport,
+    evaluate,
+    now_utc,
+    parse_codeowners_default,
+    summarize_closed,
+)
 from .render import render_org_summary
 from .rollout import apply_rollout, plan_rollout
-from .slack import SlackError, leaderboard_message, notify_slack, send_leaderboard
+from .slack import (
+    SlackError,
+    leaderboard_message,
+    notify_slack,
+    send_leaderboard,
+    team_of_owners,
+)
+from .vercel import VercelError
 from .vulns import nag
 
 CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")
+STALE_ERRORS = (GitHubError, LinearError, VercelError, BotoCoreError, ClientError, httpx.HTTPError)
 
 
 def selected_repos(gh: Any, config: Config, only: list[str] | None = None) -> list[dict]:
@@ -215,17 +233,51 @@ def cmd_report(clients: Clients, config: Config, args: argparse.Namespace) -> in
     return 0
 
 
+def nag_topics(config: Config, args: argparse.Namespace) -> list[Topic]:
+    if args.topic:
+        return [Topic(t) for t in dict.fromkeys(args.topic)]
+    return [Topic.VULNS] + ([Topic.STALE] if config.deployments.enabled else [])
+
+
 def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     gh, now = clients.github, now_utc()
-    reports = collect(gh, config, args.repo, load_kev(clients, config))
+    topics = nag_topics(config, args)
+    if Topic.STALE in topics and not config.deployments.enabled:
+        print("error: --topic stale needs deployments.enabled in the config", file=sys.stderr)
+        return 1
     linear = clients.linear if args.linear else None
     if args.linear and linear is None:
         print(f"Skipping Linear: ${config.linear.api_key_env} is not set.", file=sys.stderr)
-    runs = nag(gh, config, reports, apply=args.apply, now=now, linear=linear)
-    actions = [a for r in runs for a in r.actions]
 
-    since = now - timedelta(days=7)
-    closed = summarize_closed(gh.list_closed_alerts(config.org, since), set(reports), since)
+    runs: list[RepoRun] = []
+    failed = False
+    reports: dict[str, RepoReport] = {}
+    closed: ClosedSummary | None = None
+    if Topic.VULNS in topics:
+        reports = collect(gh, config, args.repo, load_kev(clients, config))
+        runs += nag(gh, config, reports, apply=args.apply, now=now, linear=linear)
+        since = now - timedelta(days=7)
+        closed = summarize_closed(gh.list_closed_alerts(config.org, since), set(reports), since)
+    stale_reports: dict[str, stale.StaleReport] = {}
+    stale_runs: list[RepoRun] = []
+    if Topic.STALE in topics:
+        try:
+            stale_reports, stale_runs = stale.run(
+                gh,
+                linear,
+                config,
+                selected_repos(gh, config, args.repo),
+                clients.scanners(),
+                partial(resolve_owners, gh, config),
+                args.apply,
+                now,
+                scoped=bool(args.repo),
+            )
+        except STALE_ERRORS as e:
+            print(f"error: skipped stale deployments: {e}", file=sys.stderr)
+            failed = True
+        runs += stale_runs
+    actions = [a for r in runs for a in r.actions]
 
     if args.slack:
         if clients.slack is None:
@@ -235,13 +287,19 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
             )
         else:
             actions += notify_slack(clients.slack, config, runs, args.apply)
-        for repo in closed.fixed:
-            if not reports[repo].owners:
-                reports[repo].owners = resolve_owners(gh, config, repo)
-        text, blocks = leaderboard_message(config, reports, closed)
-        actions.append(
-            send_leaderboard(clients.slack, clients.slack_webhook, config, text, blocks, args.apply)
-        )
+        if Topic.VULNS in topics and not args.no_leaderboard:
+            assert closed is not None
+            for repo in closed.fixed:
+                if not reports[repo].owners:
+                    reports[repo].owners = resolve_owners(gh, config, repo)
+            sections = (
+                stale.leaderboard_sections(stale_reports, stale_runs, team_of_owners, now)
+                if Topic.STALE in topics and not failed
+                else None
+            )
+            text, blocks = leaderboard_message(config, reports, closed, sections)
+            send = partial(send_leaderboard, clients.slack, clients.slack_webhook, config)
+            actions.append(send(text, blocks, args.apply))
 
     prefix = "" if args.apply else "[dry-run] "
     taken = [a for a in actions if a.kind != ActionKind.NOOP]
@@ -251,9 +309,13 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     else:
         for a in taken:
             print(f"{prefix}{a.repo or 'slack'}: {a.kind} ({a.detail})")
-        write_step_summary(render_org_summary(config, reports, closed), args.summary_file)
-    print(f"{prefix}{len(taken)} action(s) across {len(reports)} repos.")
-    return 1 if any(a.kind.is_error for a in actions) else 0
+        if Topic.VULNS in topics:
+            write_step_summary(render_org_summary(config, reports, closed), args.summary_file)
+        if stale_runs:
+            write_step_summary(stale.render_summary(stale_reports), args.summary_file)
+    repos = len(set(reports) | set(stale_reports))
+    print(f"{prefix}{len(taken)} action(s) across {repos} repos.")
+    return 1 if failed or any(a.kind.is_error for a in actions) else 0
 
 
 def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> int:
@@ -346,6 +408,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--redact",
         action="store_true",
         help="print only action counts and skip the summary, for public workflow logs",
+    )
+    p.add_argument(
+        "--topic",
+        action="append",
+        choices=[t.value for t in Topic],
+        help="what to track (repeatable; default: vulns, plus stale when deployments.enabled)",
+    )
+    p.add_argument(
+        "--no-leaderboard", action="store_true", help="with --slack, skip the leaderboard"
     )
     add_repo_filter(p)
     p.set_defaults(func=cmd_nag)

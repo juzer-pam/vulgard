@@ -13,14 +13,36 @@ import httpx
 
 from .config import Config
 from .linear import LinearClient, LinearError, sync_linear
-from .plan import Action, ActionKind, IssueOp, RepoPlan, RepoRun, TopicSpec, TrackedIssue
+from .plan import (
+    Action,
+    ActionKind,
+    IssueComment,
+    IssueOp,
+    RepoPlan,
+    RepoRun,
+    TopicSpec,
+    TrackedIssue,
+    TrackingState,
+)
+from .policy import parse_time
 
 
-def _tracked(raw: dict[str, Any]) -> TrackedIssue:
+def _tracked(raw: dict[str, Any], comments: tuple[IssueComment, ...] = ()) -> TrackedIssue:
     return TrackedIssue(
         number=raw["number"],
         open=raw.get("state", "open") == "open",
         body=raw.get("body") or "",
+        html_url=raw.get("html_url", ""),
+        comments=comments,
+    )
+
+
+def _comment(raw: dict[str, Any]) -> IssueComment:
+    return IssueComment(
+        id=raw["id"],
+        author=(raw.get("user") or {}).get("login", ""),
+        body=raw.get("body") or "",
+        created_at=parse_time(raw["created_at"]),
         html_url=raw.get("html_url", ""),
     )
 
@@ -28,11 +50,19 @@ def _tracked(raw: dict[str, Any]) -> TrackedIssue:
 def load_issues(
     gh: Any, config: Config, spec: TopicSpec, repos: list[str]
 ) -> dict[str, TrackedIssue | None]:
-    """The latest tracking issue (open first, else the most recently closed) per repo."""
+    """The latest tracking issue (open first, else the most recently closed) per repo, with its
+    comments for topics that read `/vulgard` commands."""
     issues: dict[str, TrackedIssue | None] = {}
     for repo in repos:
         raw = gh.find_issue(config.org, repo, spec.label)
-        issues[repo] = _tracked(raw) if raw else None
+        if raw is None:
+            issues[repo] = None
+            continue
+        comments: tuple[IssueComment, ...] = ()
+        if spec.reads_commands:
+            listed = gh.list_issue_comments(config.org, repo, raw["number"])
+            comments = tuple(_comment(c) for c in listed)
+        issues[repo] = _tracked(raw, comments)
     return issues
 
 
@@ -51,9 +81,12 @@ def _write_issue(
             return issue.html_url if issue else None
         case IssueOp.CLOSE:
             assert issue is not None
+            fields: dict[str, Any] = {"state": "closed"}
+            if TrackingState.from_body(issue.body, type(plan.state.memory)) != plan.state:
+                fields["body"] = plan.render(plan.state)
             for c in plan.comments:
                 gh.comment_issue(org, repo, issue.number, c)
-            gh.update_issue(org, repo, issue.number, state="closed")
+            gh.update_issue(org, repo, issue.number, **fields)
             return issue.html_url
         case IssueOp.CREATE:
             gh.ensure_label(org, repo, spec.label)

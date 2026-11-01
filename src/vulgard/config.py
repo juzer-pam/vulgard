@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -166,6 +166,23 @@ class VercelConfig:
     token_env: str = "VERCEL_TOKEN"
 
 
+@dataclass(frozen=True)
+class LinearOverride:
+    """Per-topic Linear settings that replace the routed `linear` ones when set."""
+
+    labels: list[str] | None = None
+    project: str | None = None
+    state: str | None = None
+
+    def apply(self, target: LinearTarget) -> LinearTarget:
+        return replace(
+            target,
+            labels=target.labels if self.labels is None else tuple(self.labels),
+            project=self.project or target.project,
+            state=self.state or target.state,
+        )
+
+
 @dataclass
 class AutoConfig:
     """Automatic redeploys and deletes of PERSONAL deployments. Off unless `repos` matches."""
@@ -205,9 +222,16 @@ class DeploymentsConfig:
     aws: AwsConfig = field(default_factory=AwsConfig)
     vercel: VercelConfig = field(default_factory=VercelConfig)
     auto: AutoConfig = field(default_factory=AutoConfig)
+    linear: LinearOverride = field(default_factory=LinearOverride)
 
     def __post_init__(self) -> None:
-        for key, cls in (("aws", AwsConfig), ("vercel", VercelConfig), ("auto", AutoConfig)):
+        sections = (
+            ("aws", AwsConfig),
+            ("vercel", VercelConfig),
+            ("auto", AutoConfig),
+            ("linear", LinearOverride),
+        )
+        for key, cls in sections:
             value = getattr(self, key)
             if isinstance(value, dict):
                 setattr(self, key, _section({key: value}, key, cls))

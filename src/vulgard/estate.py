@@ -323,6 +323,7 @@ def discover(
 class RepoActivity:
     repo: str
     last_commit: datetime | None  # None: no commits seen
+    created_at: datetime | None = None  # anchors the inactivity clock when there are no commits
 
 
 def _is_bot(commit: dict[str, Any]) -> bool:
@@ -352,6 +353,7 @@ def repo_activity(gh: Any, config: Config, repos: list[dict[str, Any]]) -> list[
             last_human_commit(
                 gh.list_commits(config.org, r["name"], r.get("default_branch") or "main")
             ),
+            parse_time(r["created_at"]) if r.get("created_at") else None,
         )
         for r in repos
     ]

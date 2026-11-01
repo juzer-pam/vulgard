@@ -10,7 +10,7 @@ from typing import Any, Protocol, assert_never
 import httpx
 
 from .config import Config, route
-from .plan import Action, ActionKind, IssueOp, RepoRun, TopicSpec
+from .plan import Action, ActionKind, IssueOp, LeaderboardSection, RepoRun, TopicSpec
 from .policy import ClosedSummary, RepoReport, org_totals
 
 API_URL = "https://slack.com/api"
@@ -158,10 +158,13 @@ def _section(text: str) -> dict[str, Any]:
     return {"type": "section", "text": {"type": "mrkdwn", "text": text[:3000]}}
 
 
-def team_of(report: RepoReport) -> str:
-    """The repo's first team owner, else its first owner. Used to group the leaderboard."""
-    owners = report.owners
+def team_of_owners(owners: list[str]) -> str:
+    """The first team owner, else the first owner. Used to group the leaderboard."""
     return next((o for o in owners if "/" in o), owners[0] if owners else "unowned")
+
+
+def team_of(report: RepoReport) -> str:
+    return team_of_owners(report.owners)
 
 
 def _ranking(title: str, rows: list[str], medals: bool) -> dict[str, Any]:
@@ -173,9 +176,13 @@ def _ranking(title: str, rows: list[str], medals: bool) -> dict[str, Any]:
 
 
 def leaderboard_message(
-    config: Config, reports: dict[str, RepoReport], closed: ClosedSummary | None
+    config: Config,
+    reports: dict[str, RepoReport],
+    closed: ClosedSummary | None,
+    sections: list[LeaderboardSection] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Weekly org-wide scoreboard for `slack.default_channel`. Names teams without pinging."""
+    """Weekly org-wide scoreboard for `slack.default_channel`. Names teams without pinging.
+    `sections` come from other topics and follow the vulnerability blocks."""
     org = config.org
     ranked = sorted(
         (
@@ -242,6 +249,8 @@ def leaderboard_message(
         blocks.append(_section("*Repos needing attention*\n" + "\n".join(rows)))
     else:
         blocks.append(_section("Nothing overdue. 🎉"))
+    for s in sections or []:
+        blocks.append(_ranking(s.title, s.rows, s.medals) if s.rows else _section(f"*{s.title}*"))
     text = "\n\n".join(b["text"]["text"] for b in blocks)
     return text, blocks
 

@@ -180,13 +180,23 @@ def _open_state(team: dict[str, Any], target: LinearTarget) -> str:
     return state_named(team, target.state) if target.state else state_id(team, "unstarted")
 
 
+def _target(config: Config, plan: RepoPlan[Any]) -> LinearTarget | None:
+    target = config.linear.target(plan.repo, plan.owners)
+    if target is None or plan.spec.linear is None:
+        return target
+    return plan.spec.linear.apply(target)
+
+
 def _issue_target(config: Config, plan: RepoPlan[Any], team_key: str) -> LinearTarget:
     """Settings for an existing issue: its route if that still points at the issue's team."""
-    target = config.linear.target(plan.repo, plan.owners)
+    target = _target(config, plan)
     if target is not None and target.team == team_key:
         return target
     linear = config.linear
-    return LinearTarget(team_key, tuple(linear.labels), None, linear.state, linear.severity_labels)
+    fallback = LinearTarget(
+        team_key, tuple(linear.labels), None, linear.state, linear.severity_labels
+    )
+    return plan.spec.linear.apply(fallback) if plan.spec.linear else fallback
 
 
 def _severity_label_changes(
@@ -270,7 +280,7 @@ def _create(
     apply: bool,
 ) -> LinearResult:
     repo = plan.repo
-    target = config.linear.target(repo, plan.owners)
+    target = _target(config, plan)
     if target is None:
         skip = Action(repo, ActionKind.LINEAR_SKIP, "no team mapped; set linear.default_team")
         return LinearResult(None, [skip])

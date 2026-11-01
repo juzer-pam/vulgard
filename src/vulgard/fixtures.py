@@ -78,6 +78,13 @@ class FixtureGitHub:
     def find_issue(self, org: str, repo: str, label: str) -> dict[str, Any] | None:
         return self.data.get("issues", {}).get(issue_key(repo, label))
 
+    def list_issue_comments(self, org: str, repo: str, number: int) -> list[dict[str, Any]]:
+        return self.data.get("comments", {}).get(f"{repo}#{number}", [])
+
+    def can_write(self, org: str, repo: str, user: str) -> bool:
+        writers = self.data.get("writers")
+        return writers is None or user in writers
+
     def find_open_pr(self, org: str, repo: str, head_branch: str) -> dict[str, Any] | None:
         return self.data.get("open_prs", {}).get(repo, {}).get(head_branch)
 

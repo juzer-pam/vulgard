@@ -15,6 +15,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, Self, assert_never
 
+from .config import LinearOverride
 from .policy import parse_time
 
 STATE_RE = re.compile(r"<!-- vulgard-state (\{.*?\}) -->", re.S)
@@ -38,6 +39,7 @@ class TopicSpec:
     escalation_header: str  # after the escalation mentions, in slack.escalation_channel
     linear_closed: str  # Linear comment when the topic goes clean
     reads_commands: bool = False  # the engine loads issue comments only for these topics
+    linear: LinearOverride | None = None  # replaces the routed labels, project and state
 
 
 class ActionKind(StrEnum):
@@ -140,6 +142,15 @@ def issue_op(issue: TrackedIssue | None, needs_tracking: bool) -> IssueOp:
             return IssueOp.CREATE
         return IssueOp.UPDATE if issue.open else IssueOp.REOPEN
     return IssueOp.CLOSE if issue is not None and issue.open else IssueOp.NONE
+
+
+@dataclass(frozen=True)
+class LeaderboardSection:
+    """A topic's block in the weekly leaderboard: a title and optional ranked rows."""
+
+    title: str
+    rows: list[str] = field(default_factory=list)
+    medals: bool = False
 
 
 @dataclass(frozen=True)
