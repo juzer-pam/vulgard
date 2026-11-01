@@ -190,7 +190,7 @@ class LinearContent:
 
 @dataclass(frozen=True)
 class Escalation:
-    """The GitHub comment rides in `RepoPlan.comments`; these are the other channels."""
+    """The GitHub comment is in `RepoPlan.comments`. This holds the text for the other channels."""
 
     detail: str  # Action detail, e.g. "2 alert(s)"
     linear_md: str

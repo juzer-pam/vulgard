@@ -41,7 +41,7 @@ deployments:
   aws: {regions: [us-east-1]}
   vercel: {team_id: team_xxx}
   auto: {repos: ["pam-*"], delete: false, personal_stale_days: 90, notice_days: 7}
-  linear: {team: PLAT, labels: [vulgard, stale]}
+  linear: {labels: [vulgard, stale], project: Baselines}
 ```
 
 Humans record a baseline by commenting on the repo's `vulgard-stale` tracking issue:
@@ -69,24 +69,24 @@ vulgard nag --topic stale --no-leaderboard --apply --execute   # daily: perform 
 `Deployment` is a classified sighting: its repo, its `Attribution`, its `Tier` and its person.
 `NativeRef = CfnStack | SstStage | AmplifyBranch | VercelProject` is the handle that operations
 match on. A `StaleFinding` uses the alert SLA vocabulary: severity, flagged_at, deadline and
-`SlaStatus`. `Command` and `Decisions` are the fold of the comment thread. An `OpRecord` carries
-a deterministic `request_id`.
+`SlaStatus`. `Command` and `Decisions` are the fold of the comment thread. An `Op` carries a
+deterministic `request_id`.
 
 1. **One generic engine, with topics plugged in.** `RepoPlan` carries rendered content plus a
    `TopicSpec`. `nag.track`, `linear.sync_linear` and `slack.notify_slack` never read domain
-   fields. A topic implements `plan(subject, prev, issue, now) -> RepoPlan`. Vulnerabilities
-   become the first topic, unchanged; stale is the second. Each repo gets one GitHub issue and
-   one Linear issue per topic, because each topic closes on its own condition (per
-   information-leakage).
+   fields. A topic is a module with a pure `plan_repo(report, config, issue, now) -> RepoPlan`.
+   Vulnerabilities (`vulns.py`) are the first topic, unchanged, and stale is the second. Each
+   repo gets one GitHub issue and one Linear issue per topic, because each topic closes on its
+   own condition.
 2. **Staleness is an SLA.** `flagged_at = last_deployed + stale_days` and
    `deadline = flagged_at + baseline_days`. Escalation, Linear severity labels and "most
    overdue" therefore work unchanged. Every clock comes from cloud and GitHub timestamps and is
    never stored.
-3. **Baselines are `/vulgard` commands, re-folded from the thread every run.** The thread is
-   per-actor and append-only, and merged when read (per
-   separate-before-serializing-shared-state). The engine reopens the latest closed tracking
-   issue instead of creating a new one, so decisions survive clean periods. Whether a request
-   is done is read from the world: redeployed after the comment, or gone.
+3. **Baselines are `/vulgard` commands, re-folded from the thread every run.** Each comment has
+   one authenticated author and the thread is append-only, so vulgard keeps no copy of a
+   decision that could drift. The engine reopens the latest closed tracking issue instead of
+   creating a new one, so decisions survive clean periods. A request counts as done when the
+   world shows it: the deployment was redeployed after the comment, or it's gone.
 4. **Redeploys go through the repo; deletes are native wherever possible.**
    - Redeploys dispatch the repo's lifecycle workflow, or the workflow named in
      `deployments.workflows`. Amplify Hosting and Vercel redeploy through their own release
@@ -99,14 +99,15 @@ a deterministic `request_id`.
    - A deployment is PERSONAL only on positive evidence: its stage maps to a known person, or
      it's an Amplify sandbox.
    - Automatic ops need all four of: an `auto.repos` match, `--apply`, `--execute`, and a
-     notice period whose clock starts only once the @mention comment was actually posted.
+     notice at least `auto.notice_days` old. A notice recorded today never runs today.
    - The executor re-reads the live target before deleting.
 6. **Ops are idempotent.** `request_id` is a hash of the decision. It goes into the workflow
    run name, the CFN `ClientRequestToken`, the Amplify `jobReason` and the Vercel `meta`.
    `execute` always looks for an existing op before starting one.
-7. **Discovery runs in two phases.** I/O-only scanners feed a pure `classify`. Attribution
-   order: tag, then platform link, then manifest identity on default branches, then config
-   glob, then `unattributed_repo`.
+7. **Discovery runs in two phases.** I/O-only scanners feed a pure `classify`. A
+   `deployments.attribution` glob wins. Otherwise attribution goes through the repo tag, the
+   platform's own repo link, and manifest identity on default branches, then falls back to
+   `unattributed_repo`.
 
 Module map. The stale path is `cli`, then `stale`, then `nag`/`lifecycle`.
 
@@ -120,6 +121,7 @@ Module map. The stale path is `cli`, then `stale`, then `nag`/`lifecycle`.
 | `vercel.py` | Vercel scanner and ops |
 | `baseline.py` | command parsing and `fold` |
 | `lifecycle.py` | `reconcile`, the framework table, `execute` |
+| `executor.py` | the live executor that maps steps to GitHub, AWS and Vercel |
 | `stale.py` | stale topic: policy, planner, rendering |
 
 What it deliberately doesn't do:
@@ -132,34 +134,35 @@ What it deliberately doesn't do:
 
 ## Synthesis decision
 
-The base is the Opus candidate, chosen on its rubric scores. The Gemini cross-judge reached the
-same choice independently. It had the stronger answers to the two hardest problems:
+The base is candidate B, chosen on its rubric scores. A second reviewer reached the same
+choice independently. It had the stronger answers to the two hardest problems:
 
 - **Close conditions.** Separate topics each close on their own condition. With a single
-  combined issue, a repo that has 1,431 alerts and 185 stale stacks would never close.
+  combined issue, a repo with 1,431 open alerts and one stale stack would stay open until both
+  were fixed.
 - **Safety.** `SafeDelete`, positive-evidence PERSONAL, the notice period that starts only after
   the comment is posted, and deterministic `request_id`s.
 
-Grafted from the Gemini candidate:
+Taken from candidate A:
 
 - `deployments.workflows`, so repos with an existing deploy workflow (`pam-agent-core`'s
   `deploy-stage.yml`) don't wait on `rollout --lifecycle`
 - `Sighting.in_progress` (CloudFormation `*_IN_PROGRESS` or an SST lock object), so vulgard
   never dispatches over a human's deploy
 
-Fixes from the cross-judge:
+Fixes from the reviewer:
 
 - Bot commits (`[bot]` authors) don't count toward repo activity.
 - Vercel projects are never auto-deleted. A project is PRODUCTION when it has a custom
   production domain, so only a human request can delete one without a domain.
 
-My own fixes:
+Fixes made while building it:
 
 - CDK stacks are detected by the `BootstrapVersion` parameter in `DescribeStacks`, not by
   calling `ListStackResources` for every stack.
-- The SST path claim was checked against SST's source; the judge's challenge to it was wrong.
+- The SST state path was checked against SST's source, and a reviewer's challenge to it was wrong.
 
-Rejected from Gemini:
+Rejected from candidate A:
 
 - one combined issue per repo
 - baselines kept in three places (config, comments and issue state)

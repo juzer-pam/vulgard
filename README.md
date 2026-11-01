@@ -195,7 +195,7 @@ commits to. [The design doc](docs/design/stale-deployments.md) has the rationale
 
 - A deployment not deployed in `stale_days` (30), or a repo with no human commits in
   `repo_inactive_days` (90), needs a baseline within `baseline_days` (14). The clocks come from
-  AWS, Vercel, and GitHub timestamps, so editing the issue can't reset them.
+  AWS, Vercel and GitHub timestamps, so editing the issue can't reset them.
 - Each such repo gets one issue labeled `vulgard-stale`, with the same reminders, escalation,
   Slack digests, DMs (including the person a personal stack belongs to), Linear issue, and
   leaderboard section as alerts. Severity comes from the tier: production high, shared medium,
@@ -210,9 +210,9 @@ commits to. [The design doc](docs/design/stale-deployments.md) has the rationale
   /vulgard cancel <name>                         cancel an earlier command
   ```
 
-  Only people with write access can baseline. The thread is re-read every run, so the latest
-  command wins and expired keeps bring the finding back. Deploying, deleting, or committing by
-  hand counts too.
+  Only people with write access can baseline. vulgard re-reads the thread every run. The latest
+  command wins, and an expired keep brings the finding back. Deploying, deleting or committing
+  by hand also counts.
 - `nag --apply --execute` carries out `redeploy` and `delete` requests, and comments on the
   issue when one starts or fails. Each op has a fixed request id, so it runs once however
   often `nag` does.
@@ -222,49 +222,49 @@ commits to. [The design doc](docs/design/stale-deployments.md) has the rationale
   | Serverless v3 (OSLS), CDK | the repo's lifecycle workflow | CloudFormation `DeleteStack` (Serverless bucket emptied first) |
   | SST v3/v4 | lifecycle workflow (`sst deploy`) | lifecycle workflow (`sst remove`) |
   | Amplify Hosting | `StartJob` (release) | `DeleteBranch` |
-  | Amplify sandbox | — | CloudFormation `DeleteStack` |
+  | Amplify sandbox | not supported (it runs from a laptop) | CloudFormation `DeleteStack` |
   | Vercel | rebuild of the production deployment | `DELETE project` (on request only) |
 
   `vulgard rollout --lifecycle` opens a PR adding `vulgard-lifecycle.yml` to each repo with a
   Serverless, SST or CDK app. Repos with their own deploy workflow can list it in
   `deployments.workflows` instead; vulgard dispatches it with `action`, `framework`, `app`,
   `stage`, `stack` and `request_id` inputs, and finds the run by the request id in its run name.
-- **Automatic ops** apply only to personal deployments (`deployments.people`, or Amplify
+- Automatic ops apply only to personal deployments (`deployments.people`, or Amplify
   sandboxes) in repos listed in `deployments.auto.repos`. A personal deployment that hasn't
   deployed in `auto.personal_stale_days` (90), or whose repo has open critical alerts, gets a
   notice on the issue mentioning its owner. After `auto.notice_days` (7), the next
   `--execute` run redeploys it, or deletes it with `auto.delete: true`.
   `/vulgard keep` or `/vulgard cancel` stops it.
-- vulgard never deletes production or protected deployments: a production stage or tag,
-  CloudFormation termination protection, an Amplify production branch, or a Vercel project
-  with a custom domain. Before every delete it re-reads the live target and skips it if it was
-  redeployed, protected, or reclassified since.
+- vulgard never deletes production or protected deployments. Those are a production stage or
+  tag, CloudFormation termination protection, an Amplify production branch (or one named `main`
+  or `master`), and a Vercel project with a custom domain. Before every delete it re-reads the
+  live target and skips it if someone redeployed, protected or reclassified it since.
+
+- Deployments with no known repo land in `unattributed_repo`. Tag stacks with `vulgard:repo`,
+  or map them in `deployments.attribution`.
+- `vulgard report --topic stale` lists every stale deployment and inactive repo and writes
+  nothing. To trial the topic org-wide, set `deployments.report_only: true`. `nag` then writes
+  the findings to the workflow summary and opens no issues, Linear issues or Slack messages.
 
 ### AWS roles for stale deployments
 
 The `nag` job assumes `VULGARD_AWS_ROLE` (repo variable) through GitHub OIDC.
 
-- **`VulgardLifecycle`**, trusted by the vulgard repo's workflows:
+- `VulgardLifecycle`, trusted by the vulgard repo's workflows:
   - Reads: `cloudformation:DescribeStacks`, `DescribeStackEvents`; `ssm:GetParameter` on
     `/sst/bootstrap`; `s3:ListBucket` on the SST state bucket; `amplify:ListApps`,
     `ListBranches`, `ListJobs`, `GetApp`, `GetBranch`.
   - Writes: `cloudformation:DeleteStack`; `iam:PassRole` on `VulgardStackDelete` only;
     `s3:ListBucketVersions`, `s3:DeleteObject` and `s3:DeleteObjectVersion` on
     `arn:aws:s3:::*-serverlessdeploymentbucket-*`; `amplify:StartJob`, `amplify:DeleteBranch`.
-- **`VulgardStackDelete`**, trusted by `cloudformation.amazonaws.com`, set as
+- `VulgardStackDelete`, trusted by `cloudformation.amazonaws.com` and set as
   `deployments.aws.delete_role_arn`. CloudFormation deletes a stack's resources with this role,
   so `VulgardLifecycle` itself never needs permission to delete Lambdas, tables or roles.
 
 Redeploys and SST removes run in the target repo with its own deploy role
 (`deployments.aws.deploy_role_arn`, e.g. `GithubCI`). The vulgard GitHub App needs
-**Actions: write** to dispatch them. Set the `VULGARD_EXECUTE` variable to `true` to add
+the Actions write permission to dispatch them. Set the `VULGARD_EXECUTE` variable to `true` to add
 `--execute` to the scheduled run.
-- Deployments with no known repo land in `unattributed_repo`. Tag stacks with `vulgard:repo`,
-  or map them in `deployments.attribution`.
-- `vulgard report --topic stale` lists every stale deployment and inactive repo without
-  writing anything. To trial it org-wide first, set `deployments.report_only: true`: `nag`
-  then writes the findings to the workflow summary and opens no issues, Linear issues, or
-  Slack messages.
 
 ## Caveats
 

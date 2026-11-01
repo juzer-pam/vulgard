@@ -1,5 +1,6 @@
-# Redeploys or removes one stack for vulgard. Repos call it from .github/workflows/vulgard-lifecycle.yml,
-# which `vulgard rollout --lifecycle` adds, and vulgard dispatches that workflow.
+# Redeploys or removes one stack for vulgard. Repos call it from
+# .github/workflows/vulgard-lifecycle.yml, which `vulgard rollout --lifecycle` adds and
+# vulgard dispatches.
 name: vulgard lifecycle
 
 on:

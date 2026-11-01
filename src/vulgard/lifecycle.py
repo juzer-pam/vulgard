@@ -1,20 +1,21 @@
 """Lifecycle: turn baselines into redeploys and deletes, and carry them out idempotently.
 
-Two sources of ops:
+Ops come from two sources.
 
-- **Requests**: `/vulgard redeploy|delete <name>` from someone with write access. Done on the
-  next `nag --apply --execute` run.
-- **Automatic**: PERSONAL deployments in an `auto.repos` repo that are older than
-  `auto.personal_stale_days`, or whose repo has open critical alerts. vulgard first posts a
-  notice on the tracking issue, and acts only once `auto.notice_days` have passed since that
-  notice was recorded. `/vulgard keep` or `/vulgard cancel` stops it.
+A request is a `/vulgard redeploy|delete <name>` comment from someone with write access. The
+next `nag --apply --execute` run carries it out.
+
+An automatic op targets a PERSONAL deployment in an `auto.repos` repo that hasn't deployed in
+`auto.personal_stale_days`, or whose repo has open critical alerts. vulgard first posts a
+notice on the tracking issue. It acts once `auto.notice_days` have passed since the notice was
+first planned. `/vulgard keep` or `/vulgard cancel` stops it.
 
 Every delete is built from a `SafeDelete`, which only `check_delete` can create, and the
 executor re-reads the live target before deleting. Production is never deleted.
 
-Each op has a deterministic `request_id`, passed to every API as its idempotency key (workflow
-run name, CloudFormation `ClientRequestToken`, Amplify `jobReason`, Vercel `meta`), and
-`execute` always looks for an existing op with that id before starting one.
+Each op has a deterministic `request_id`. Every API receives it as an idempotency key: the
+workflow run name, the CloudFormation `ClientRequestToken`, the Amplify `jobReason` and the
+Vercel `meta`. `execute` looks for an existing op with that id before it starts one.
 """
 
 from __future__ import annotations
@@ -218,7 +219,8 @@ def requested_op(req: Issued[Request], d: Deployment, cfg: DeploymentsConfig) ->
 
 @dataclass(frozen=True)
 class Notice:
-    """Recorded in issue memory when the notice comment is posted. The clock starts there."""
+    """Recorded in issue memory with the date it was first planned. The notice period counts
+    from that date."""
 
     key: str
     verb: Verb
@@ -359,9 +361,9 @@ def result_comment(r: Result, mentions: str) -> str | None:
     """The tracking-issue comment for a result, or None when there's nothing new to say."""
     match r.outcome:
         case Outcome.STARTED:
-            return f"{mentions} 🛠 Started: {describe(r.op)}. [Progress]({r.url})".strip()
+            return f"{mentions} Started {describe(r.op)}. [Progress]({r.url})".strip()
         case Outcome.FAILED:
-            return f"{mentions} ⚠️ Couldn't {describe(r.op)}: {r.detail}".strip()
+            return f"{mentions} Couldn't {describe(r.op)}: {r.detail}".strip()
         case Outcome.RUNNING | Outcome.SKIPPED:
             return None
         case _ as unreachable:

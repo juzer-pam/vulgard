@@ -139,7 +139,7 @@ def parse_line(
             if verb == "cancel":
                 return Cancel(d.key)
             if not deletable_by_request(d):
-                return "vulgard never deletes production; delete it by hand if you really mean it"
+                return "vulgard never deletes production; delete it by hand if you need to"
             return Delete(d.key)
         case "keep":
             parsed = _until(rest, today, max_days)

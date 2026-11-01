@@ -8,8 +8,8 @@ leaderboard work the same way they do for alerts:
     status     = ok / due-soon / overdue
     severity   = deployments.severity[tier]      (repos: deployments.repo_severity)
 
-Every clock comes from cloud and GitHub timestamps and is never stored, so editing a tracking
-issue can't reset it.
+Every clock comes from cloud and GitHub timestamps and vulgard never stores one, so editing a
+tracking issue can't reset it.
 """
 
 from __future__ import annotations
@@ -457,7 +457,7 @@ def _sections(report: StaleReport, now: datetime, relative: bool = True) -> list
                 lines += _finding_block(f, now, relative)
     if report.requests:
         blocked = {o.deployment.key: o.step for o in report.lifecycle.ops if not o.runnable}
-        lines += ["", f"### 🛠 Requested ({len(report.requests)})"]
+        lines += ["", f"### Requested ({len(report.requests)})"]
         for req, d in report.requests:
             verb = "redeploy" if isinstance(req.command, Redeploy) else "delete"
             why = blocked.get(d.key)
@@ -476,7 +476,7 @@ def _sections(report: StaleReport, now: datetime, relative: bool = True) -> list
         if o.trigger is not Trigger.REQUEST
     ] + [(s.deployment, s.notice.verb, s.due) for s in report.lifecycle.scheduled]
     if auto:
-        lines += ["", f"### 🤖 Automatic ({len(auto)})"]
+        lines += ["", f"### Automatic ({len(auto)})"]
         for d, verb, due in auto:
             when = f"on **{due:%Y-%m-%d}**" if due else "**now**"
             lines.append(
@@ -500,7 +500,7 @@ def render_body(report: StaleReport, config: Config, state: StaleState, now: dat
         lines += ["", f"Tracked in Linear: [{state.linear.identifier}]({state.linear.url})"]
     lines += _sections(report, now)
     if report.kept:
-        lines += ["", f"### 🗂 Kept ({len(report.kept)})"]
+        lines += ["", f"### Kept ({len(report.kept)})"]
         for f, keep in report.kept:
             assert isinstance(f.subject, StaleDeployment)
             lines.append(
@@ -515,7 +515,7 @@ def render_body(report: StaleReport, config: Config, state: StaleState, now: dat
             f"{a.command.reason}",
         ]
     if report.rejected:
-        lines += ["", f"### ⚠️ Commands vulgard didn't accept ({len(report.rejected)})"]
+        lines += ["", f"### Commands vulgard didn't accept ({len(report.rejected)})"]
         lines += [f"- [@{r.author}]({r.url}) `{r.line}`: {r.reason}" for r in report.rejected]
     if report.deployments:
         lines += [
@@ -653,7 +653,7 @@ def plan_repo(
             for s in notices
         ]
         comments.append(
-            f"{' '.join([*persons, *report.owners])} 🤖 vulgard will act on these personal "
+            f"{' '.join([*persons, *report.owners])} vulgard will act on these personal "
             "deployments automatically unless someone comments "
             "`/vulgard keep <name> until YYYY-MM-DD: why` or `/vulgard cancel <name>` first:"
             "\n\n" + "\n".join(lines)
@@ -735,9 +735,9 @@ def render_summary(reports: Mapping[str, StaleReport]) -> str:
         key=lambda r: (-len(r.overdue), -len(r.findings), r.repo),
     )
     if not ranked:
-        return "## 🧹 Stale deployments\n\nEverything is up to date or baselined. 🎉"
+        return "## Stale deployments\n\nEverything is up to date or baselined."
     lines = [
-        "## 🧹 Stale deployments",
+        "## Stale deployments",
         "",
         "| Repo | Need a baseline | Overdue | Requested | Owners |",
         "|---|---|---|---|---|",
@@ -774,7 +774,7 @@ def leaderboard_sections(
     total = sum(stale.values())
     sections = [
         LeaderboardSection(
-            f"🧹 Stale deployments: {total} need a baseline, {sum(overdue.values())} overdue",
+            f"Stale deployments: {total} need a baseline, {sum(overdue.values())} overdue",
             [],
         )
     ]
