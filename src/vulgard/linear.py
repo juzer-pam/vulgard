@@ -287,7 +287,8 @@ def _create(
         skip = Action(repo, ActionKind.LINEAR_SKIP, "no team mapped; set linear.default_team")
         return LinearResult(None, [skip])
     if not apply:
-        detail = f"in team {target.team}" + (f", project {target.project}" if target.project else "")
+        project = f", project {target.project}" if target.project else ""
+        detail = f"in team {target.team}{project}"
         return LinearResult(None, [Action(repo, ActionKind.LINEAR_CREATE, detail)])
     team = client.team(target.team)
     payload = {
