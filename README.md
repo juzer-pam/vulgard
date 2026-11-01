@@ -212,8 +212,53 @@ commits to. [The design doc](docs/design/stale-deployments.md) has the rationale
 
   Only people with write access can baseline. The thread is re-read every run, so the latest
   command wins and expired keeps bring the finding back. Deploying, deleting, or committing by
-  hand counts too. For now `redeploy` and `delete` are recorded and listed as requested until
-  vulgard sees them done; carrying them out automatically comes with the lifecycle workflow.
+  hand counts too.
+- `nag --apply --execute` carries out `redeploy` and `delete` requests, and comments on the
+  issue when one starts or fails. Each op has a fixed request id, so it runs once however
+  often `nag` does.
+
+  | Framework | Redeploy | Delete |
+  |---|---|---|
+  | Serverless v3 (OSLS), CDK | the repo's lifecycle workflow | CloudFormation `DeleteStack` (Serverless bucket emptied first) |
+  | SST v3/v4 | lifecycle workflow (`sst deploy`) | lifecycle workflow (`sst remove`) |
+  | Amplify Hosting | `StartJob` (release) | `DeleteBranch` |
+  | Amplify sandbox | — | CloudFormation `DeleteStack` |
+  | Vercel | rebuild of the production deployment | `DELETE project` (on request only) |
+
+  `vulgard rollout --lifecycle` opens a PR adding `vulgard-lifecycle.yml` to each repo with a
+  Serverless, SST or CDK app. Repos with their own deploy workflow can list it in
+  `deployments.workflows` instead; vulgard dispatches it with `action`, `framework`, `app`,
+  `stage`, `stack` and `request_id` inputs, and finds the run by the request id in its run name.
+- **Automatic ops** apply only to personal deployments (`deployments.people`, or Amplify
+  sandboxes) in repos listed in `deployments.auto.repos`. A personal deployment that hasn't
+  deployed in `auto.personal_stale_days` (90), or whose repo has open critical alerts, gets a
+  notice on the issue mentioning its owner. After `auto.notice_days` (7), the next
+  `--execute` run redeploys it, or deletes it with `auto.delete: true`.
+  `/vulgard keep` or `/vulgard cancel` stops it.
+- vulgard never deletes production or protected deployments: a production stage or tag,
+  CloudFormation termination protection, an Amplify production branch, or a Vercel project
+  with a custom domain. Before every delete it re-reads the live target and skips it if it was
+  redeployed, protected, or reclassified since.
+
+### AWS roles for stale deployments
+
+The `nag` job assumes `VULGARD_AWS_ROLE` (repo variable) through GitHub OIDC.
+
+- **`VulgardLifecycle`**, trusted by the vulgard repo's workflows:
+  - Reads: `cloudformation:DescribeStacks`, `DescribeStackEvents`; `ssm:GetParameter` on
+    `/sst/bootstrap`; `s3:ListBucket` on the SST state bucket; `amplify:ListApps`,
+    `ListBranches`, `ListJobs`, `GetApp`, `GetBranch`.
+  - Writes: `cloudformation:DeleteStack`; `iam:PassRole` on `VulgardStackDelete` only;
+    `s3:ListBucketVersions`, `s3:DeleteObject` and `s3:DeleteObjectVersion` on
+    `arn:aws:s3:::*-serverlessdeploymentbucket-*`; `amplify:StartJob`, `amplify:DeleteBranch`.
+- **`VulgardStackDelete`**, trusted by `cloudformation.amazonaws.com`, set as
+  `deployments.aws.delete_role_arn`. CloudFormation deletes a stack's resources with this role,
+  so `VulgardLifecycle` itself never needs permission to delete Lambdas, tables or roles.
+
+Redeploys and SST removes run in the target repo with its own deploy role
+(`deployments.aws.deploy_role_arn`, e.g. `GithubCI`). The vulgard GitHub App needs
+**Actions: write** to dispatch them. Set the `VULGARD_EXECUTE` variable to `true` to add
+`--execute` to the scheduled run.
 - Deployments with no known repo land in `unattributed_repo`. Tag stacks with `vulgard:repo`,
   or map them in `deployments.attribution`.
 - `vulgard report --topic stale` lists every stale deployment and inactive repo without

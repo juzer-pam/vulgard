@@ -49,6 +49,8 @@ deployments:
     payments-api: deploy.yml
   aws:
     regions: [us-east-1]
+    deploy_role_arn: arn:aws:iam::111122223333:role/GithubCI
+    delete_role_arn: arn:aws:iam::111122223333:role/VulgardStackDelete
   vercel:
     team_id: team_acme
   auto:

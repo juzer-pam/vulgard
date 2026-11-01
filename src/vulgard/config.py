@@ -158,6 +158,8 @@ DEFAULT_TIER_SEVERITY = {"production": "high", "shared": "medium", "personal": "
 @dataclass
 class AwsConfig:
     regions: list[str] = field(default_factory=lambda: ["us-east-1"])
+    delete_role_arn: str | None = None  # CloudFormation service role that deletes stacks
+    deploy_role_arn: str | None = None  # the role repos deploy with, for vulgard-lifecycle.yml
 
 
 @dataclass

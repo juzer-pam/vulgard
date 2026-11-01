@@ -196,6 +196,30 @@ class GitHub:
         issues = [i for i in issues if "pull_request" not in i]
         return next((i for i in issues if i["state"] == "open"), issues[0] if issues else None)
 
+    def find_workflow_run(self, org: str, repo: str, workflow: str, marker: str) -> str | None:
+        """A recent dispatched run of `workflow` whose run name contains `marker`."""
+        try:
+            data = self._json(
+                "GET",
+                f"/repos/{org}/{repo}/actions/workflows/{workflow}/runs",
+                params={"event": "workflow_dispatch", "per_page": 50},
+            )
+        except GitHubError as e:
+            if e.status == 404:
+                return None
+            raise
+        runs = data.get("workflow_runs", [])
+        return next((r["html_url"] for r in runs if marker in (r.get("display_title") or "")), None)
+
+    def dispatch_workflow(
+        self, org: str, repo: str, workflow: str, ref: str, inputs: dict[str, str]
+    ) -> None:
+        self._json(
+            "POST",
+            f"/repos/{org}/{repo}/actions/workflows/{workflow}/dispatches",
+            json={"ref": ref, "inputs": inputs},
+        )
+
     def list_issue_comments(self, org: str, repo: str, number: int) -> list[dict[str, Any]]:
         return self._paginate(f"/repos/{org}/{repo}/issues/{number}/comments")
 

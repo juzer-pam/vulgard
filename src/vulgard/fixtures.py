@@ -11,6 +11,7 @@ from .aws import sight_amplify_branch, sight_cfn_stack, sight_sst_objects
 from .clients import Clients
 from .config import IssueConfig
 from .estate import Sighting
+from .lifecycle import Step
 from .policy import now_utc
 from .vercel import sight_vercel_project
 
@@ -263,9 +264,33 @@ class FakeSlack:
         self.messages.append((channel, text))
 
 
+class FixtureExecutor:
+    """Records started ops. `data["ops"]` maps request ids of ops that already exist to a link,
+    and `data["recheck"]` maps deployment names to a reason a delete must not proceed."""
+
+    def __init__(self, data: dict[str, Any]):
+        self.data = data
+        self.started: list[tuple[Step, str]] = []
+
+    def find(self, step: Step, request_id: str) -> str | None:
+        return self.data.get("ops", {}).get(request_id)
+
+    def recheck(self, step: Step) -> str | None:
+        target = getattr(step, "target", None)
+        name = target.deployment.name if target else ""
+        return self.data.get("recheck", {}).get(name)
+
+    def start(self, step: Step, request_id: str) -> str:
+        self.started.append((step, request_id))
+        url = f"https://example.test/ops/{request_id}"
+        self.data.setdefault("ops", {})[request_id] = url
+        return url
+
+
 def fixture_clients(path: str | Path) -> Clients:
     gh = FixtureGitHub.from_file(path)
     kev = frozenset(gh.data.get("kev", []))
+    executor = FixtureExecutor(gh.data)
     return Clients(
         github=gh,
         linear=FakeLinear(),
@@ -273,4 +298,5 @@ def fixture_clients(path: str | Path) -> Clients:
         slack_webhook=None,
         kev=lambda: kev,
         scanners=lambda: [FixtureScanner(gh.data)],
+        executor=lambda: executor,
     )

@@ -71,3 +71,52 @@ class Vercel:
             if not nxt:
                 return found
             params = {"limit": 100, "until": nxt}
+
+    def project(self, project_id: str) -> dict[str, Any] | None:
+        resp = self._http.get(f"/v9/projects/{project_id}", params={"teamId": self._team_id})
+        if resp.status_code == 404:
+            return None
+        if resp.status_code >= 400:
+            raise VercelError(f"Vercel API {resp.status_code}: {resp.text[:200]}")
+        return resp.json()
+
+    def project_url(self, project: dict[str, Any]) -> str:
+        return f"https://vercel.com/{self._team_id}/{project['name']}"
+
+    def find_redeploy(self, project_id: str, request_id: str) -> str | None:
+        data = self._get("/v6/deployments", {"projectId": project_id, "limit": 20})
+        for d in data.get("deployments", []):
+            if (d.get("meta") or {}).get("vulgardRequest") == request_id:
+                return f"https://{d['url']}"
+        return None
+
+    def redeploy(self, project_id: str, request_id: str) -> str:
+        """Rebuild the current production deployment, tagged with the request id."""
+        project = self.project(project_id)
+        if project is None:
+            raise VercelError(f"Vercel project {project_id} no longer exists")
+        prod = (project.get("targets") or {}).get("production") or {}
+        if not prod.get("id"):
+            raise VercelError(f"Vercel project {project['name']} has no production deployment")
+        resp = self._http.post(
+            "/v13/deployments",
+            params={"teamId": self._team_id},
+            json={
+                "name": project["name"],
+                "deploymentId": prod["id"],
+                "target": "production",
+                "meta": {"vulgardRequest": request_id},
+            },
+        )
+        if resp.status_code >= 400:
+            raise VercelError(f"Vercel redeploy {resp.status_code}: {resp.text[:200]}")
+        return f"https://{resp.json()['url']}"
+
+    def delete(self, project_id: str) -> str:
+        project = self.project(project_id)
+        if project is None:
+            return f"https://vercel.com/{self._team_id}"
+        resp = self._http.delete(f"/v9/projects/{project_id}", params={"teamId": self._team_id})
+        if resp.status_code >= 400:
+            raise VercelError(f"Vercel delete {resp.status_code}: {resp.text[:200]}")
+        return self.project_url(project)

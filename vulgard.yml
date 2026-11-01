@@ -107,8 +107,17 @@ deployments:
   label: vulgard-stale
   title: Stale deployments need a baseline
   linear: {}                      # labels/project/state for this topic's Linear issues
+  workflows: {}                   # repo -> its own deploy workflow, instead of vulgard-lifecycle.yml
+  lifecycle_workflow: vulgard-lifecycle.yml
+  auto:                           # automatic ops on personal deployments; off unless repos match
+    repos: []                     # opt-in globs, e.g. ["pam-*"]
+    delete: false                 # false: redeploy them; true: delete them
+    personal_stale_days: 90
+    notice_days: 7                # notice on the issue first; keep or cancel stops it
   aws:
     regions: [us-east-1]          # credentials come from the environment (GitHub OIDC in CI)
+    delete_role_arn: null         # CloudFormation service role that deletes stacks' resources
+    deploy_role_arn: null         # the role repos deploy with, for vulgard-lifecycle.yml
   vercel:
     team_id: null                 # with $VERCEL_TOKEN set, Vercel projects are scanned too
     token_env: VERCEL_TOKEN

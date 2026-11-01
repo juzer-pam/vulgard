@@ -58,10 +58,12 @@ class ActionKind(StrEnum):
     SLACK = "slack"
     SLACK_SKIP = "slack-skip"
     SLACK_ERROR = "slack-error"
+    EXECUTE = "execute"
+    EXECUTE_ERROR = "execute-error"
 
     @property
     def is_error(self) -> bool:
-        return self in (ActionKind.LINEAR_ERROR, ActionKind.SLACK_ERROR)
+        return self in (ActionKind.LINEAR_ERROR, ActionKind.SLACK_ERROR, ActionKind.EXECUTE_ERROR)
 
 
 @dataclass

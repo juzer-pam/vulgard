@@ -1,6 +1,8 @@
 # Scheduled job that updates per-repo tracking issues, pings owners in GitHub and Slack,
 # mirrors issues into Linear, escalates overdue alerts, and posts a Slack leaderboard. Needs
 # a GitHub App installed on the org; Slack and Linear are skipped if their secrets are unset.
+# Stale deployments (deployments.enabled) also need the VULGARD_AWS_ROLE variable: the
+# VulgardLifecycle role, assumed through GitHub OIDC.
 name: nag
 
 on:
@@ -12,9 +14,14 @@ on:
         description: Make changes (uncheck for a dry run)
         type: boolean
         default: true
+      execute:
+        description: Carry out requested and due automatic redeploys and deletes
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  id-token: write # AWS OIDC, for stale deployments
 
 concurrency:
   group: vulgard-nag
@@ -44,14 +51,23 @@ jobs:
         run: |
           if [ -n "$VULGARD_CONFIG" ]; then printf '%s\n' "$VULGARD_CONFIG" > vulgard.yml; fi
 
+      - if: vars.VULGARD_AWS_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.VULGARD_AWS_ROLE }}
+          aws-region: ${{ vars.VULGARD_AWS_REGION || 'us-east-1' }}
+
       - name: Run vulgard
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           APPLY: ${{ github.event_name == 'schedule' || inputs.apply }}
+          EXECUTE: ${{ (github.event_name == 'schedule' && vars.VULGARD_EXECUTE == 'true') || inputs.execute }}
         run: |
           args=(--org "${{ github.repository_owner }}" nag --slack --linear --redact)
           if [ "$APPLY" = "true" ]; then args+=(--apply); fi
+          if [ "$EXECUTE" = "true" ]; then args+=(--execute); fi
           uv run vulgard "${args[@]}"

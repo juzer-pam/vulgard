@@ -191,6 +191,9 @@ class RepoIndex:
     frameworks: Mapping[str, frozenset[Framework]]
 
 
+EMPTY_INDEX = RepoIndex(frozenset(), {}, {})
+
+
 def manifest_identity(framework: Framework, text: str) -> str | None:
     match framework:
         case Framework.SERVERLESS:

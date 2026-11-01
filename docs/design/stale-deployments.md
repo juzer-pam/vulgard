@@ -190,14 +190,24 @@ Rejected from Gemini:
 - **Every delete through the repo's workflow.** Deleting the stalest stacks would then depend on
   90-day-old builds still working.
 
-## Open questions and risks
+## Decisions on the open questions
 
-- Day-one volume: 185 inactive repos would all open issues at once. Should rollout be phased with
-  `--repo` or with `repos.include`, as the vulnerabilities pilot was?
-- Should the lifecycle role be the existing `GithubCI` role or a new, narrower
-  `VulgardLifecycle` role?
-- Should vulgard enable CloudFormation termination protection on production stacks as a fourth
-  guard?
+- **Day-one volume.** Org-wide, but report-only for the first week
+  (`deployments.report_only`): findings go to the workflow summary, with no issues or pings.
+- **Lifecycle role.** A new `VulgardLifecycle` role, not `GithubCI`. CloudFormation deletes
+  pass a separate `VulgardStackDelete` service role (`RoleARN`). Without it, `DeleteStack`
+  deletes resources with the caller's own permissions, so the lifecycle role couldn't stay
+  narrow.
+- **Termination protection.** It blocks automatic and requested deletes: a protected stack is
+  classified as production. vulgard doesn't turn protection on itself.
+
+## Risks
+
+- Generic redeploys through `vulgard-lifecycle.yml` fail for repos whose deploys need secrets
+  or build steps beyond `npm ci`. Those repos set `deployments.workflows`.
+- The notice clock starts when the notice is recorded in issue memory, which the engine writes
+  just before posting the comment. If posting fails after the body write, the op can still run
+  after the notice period without a visible notice.
 
 ## Implementation slices
 

@@ -12,7 +12,10 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
+from botocore.exceptions import ClientError
+
 from .estate import AmplifyBranch, CfnStack, Framework, Sighting, SstStage
+from .lifecycle import OpFailed
 from .policy import parse_time
 
 SST_BOOTSTRAP = "/sst/bootstrap"
@@ -187,3 +190,100 @@ class AwsScanner:
                             )
                         )
         return found
+
+
+CONSOLE = "https://{region}.console.aws.amazon.com"
+
+
+class AwsOps:
+    """Native deletes and Amplify releases. Runs with the lifecycle role; CloudFormation deletes
+    pass `delete_role_arn` so the stack's resources are deleted by that service role."""
+
+    def __init__(self, session: Any, delete_role_arn: str | None):
+        self._session = session
+        self._delete_role = delete_role_arn
+
+    def _client(self, service: str, region: str) -> Any:
+        return self._session.client(service, region_name=region)
+
+    def stack(self, ref: CfnStack) -> dict[str, Any] | None:
+        cfn = self._client("cloudformation", ref.region)
+        try:
+            stacks = cfn.describe_stacks(StackName=ref.name)["Stacks"]
+        except ClientError as e:
+            if "does not exist" in str(e):
+                return None
+            raise
+        return stacks[0] if stacks else None
+
+    def stack_url(self, ref: CfnStack) -> str:
+        return (
+            f"{CONSOLE.format(region=ref.region)}/cloudformation/home?region={ref.region}"
+            f"#/stacks/stackinfo?stackId={ref.stack_id}"
+        )
+
+    def delete_stack(self, ref: CfnStack, request_id: str) -> str:
+        if ref.deployment_bucket:
+            self._empty_bucket(ref.deployment_bucket, ref.region)
+        args: dict[str, Any] = {"StackName": ref.name, "ClientRequestToken": request_id}
+        if self._delete_role:
+            args["RoleARN"] = self._delete_role
+        self._client("cloudformation", ref.region).delete_stack(**args)
+        return self.stack_url(ref)
+
+    def deleting(self, ref: CfnStack, request_id: str) -> str | None:
+        """A link if a delete with this token is running or done. Raises OpFailed if it failed."""
+        stack = self.stack(ref)
+        if stack is None:
+            return self.stack_url(ref)
+        events = self._client("cloudformation", ref.region).describe_stack_events(
+            StackName=ref.name
+        )["StackEvents"]
+        if not any(e.get("ClientRequestToken") == request_id for e in events):
+            return None
+        if stack.get("StackStatus") == "DELETE_FAILED":
+            raise OpFailed(f"DELETE_FAILED: {stack.get('StackStatusReason', 'see the console')}")
+        return self.stack_url(ref)
+
+    def _empty_bucket(self, bucket: str, region: str) -> None:
+        """Serverless deployment buckets must be empty before CloudFormation can delete them."""
+        s3 = self._client("s3", region)
+        for page in s3.get_paginator("list_object_versions").paginate(Bucket=bucket):
+            keys = [
+                {"Key": o["Key"], "VersionId": o["VersionId"]}
+                for o in [*page.get("Versions", []), *page.get("DeleteMarkers", [])]
+            ]
+            if keys:
+                s3.delete_objects(Bucket=bucket, Delete={"Objects": keys, "Quiet": True})
+
+    def amplify_branch(self, ref: AmplifyBranch) -> Sighting | None:
+        amplify = self._client("amplify", ref.region)
+        try:
+            app = amplify.get_app(appId=ref.app_id)["app"]
+            branch = amplify.get_branch(appId=ref.app_id, branchName=ref.branch)["branch"]
+        except amplify.exceptions.NotFoundException:
+            return None
+        jobs = amplify.list_jobs(appId=ref.app_id, branchName=ref.branch, maxResults=1)
+        job = jobs["jobSummaries"][0] if jobs["jobSummaries"] else None
+        return sight_amplify_branch(app, branch, job, ref.account, ref.region)
+
+    def amplify_url(self, ref: AmplifyBranch) -> str:
+        return (
+            f"{CONSOLE.format(region=ref.region)}/amplify/apps/{ref.app_id}/branches/{ref.branch}"
+        )
+
+    def amplify_job(self, ref: AmplifyBranch, request_id: str) -> str | None:
+        amplify = self._client("amplify", ref.region)
+        jobs = amplify.list_jobs(appId=ref.app_id, branchName=ref.branch, maxResults=10)
+        found = any(j.get("jobReason") == request_id for j in jobs["jobSummaries"])
+        return self.amplify_url(ref) if found else None
+
+    def amplify_release(self, ref: AmplifyBranch, request_id: str) -> str:
+        self._client("amplify", ref.region).start_job(
+            appId=ref.app_id, branchName=ref.branch, jobType="RELEASE", jobReason=request_id
+        )
+        return self.amplify_url(ref)
+
+    def amplify_delete(self, ref: AmplifyBranch) -> str:
+        self._client("amplify", ref.region).delete_branch(appId=ref.app_id, branchName=ref.branch)
+        return self.amplify_url(ref)

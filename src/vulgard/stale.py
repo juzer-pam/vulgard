@@ -23,6 +23,7 @@ from typing import Any, Self, assert_never
 
 from .baseline import (
     Active,
+    Cancel,
     Decisions,
     Issued,
     Keep,
@@ -35,9 +36,24 @@ from .baseline import (
 )
 from .config import SEVERITIES, Config
 from .estate import Deployment, RepoActivity, Scanner, build_index, discover, repo_activity
+from .lifecycle import (
+    PAST,
+    TRIGGER_WHY,
+    Executor,
+    Lifecycle,
+    Notice,
+    Outcome,
+    Trigger,
+    describe,
+    execute,
+    reconcile,
+    result_comment,
+)
 from .linear import PRIORITY, LinearClient
 from .nag import load_issues, track
 from .plan import (
+    Action,
+    ActionKind,
     Escalation,
     IssueOp,
     LeaderboardSection,
@@ -107,11 +123,14 @@ class StaleReport:
     kept: list[tuple[StaleFinding, Issued[Keep]]] = field(default_factory=list)
     active: Issued[Active] | None = None
     requests: list[tuple[Issued[Request], Deployment]] = field(default_factory=list)  # pending
+    cancels: Mapping[str, Issued[Cancel]] = field(default_factory=dict)
+    lifecycle: Lifecycle = field(default_factory=Lifecycle)
     rejected: tuple[Rejection, ...] = ()
 
     @property
     def needs_tracking(self) -> bool:
-        return bool(self.findings or self.requests)
+        life = self.lifecycle
+        return bool(self.findings or self.requests or life.scheduled or life.ops)
 
     @property
     def overdue(self) -> list[StaleFinding]:
@@ -134,6 +153,7 @@ class StaleMemory:
     overdue: tuple[str, ...] = ()
     escalated: tuple[str, ...] = ()
     baselined: tuple[tuple[str, str], ...] = ()  # (key, ISO date) resolved recently
+    notices: tuple[Notice, ...] = ()  # automatic ops announced, with when
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -142,6 +162,7 @@ class StaleMemory:
             "overdue": list(self.overdue),
             "escalated": list(self.escalated),
             "baselined": [list(b) for b in self.baselined],
+            "notices": [n.to_json() for n in self.notices],
         }
 
     @classmethod
@@ -152,6 +173,7 @@ class StaleMemory:
             overdue=tuple(raw.get("overdue", ())),
             escalated=tuple(raw.get("escalated", ())),
             baselined=tuple((k, d) for k, d in raw.get("baselined", ())),
+            notices=tuple(Notice.from_json(n) for n in raw.get("notices", ())),
         )
 
 
@@ -246,7 +268,7 @@ def evaluate(
     by_repo_activity = {a.repo: a for a in activity}
     for repo, r in reports.items():
         dec = decide(repo, r.deployments)
-        r.active, r.rejected = dec.active, dec.rejected
+        r.active, r.rejected, r.cancels = dec.active, dec.rejected, dec.cancels
         by_key = {d.key: d for d in r.deployments}
         for d in r.deployments:
             days = (now - d.last_deployed).days
@@ -290,11 +312,13 @@ def run(
     apply: bool,
     now: datetime,
     scoped: bool = False,
+    vulnerable: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, StaleReport], list[RepoRun]]:
     """Discover, fold baselines from each tracking issue's comments, plan, and track.
 
     `scoped` (from --repo) keeps only deployments of `repos`, so the unattributed repo's issue
-    isn't rewritten from a partial estate.
+    isn't rewritten from a partial estate. `vulnerable` repos have open critical alerts, which
+    makes their personal deployments eligible for automatic ops.
     """
     cfg, topic = config.deployments, spec(config)
     tracked = {r["name"] for r in repos}
@@ -310,20 +334,61 @@ def run(
     def may_command(repo: str, user: str) -> bool:
         return gh.can_write(config.org, repo, user)
 
+    def memory(repo: str) -> StaleMemory:
+        issue = issues.get(repo)
+        return TrackingState.from_body(issue.body if issue else None, StaleMemory).memory
+
     def decide(repo: str, found: list[Deployment]) -> Decisions:
         issue = issues.get(repo)
         if issue is None:
             return Decisions()
-        seen = frozenset(TrackingState.from_body(issue.body, StaleMemory).memory.seen)
         allowed = partial(may_command, repo)
+        seen = frozenset(memory(repo).seen)
         return fold(issue.comments, found, allowed, now, cfg.max_keep_days, seen)
 
     reports = evaluate(config, deployments, activity, decide, tracked, now)
     for repo, r in reports.items():
+        kept = {f.key for f, _ in r.kept}
+        notices = memory(repo).notices
+        hot = repo in vulnerable
+        r.lifecycle = reconcile(
+            r.deployments, r.requests, kept, r.cancels, notices, cfg, hot, now
+        )
         if r.needs_tracking or issues.get(repo):
             r.owners = owners_of(repo)
     plans = [plan_repo(r, config, issues.get(repo), now) for repo, r in sorted(reports.items())]
     return reports, track(gh, linear, config, plans, issues, apply)
+
+
+def execute_ops(
+    gh: Any,
+    config: Config,
+    reports: Mapping[str, StaleReport],
+    runs: list[RepoRun],
+    executor: Executor,
+    errors: tuple[type[Exception], ...],
+    apply: bool,
+) -> list[Action]:
+    """Run each repo's due ops after its issue was written, and comment on what started or
+    failed. Without `apply`, only says what would run."""
+    actions: list[Action] = []
+    for run in runs:
+        report = reports[run.repo]
+        for op in report.lifecycle.ops:
+            if not apply:
+                verb = "would" if op.runnable else f"can't ({op.step})"
+                actions.append(Action(run.repo, ActionKind.EXECUTE, f"{verb} {describe(op)}"))
+                continue
+            result = execute(op, executor, errors)
+            failed = result.outcome is Outcome.FAILED
+            kind = ActionKind.EXECUTE_ERROR if failed else ActionKind.EXECUTE
+            actions.append(Action(run.repo, kind, f"{result.outcome}: {describe(op)}"))
+            mentions = " ".join(p for p in [op.deployment.person, *report.owners] if p)
+            comment = result_comment(result, mentions)
+            if comment and run.issue_url:
+                number = int(run.issue_url.rstrip("/").rsplit("/", 1)[1])
+                gh.comment_issue(config.org, run.repo, number, comment)
+    return actions
 
 
 # --- rendering
@@ -391,12 +456,32 @@ def _sections(report: StaleReport, now: datetime, relative: bool = True) -> list
             for f in items:
                 lines += _finding_block(f, now, relative)
     if report.requests:
+        blocked = {o.deployment.key: o.step for o in report.lifecycle.ops if not o.runnable}
         lines += ["", f"### 🛠 Requested ({len(report.requests)})"]
         for req, d in report.requests:
             verb = "redeploy" if isinstance(req.command, Redeploy) else "delete"
+            why = blocked.get(d.key)
+            status = (
+                f"vulgard can't do this one: {why}. Do it by hand."
+                if why
+                else "This clears once vulgard sees it done."
+            )
             lines.append(
                 f"- {verb} `{d.name}`, [requested]({req.url}) by @{req.author} on "
-                f"{req.at:%Y-%m-%d}. This clears once vulgard sees it done."
+                f"{req.at:%Y-%m-%d}. {status}"
+            )
+    auto = [
+        (o.deployment, o.verb, None)
+        for o in report.lifecycle.ops
+        if o.trigger is not Trigger.REQUEST
+    ] + [(s.deployment, s.notice.verb, s.due) for s in report.lifecycle.scheduled]
+    if auto:
+        lines += ["", f"### 🤖 Automatic ({len(auto)})"]
+        for d, verb, due in auto:
+            when = f"on **{due:%Y-%m-%d}**" if due else "**now**"
+            lines.append(
+                f"- `{d.name}` ({d.person}) will be **{PAST[verb]}** {when}. Stop it with "
+                f"`/vulgard keep {d.name} until YYYY-MM-DD: why` or `/vulgard cancel {d.name}`."
             )
     return lines
 
@@ -494,6 +579,9 @@ def _digest(report: StaleReport, newly: int) -> str:
         parts.append(f"{len(deployments)} deployment(s) need a baseline")
     if report.overdue:
         parts.append(f"{len(report.overdue)} overdue")
+    scheduled = report.lifecycle.scheduled
+    if scheduled:
+        parts.append(f"{len(scheduled)} automatic op(s) scheduled")
     repo = next((f for f in report.findings if isinstance(f.subject, InactiveRepo)), None)
     if repo is not None:
         assert isinstance(repo.subject, InactiveRepo)
@@ -556,6 +644,21 @@ def plan_repo(
             f"({len(report.overdue)} overdue). See the list in the issue description."
         )
         detail = "periodic reminder"
+    notices = [s for s in report.lifecycle.scheduled if s.fresh]
+    if notices:
+        persons = sorted({s.deployment.person for s in notices if s.deployment.person})
+        lines = [
+            f"- `{s.deployment.name}` ({s.deployment.person}): **{s.notice.verb}** on "
+            f"{s.due:%Y-%m-%d} ({TRIGGER_WHY[s.notice.trigger]})"
+            for s in notices
+        ]
+        comments.append(
+            f"{' '.join([*persons, *report.owners])} 🤖 vulgard will act on these personal "
+            "deployments automatically unless someone comments "
+            "`/vulgard keep <name> until YYYY-MM-DD: why` or `/vulgard cancel <name>` first:"
+            "\n\n" + "\n".join(lines)
+        )
+        detail = detail or f"{len(notices)} automatic op(s) announced"
     escalation = None
     if escalate:
         leads = "".join(f"{m} " for m in config.escalation.mentions)
@@ -584,6 +687,7 @@ def plan_repo(
                 sorted(set(prev.memory.escalated) & current | {f.key for f in escalate})
             ),
             baselined=baselined,
+            notices=tuple(report.lifecycle.notices),
         ),
         last_reminder=now if comments or fresh else prev.last_reminder,
         linear=prev.linear,

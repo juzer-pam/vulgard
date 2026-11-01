@@ -20,6 +20,7 @@ from .enforce import apply_enforce, plan_enforce
 from .estate import build_index, discover, repo_activity
 from .fixtures import fixture_clients
 from .github import GitHubError
+from .lifecycle import OpFailed
 from .linear import LinearError
 from .plan import ActionKind, RepoRun, Topic
 from .policy import (
@@ -31,7 +32,7 @@ from .policy import (
     summarize_closed,
 )
 from .render import render_org_summary
-from .rollout import apply_rollout, plan_rollout
+from .rollout import apply_rollout, plan_lifecycle_rollout, plan_rollout
 from .slack import (
     SlackError,
     leaderboard_message,
@@ -44,6 +45,7 @@ from .vulns import nag
 
 CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")
 STALE_ERRORS = (GitHubError, LinearError, VercelError, BotoCoreError, ClientError, httpx.HTTPError)
+EXECUTE_ERRORS = (*STALE_ERRORS, OpFailed, RuntimeError)
 
 
 def selected_repos(gh: Any, config: Config, only: list[str] | None = None) -> list[dict]:
@@ -245,6 +247,9 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     if Topic.STALE in topics and not config.deployments.enabled:
         print("error: --topic stale needs deployments.enabled in the config", file=sys.stderr)
         return 1
+    if args.execute and Topic.STALE not in topics:
+        print("error: --execute only applies to the stale topic", file=sys.stderr)
+        return 1
     linear = clients.linear if args.linear else None
     if args.linear and linear is None:
         print(f"Skipping Linear: ${config.linear.api_key_env} is not set.", file=sys.stderr)
@@ -263,6 +268,11 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     report_only = config.deployments.report_only
     if Topic.STALE in topics:
         try:
+            vulnerable: frozenset[str] = frozenset()
+            if config.deployments.auto.repos:
+                alerts = reports or collect(gh, config, args.repo)
+                critical = (r for r, a in alerts.items() if a.severity_counts()["critical"])
+                vulnerable = frozenset(critical)
             stale_reports, stale_runs = stale.run(
                 gh,
                 None if report_only else linear,
@@ -273,6 +283,7 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
                 args.apply and not report_only,
                 now,
                 scoped=bool(args.repo),
+                vulnerable=vulnerable,
             )
         except STALE_ERRORS as e:
             print(f"error: skipped stale deployments: {e}", file=sys.stderr)
@@ -283,6 +294,17 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
         else:
             runs += stale_runs
     actions = [a for r in runs for a in r.actions]
+    if args.execute and stale_runs and not report_only:
+        assert clients.executor is not None
+        actions += stale.execute_ops(
+            gh,
+            config,
+            stale_reports,
+            stale_runs,
+            clients.executor(),
+            EXECUTE_ERRORS,
+            args.apply,
+        )
 
     if args.slack:
         if clients.slack is None:
@@ -326,10 +348,16 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
 def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     gh = clients.github
     prefix = "" if args.apply else "[dry-run] "
-    for repo in selected_repos(gh, config, args.repo):
+    repos = selected_repos(gh, config, args.repo)
+    index = build_index(gh, config, repos) if args.lifecycle else None
+    for repo in repos:
         if repo["name"] == config.rollout.workflow_repo:
             continue
-        plan = plan_rollout(gh, config, repo)
+        if index is not None:
+            frameworks = index.frameworks.get(repo["name"], frozenset())
+            plan = plan_lifecycle_rollout(gh, config, repo, frameworks)
+        else:
+            plan = plan_rollout(gh, config, repo)
         if plan.skipped_reason:
             print(f"{prefix}{plan.repo}: skip ({plan.skipped_reason})")
             continue
@@ -423,12 +451,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-leaderboard", action="store_true", help="with --slack, skip the leaderboard"
     )
+    p.add_argument(
+        "--execute",
+        action="store_true",
+        help="with --apply, carry out requested and due automatic redeploys and deletes",
+    )
     add_repo_filter(p)
     p.set_defaults(func=cmd_nag)
 
     p = sub.add_parser("rollout", help="open PRs adding dependabot.yml and the vulgard workflow")
     p.add_argument("--apply", action="store_true", help="open PRs (default is dry-run)")
     p.add_argument("--show", action="store_true", help="print the generated files in dry-run")
+    p.add_argument(
+        "--lifecycle",
+        action="store_true",
+        help="instead, add vulgard-lifecycle.yml to repos with Serverless, SST or CDK apps",
+    )
     add_repo_filter(p)
     p.set_defaults(func=cmd_rollout)
 
