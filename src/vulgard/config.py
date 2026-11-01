@@ -69,6 +69,7 @@ class LinearRoute:
     labels: list[str] | None = None
     project: str | None = None
     state: str | None = None
+    severity_labels: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,7 @@ class LinearTarget:
     labels: tuple[str, ...]
     project: str | None
     state: str | None
+    severity_labels: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -89,8 +91,11 @@ class LinearConfig:
     labels: list[str] = field(default_factory=lambda: ["vulgard"])
     project: str | None = None  # project name for new issues
     state: str | None = None  # workflow state name for new and reopened issues, e.g. "Triage"
+    # worst open severity -> label, kept in sync, e.g. {critical: Critical, high: High}
+    severity_labels: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        _check_severities("linear.severity_labels", self.severity_labels)
         known = set(LinearRoute.__dataclass_fields__)
         for key, value in self.teams.items():
             if isinstance(value, LinearRoute):
@@ -102,9 +107,11 @@ class LinearConfig:
             if not isinstance(value, dict) or unknown or not value.get("team"):
                 raise ValueError(
                     f"linear.teams[{key!r}] must be a team key or a mapping with 'team' and "
-                    "optional 'labels', 'project', 'state'"
+                    "optional 'labels', 'project', 'state', 'severity_labels'"
                     + (f" (unknown: {', '.join(sorted(unknown))})" if unknown else "")
                 )
+            where = f"linear.teams[{key!r}].severity_labels"
+            _check_severities(where, value.get("severity_labels"))
             self.teams[key] = LinearRoute(**value)
 
     def target(self, repo: str, owners: list[str]) -> LinearTarget | None:
@@ -117,7 +124,16 @@ class LinearConfig:
             labels=tuple(self.labels if found.labels is None else found.labels),
             project=found.project or self.project,
             state=found.state or self.state,
+            severity_labels=dict(
+                self.severity_labels if found.severity_labels is None else found.severity_labels
+            ),
         )
+
+
+def _check_severities(where: str, mapping: dict[str, str] | None) -> None:
+    unknown = set(mapping or {}) - set(SEVERITIES)
+    if unknown:
+        raise ValueError(f"Unknown severities in {where}: {', '.join(sorted(unknown))}")
 
 
 @dataclass

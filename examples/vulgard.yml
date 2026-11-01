@@ -30,6 +30,7 @@ linear:
       labels: [vulgard, security]
       project: Security debt
       state: Triage
+      severity_labels: {critical: Critical, high: High, medium: Medium, low: Low}
   users:
     "@jlee": jlee@acme.com
 exceptions:

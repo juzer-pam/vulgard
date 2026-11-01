@@ -100,9 +100,11 @@ the demo never goes stale.
    - `linear.teams` maps a repo name, repo glob, or owner handle to a Linear team key. Repos
      with no match go to `linear.default_team`. `linear.labels`, `linear.project`, and
      `linear.state` (for example `Triage`) set what new issues get. Map an entry to
-     `{team, labels, project, state}` instead of a bare key to override them for that repo
-     or team. Labels and project apply when vulgard creates the issue; the state is also used
-     when it reopens one. A label name matches the team's own label first, then a workspace
+     `{team, labels, project, state, severity_labels}` instead of a bare key to override them
+     for that repo or team. Labels and project apply when vulgard creates the issue; the state
+     is also used when it reopens one. `severity_labels` maps the worst open severity to a
+     label (for example `{critical: Critical, high: High}`), and vulgard swaps it as that
+     changes. A label name matches the team's own label first, then a workspace
      label, and vulgard creates a workspace label if neither exists.
    - `slack.users` maps GitHub handles to Slack user IDs, used for mentions and DMs, or to
      user group IDs (`S…`) for team mentions.

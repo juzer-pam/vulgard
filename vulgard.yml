@@ -51,9 +51,11 @@ linear:
   labels: [vulgard]               # team label if one has the name, else a workspace label
   project: null                   # project name new issues are added to
   state: null                     # state for new/reopened issues, e.g. Triage; null = default
+  severity_labels: {}             # worst open severity -> label, swapped as it changes, e.g.
+                                  # {critical: Critical, high: High, medium: Medium, low: Low}
   teams: {}                       # repo name/glob or owner handle -> team key or settings
 #   "@your-org/frontend": WEB
-#   "@your-org/payments":         # any of labels/project/state override the defaults above
+#   "@your-org/payments":         # labels/project/state/severity_labels override the defaults
 #     team: PAY
 #     labels: [vulgard, security]
 #     project: Security debt

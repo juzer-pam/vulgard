@@ -180,6 +180,7 @@ class FakeLinear:
             "title": fields["title"],
             "state": {"type": STATE_TYPES[fields.get("stateId", ":todo").split(":", 1)[1]]},
             "team": {"key": key},
+            "labels": {"nodes": [{"id": i} for i in fields.get("labelIds", [])]},
             "fields": dict(fields),
         }
         self.issues[issue["id"]] = issue
@@ -191,6 +192,10 @@ class FakeLinear:
         issue["fields"].update(fields)
         if "stateId" in fields:
             issue["state"] = {"type": STATE_TYPES[fields["stateId"].split(":", 1)[1]]}
+        labels = [n["id"] for n in issue["labels"]["nodes"]]
+        labels = [i for i in labels if i not in fields.get("removedLabelIds", [])]
+        labels += [i for i in fields.get("addedLabelIds", []) if i not in labels]
+        issue["labels"] = {"nodes": [{"id": i} for i in labels]}
         self.writes.append(("update_issue", (issue_id, fields)))
 
     def comment(self, issue_id: str, body: str) -> None:

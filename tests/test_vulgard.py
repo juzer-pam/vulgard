@@ -288,7 +288,7 @@ def test_linear_issue_lifecycle():
     # Routed by owner, defaulting to SEC; priority and due date come from the worst alert.
     payments_ident, payments = created["payments-api"]
     assert payments_ident.startswith("PAY-")
-    assert payments["labelIds"] == ["label:vulgard", "label:security"]
+    assert payments["labelIds"] == ["label:vulgard", "label:security", "label:Critical"]
     assert payments["projectId"] == "project:Security debt"
     assert payments["stateId"] == "PAY:triage"
     pipeline_ident, pipeline = created["data-pipeline"]
@@ -319,6 +319,16 @@ def test_linear_issue_lifecycle():
     assert any("Reopened" in text for op, (_, text) in linear.writes if op == "comment")
     assert "linear-update" in {a.kind for a in runs["payments-api"].actions}
 
+    # The critical alert is fixed: the severity label moves from Critical to High.
+    gh.data["alerts"] = [
+        a
+        for a in gh.data["alerts"]
+        if (a["repository"]["name"], a["number"]) != ("payments-api", 12)
+    ]
+    run()
+    labels = [n["id"] for n in linear.issues[ref.id]["labels"]["nodes"]]
+    assert labels == ["label:vulgard", "label:security", "label:High"]
+
     # Alerts resolved: GitHub issue closes and so does the Linear issue.
     alerts = gh.data["alerts"]
     gh.data["alerts"] = [a for a in alerts if a["repository"]["name"] != "payments-api"]
@@ -345,6 +355,8 @@ def test_linear_targets_merge_route_overrides_with_defaults():
     assert linear.target("api", []).team == "SEC"
     with pytest.raises(ValueError, match="mapping with 'team'"):
         parse_config({"org": "acme", "linear": {"teams": {"x": {"labels": ["a"]}}}})
+    with pytest.raises(ValueError, match="Unknown severities"):
+        parse_config({"org": "acme", "linear": {"severity_labels": {"urgent": "P0"}}})
     with pytest.raises(ValueError, match="linear.labels"):
         parse_config({"org": "acme", "linear": {"label": "vulgard"}})
 

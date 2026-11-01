@@ -23,7 +23,7 @@ API_URL = "https://api.linear.app/graphql"
 PRIORITY = {"critical": 1, "high": 2, "medium": 3, "low": 4}  # Linear: 1 urgent … 4 low
 CLOSED_STATES = ("completed", "canceled")
 
-ISSUE_FIELDS = "id identifier url title state { type } team { key }"
+ISSUE_FIELDS = "id identifier url title state { type } team { key } labels { nodes { id } }"
 
 
 class LinearError(RuntimeError):
@@ -189,6 +189,36 @@ def _open_state(team: dict[str, Any], target: LinearTarget) -> str:
     return state_named(team, target.state) if target.state else state_id(team, "unstarted")
 
 
+def _issue_target(config: Config, plan: RepoPlan, team_key: str) -> LinearTarget:
+    """Settings for an existing issue: its route if that still points at the issue's team."""
+    target = config.linear.target(plan.repo, plan.report.owners)
+    if target is not None and target.team == team_key:
+        return target
+    linear = config.linear
+    return LinearTarget(team_key, tuple(linear.labels), None, linear.state, linear.severity_labels)
+
+
+def _severity_label_changes(
+    client: LinearClient,
+    target: LinearTarget,
+    team_id: str,
+    worst: str | None,
+    current: set[str],
+) -> dict[str, list[str]]:
+    """Swap the severity label so only the worst open severity's label is on the issue."""
+    if not target.severity_labels:
+        return {}
+    ids = {name: client.label_id(name, team_id) for name in set(target.severity_labels.values())}
+    want = ids.get(target.severity_labels.get(worst, "")) if worst else None
+    changes: dict[str, list[str]] = {}
+    if want and want not in current:
+        changes["addedLabelIds"] = [want]
+    removed = sorted(i for i in ids.values() if i != want and i in current)
+    if removed:
+        changes["removedLabelIds"] = removed
+    return changes
+
+
 def issue_title(repo: str, config: Config) -> str:
     return f"{repo}: {config.issue.title}"
 
@@ -208,9 +238,13 @@ def render_description(report: RepoReport) -> str:
     return "\n".join(lines)
 
 
-def issue_fields(report: RepoReport, config: Config) -> dict[str, Any]:
+def worst_severity(report: RepoReport) -> str | None:
     counts = report.severity_counts()
-    worst = next((s for s in SEVERITIES if counts[s]), "low")
+    return next((s for s in SEVERITIES if counts[s]), None)
+
+
+def issue_fields(report: RepoReport, config: Config) -> dict[str, Any]:
+    worst = worst_severity(report) or "low"
     urgent = any(
         a.known_exploited or (a.severity == "critical" and a.status == SlaStatus.OVERDUE)
         for a in report.alerts
@@ -291,10 +325,14 @@ def _create(
         detail = f"in team {target.team}{project}"
         return LinearResult(None, [Action(repo, ActionKind.LINEAR_CREATE, detail)])
     team = client.team(target.team)
+    labels = list(target.labels)
+    worst = worst_severity(plan.report)
+    if worst in target.severity_labels:
+        labels.append(target.severity_labels[worst])
     payload = {
         **fields,
         "teamId": team["id"],
-        "labelIds": [client.label_id(name, team["id"]) for name in target.labels],
+        "labelIds": [client.label_id(name, team["id"]) for name in labels],
     }
     if target.project:
         payload["projectId"] = client.project_id(target.project)
@@ -348,13 +386,15 @@ def _update(
     if not apply:
         return LinearResult(ref, [action])
     if changed or reopened:
-        update = dict(fields)
+        update: dict[str, Any] = dict(fields)
+        team_key = issue["team"]["key"]
+        team = client.team(team_key)
+        target = _issue_target(config, plan, team_key)
         if reopened:
-            team_key = issue["team"]["key"]
-            target = config.linear.target(plan.repo, plan.report.owners)
-            if target is None or target.team != team_key:
-                target = LinearTarget(team_key, (), None, config.linear.state)
-            update["stateId"] = _open_state(client.team(team_key), target)
+            update["stateId"] = _open_state(team, target)
+        current = {n["id"] for n in (issue.get("labels") or {}).get("nodes", [])}
+        worst = worst_severity(plan.report)
+        update |= _severity_label_changes(client, target, team["id"], worst, current)
         client.update_issue(ref.id, update)
     for comment in comments:
         client.comment(ref.id, comment)
