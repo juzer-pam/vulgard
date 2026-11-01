@@ -15,6 +15,10 @@ Turning on Dependabot isn't enough if nobody merges its PRs. vulgard covers the 
 
 Everything that writes to GitHub runs as a **dry run by default**. Add `--apply` to make changes.
 
+New to this project, or to Dependabot? Start with **[How vulgard works](docs/how-it-works.md)**.
+It explains the terms, follows one alert from opening to closing, and walks through the code.
+This README is the setup and reference guide.
+
 ## How it fits together
 
 ```
@@ -108,6 +112,9 @@ the demo never goes stale.
 
 ## How nagging works
 
+This is the short reference. [How vulgard works](docs/how-it-works.md) explains each step
+with a worked example.
+
 - Each alert gets a deadline: `sla_days[severity]` days after it opened (default: critical 7,
   high 30, medium 90, low 180). CVEs on CISA's KEV list get `kev.sla_days` (default 3).
 - Each repo with open alerts or stale Dependabot PRs gets one issue labeled `vulgard`. It
@@ -164,6 +171,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
+For a suggested reading order, see [Reading the code](docs/how-it-works.md#reading-the-code).
 Code lives in `src/vulgard/`: `policy.py` (SLA evaluation, exceptions, escalation rules,
 weekly fixed and dismissed summary), `plan.py` (per-repo decisions and the state stored in the
 tracking issue), `render.py` (issue, comment, and summary markdown), `nag.py` (tracking issues
