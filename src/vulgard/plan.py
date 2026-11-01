@@ -1,19 +1,48 @@
+"""Generic tracking plan types, shared by every topic (vulnerabilities, stale deployments).
+
+A topic owns its domain policy and renders everything it wants said into a `RepoPlan`. The
+engine (`nag.track`) owns where and when it's said: the GitHub tracking issue, persisted memory,
+the Linear issue and Slack. The engine never reads a topic's domain types.
+"""
+
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, assert_never
+from typing import Any, Protocol, Self, assert_never
 
-from .policy import Alert, DependabotPR, RepoReport, parse_time
+from .policy import parse_time
 
 STATE_RE = re.compile(r"<!-- vulgard-state (\{.*?\}) -->", re.S)
+ENGINE_KEYS = ("last_reminder", "linear")
+
+
+class Topic(StrEnum):
+    VULNS = "vulns"
+    STALE = "stale"
+
+
+@dataclass(frozen=True)
+class TopicSpec:
+    """Static identity of a topic. One tracking issue per (repo, topic), found by `label`."""
+
+    topic: Topic
+    label: str
+    title: str  # GitHub issue title; the Linear title is f"{repo}: {title}"
+    slack_header: str  # channel digest header
+    slack_dm_header: str
+    escalation_header: str  # after the escalation mentions, in slack.escalation_channel
+    linear_closed: str  # Linear comment when the topic goes clean
+    reads_commands: bool = False  # the engine loads issue comments only for these topics
 
 
 class ActionKind(StrEnum):
     CREATE = "create"
+    REOPEN = "reopen"
     UPDATE = "update"
     COMMENT = "comment"
     ESCALATE = "escalate"
@@ -48,99 +77,163 @@ class LinearRef:
     digest: str = ""
 
 
-@dataclass(frozen=True)
-class TrackingState:
-    """Memory between runs, stored as JSON in a hidden comment in the tracking issue body."""
+class Memory(Protocol):
+    """Topic-owned memory, persisted in the tracking issue body next to the engine's keys.
 
-    overdue: tuple[int, ...] = ()
-    escalated: tuple[int, ...] = ()
-    ready_prs: tuple[int, ...] = ()
+    It caches what the world can't tell us, such as what was already announced. Losing it may
+    repeat an announcement; it must never cause an extra destructive action.
+    """
+
+    def to_json(self) -> dict[str, Any]: ...
+
+    @classmethod
+    def from_json(cls, raw: dict[str, Any]) -> Self: ...
+
+
+@dataclass(frozen=True)
+class TrackingState[M: Memory]:
+    """Memory between runs, stored as flat JSON in a hidden comment in the issue body.
+
+    Anyone with write access can edit the body, so everything read from here is a hint.
+    """
+
+    memory: M
     last_reminder: datetime | None = None
     linear: LinearRef | None = None
 
     @classmethod
-    def from_body(cls, body: str | None) -> TrackingState:
+    def from_body(cls, body: str | None, memory_type: type[M]) -> TrackingState[M]:
         match = STATE_RE.search(body or "")
-        if not match:
-            return cls()
-        try:
-            raw = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            return cls()
+        raw: dict[str, Any] = {}
+        if match:
+            try:
+                raw = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                raw = {}
         linear = raw.get("linear")
         return cls(
-            overdue=tuple(raw.get("overdue", ())),
-            escalated=tuple(raw.get("escalated", ())),
-            ready_prs=tuple(raw.get("ready_prs", ())),
+            memory=memory_type.from_json({k: v for k, v in raw.items() if k not in ENGINE_KEYS}),
             last_reminder=parse_time(raw["last_reminder"]) if raw.get("last_reminder") else None,
             linear=LinearRef(**linear) if linear else None,
         )
 
     def to_comment(self) -> str:
-        raw: dict[str, Any] = asdict(self)
-        raw["last_reminder"] = self.last_reminder.isoformat() if self.last_reminder else None
+        raw: dict[str, Any] = {
+            **self.memory.to_json(),
+            "last_reminder": self.last_reminder.isoformat() if self.last_reminder else None,
+            "linear": asdict(self.linear) if self.linear else None,
+        }
         return f"<!-- vulgard-state {json.dumps(raw, sort_keys=True)} -->"
 
 
 class IssueOp(StrEnum):
     CREATE = "create"
+    REOPEN = "reopen"  # the latest closed tracking issue is reopened instead of opening a new one
     UPDATE = "update"
     CLOSE = "close"
     NONE = "none"
 
 
-@dataclass
-class RepoPlan:
-    report: RepoReport
-    op: IssueOp
-    state: TrackingState
-    comments: list[str] = field(default_factory=list)
-    newly_overdue: list[Alert] = field(default_factory=list)
-    newly_ready: list[DependabotPR] = field(default_factory=list)
-    escalate: list[Alert] = field(default_factory=list)
-    reminder: bool = False
+def issue_op(issue: TrackedIssue | None, needs_tracking: bool) -> IssueOp:
+    if needs_tracking:
+        if issue is None:
+            return IssueOp.CREATE
+        return IssueOp.UPDATE if issue.open else IssueOp.REOPEN
+    return IssueOp.CLOSE if issue is not None and issue.open else IssueOp.NONE
 
-    @property
-    def repo(self) -> str:
-        return self.report.repo
+
+@dataclass(frozen=True)
+class IssueComment:
+    id: int
+    author: str  # GitHub login, without "@"
+    body: str
+    created_at: datetime
+    html_url: str
+
+
+@dataclass(frozen=True)
+class TrackedIssue:
+    """The latest tracking issue for (repo, topic), open or closed.
+
+    Closed when clean and reopened when dirty, so the comment thread outlives clean periods.
+    """
+
+    number: int
+    open: bool
+    body: str
+    html_url: str
+    comments: tuple[IssueComment, ...] = ()  # only loaded when spec.reads_commands
+
+
+@dataclass(frozen=True)
+class LinearContent:
+    """Everything topic-specific the engine needs to create or update the Linear issue."""
+
+    fields: dict[str, Any]  # title, description, priority, dueDate: overwritten on every change
+    worst_severity: str | None  # picks the severity label
+    reopened: str  # comment when a closed Linear issue is reopened
+    news: list[str] = field(default_factory=list)  # comments on update, with absolute dates
+
+
+@dataclass(frozen=True)
+class Escalation:
+    """The GitHub comment rides in `RepoPlan.comments`; these are the other channels."""
+
+    detail: str  # Action detail, e.g. "2 alert(s)"
+    linear_md: str
+    slack_detail: str  # one bullet in slack.escalation_channel, after the repo link
+
+
+@dataclass
+class RepoPlan[M: Memory]:
+    """A topic's complete, rendered decision for one repo. The engine applies it."""
+
+    spec: TopicSpec
+    repo: str
+    owners: list[str]
+    op: IssueOp
+    state: TrackingState[M]
+    summary: str  # Action detail, e.g. "4 alert(s)"
+    render: Callable[[TrackingState[M]], str]  # issue body, given the final state
+    comments: list[str] = field(default_factory=list)  # with @mentions and relative dates
+    comment_detail: str | None = None  # Action detail when comments carry news
+    linear: LinearContent | None = None  # set iff the issue stays open
+    escalation: Escalation | None = None
+    digest: str | None = None  # Slack line after the repo link; None means not pinged
+    dm: tuple[str, ...] = ()  # handles to DM besides owners
+
+    def __post_init__(self) -> None:
+        live = self.op in (IssueOp.CREATE, IssueOp.REOPEN, IssueOp.UPDATE)
+        assert live == (self.linear is not None), "Linear content iff the issue stays open"
 
     @property
     def pinged(self) -> bool:
-        return bool(
-            self.op == IssueOp.CREATE
-            or self.newly_overdue
-            or self.newly_ready
-            or self.escalate
-            or self.reminder
-        )
+        return self.digest is not None
 
     def actions(self) -> list[Action]:
         match self.op:
             case IssueOp.NONE:
                 return [Action(self.repo, ActionKind.NOOP, "clean")]
             case IssueOp.CLOSE:
-                return [Action(self.repo, ActionKind.CLOSE, "all alerts resolved")]
-            case IssueOp.CREATE | IssueOp.UPDATE:
-                kind = ActionKind.CREATE if self.op == IssueOp.CREATE else ActionKind.UPDATE
-                actions = [Action(self.repo, kind, f"{len(self.report.alerts)} alert(s)")]
+                return [Action(self.repo, ActionKind.CLOSE, self.summary)]
+            case IssueOp.CREATE:
+                actions = [Action(self.repo, ActionKind.CREATE, self.summary)]
+            case IssueOp.REOPEN:
+                actions = [Action(self.repo, ActionKind.REOPEN, self.summary)]
+            case IssueOp.UPDATE:
+                actions = [Action(self.repo, ActionKind.UPDATE, self.summary)]
             case _ as unreachable:
                 assert_never(unreachable)
-        if self.op == IssueOp.UPDATE and (self.newly_overdue or self.newly_ready):
-            detail = (
-                f"{len(self.newly_overdue)} newly overdue, "
-                f"{len(self.newly_ready)} newly ready PR(s)"
-            )
-            actions.append(Action(self.repo, ActionKind.COMMENT, detail))
-        elif self.reminder:
-            actions.append(Action(self.repo, ActionKind.COMMENT, "periodic reminder"))
-        if self.escalate:
-            actions.append(Action(self.repo, ActionKind.ESCALATE, f"{len(self.escalate)} alert(s)"))
+        if self.comment_detail:
+            actions.append(Action(self.repo, ActionKind.COMMENT, self.comment_detail))
+        if self.escalation:
+            actions.append(Action(self.repo, ActionKind.ESCALATE, self.escalation.detail))
         return actions
 
 
 @dataclass
 class RepoRun:
-    plan: RepoPlan
+    plan: RepoPlan[Any]
     issue_url: str | None
     actions: list[Action]
 

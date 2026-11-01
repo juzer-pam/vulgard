@@ -3,13 +3,14 @@ from __future__ import annotations
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Protocol
+from typing import Any, Protocol, assert_never
 
 import httpx
 
 from .config import Config, route
-from .plan import Action, ActionKind, IssueOp, RepoRun
+from .plan import Action, ActionKind, IssueOp, RepoRun, TopicSpec
 from .policy import ClosedSummary, RepoReport, org_totals
 
 API_URL = "https://slack.com/api"
@@ -69,7 +70,7 @@ def _post(target: str, detail: str, send: Callable[[], None], apply: bool) -> Ac
 
 
 def _repo_link(org: str, repo: str, issue_url: str | None) -> str:
-    url = issue_url or f"https://github.com/{org}/{repo}/security/dependabot"
+    url = issue_url or f"https://github.com/{org}/{repo}/issues"
     return f"<{url}|{repo}>"
 
 
@@ -78,73 +79,70 @@ def _owner_mentions(owners: list[str], config: Config) -> str:
 
 
 def _repo_line(run: RepoRun, config: Config) -> str:
-    plan, r = run.plan, run.plan.report
-    parts = ["new tracking issue"] if plan.op == IssueOp.CREATE else []
-    if plan.newly_overdue:
-        parts.append(f"*{len(plan.newly_overdue)} newly overdue*")
-    if r.overdue:
-        parts.append(f"{len(r.overdue)} overdue")
-    if r.due_soon:
-        parts.append(f"{len(r.due_soon)} due soon")
-    if r.known_exploited:
-        parts.append(f"🔥 {len(r.known_exploited)} actively exploited")
-    if r.ready_prs:
-        links = ", ".join(f"<{p.html_url}|#{p.number}>" for p in r.ready_prs[:5])
-        parts.append(f"*✅ {len(r.ready_prs)} Dependabot PR(s) ready to merge* ({links})")
-    if r.stale_prs:
-        parts.append(f"{len(r.stale_prs)} stale Dependabot PR(s)")
-    owners = _owner_mentions(r.owners, config)
-    line = f"• *{_repo_link(config.org, r.repo, run.issue_url)}*: {', '.join(parts)}"
+    plan = run.plan
+    match plan.op:
+        case IssueOp.CREATE:
+            parts = ["new tracking issue"]
+        case IssueOp.REOPEN:
+            parts = ["tracking issue reopened"]
+        case IssueOp.UPDATE | IssueOp.CLOSE | IssueOp.NONE:
+            parts = []
+        case _ as unreachable:
+            assert_never(unreachable)
+    if plan.digest:
+        parts.append(plan.digest)
+    owners = _owner_mentions(plan.owners, config)
+    line = f"• *{_repo_link(config.org, plan.repo, run.issue_url)}*: {', '.join(parts)}"
     return line + (f" · {owners}" if owners else "")
 
 
 def _escalation_line(run: RepoRun, config: Config) -> str:
-    escalate = run.plan.escalate
-    worst = ", ".join(
-        f"{a.severity} `{a.package}` {-a.days_left}d overdue"
-        + (" 🔥" if a.known_exploited else "")
-        for a in escalate[:3]
-    )
-    more = f" (+{len(escalate) - 3} more)" if len(escalate) > 3 else ""
-    owners = _owner_mentions(run.plan.report.owners, config)
+    assert run.plan.escalation is not None
+    owners = _owner_mentions(run.plan.owners, config)
     link = _repo_link(config.org, run.repo, run.issue_url)
-    return f"• *{link}*: {worst}{more}" + (f" · owners {owners}" if owners else "")
+    detail = run.plan.escalation.slack_detail
+    return f"• *{link}*: {detail}" + (f" · owners {owners}" if owners else "")
+
+
+@dataclass
+class _TopicMessages:
+    spec: TopicSpec
+    channels: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
+    dms: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
+    escalations: list[str] = field(default_factory=list)
 
 
 def notify_slack(
     client: SlackClient, config: Config, runs: list[RepoRun], apply: bool
 ) -> list[Action]:
-    channels: dict[str, list[str]] = defaultdict(list)
-    dms: dict[str, list[str]] = defaultdict(list)
-    escalations: list[str] = []
+    """Per topic: a digest per routed channel, DMs to owners, and the escalation channel."""
+    topics: dict[str, _TopicMessages] = {}
     for run in runs:
-        if not run.plan.pinged:
+        plan = run.plan
+        if not plan.pinged:
             continue
-        owners = run.plan.report.owners
+        msgs = topics.setdefault(plan.spec.topic, _TopicMessages(plan.spec))
         line = _repo_line(run, config)
-        channel = route(config.slack.channels, run.repo, owners, config.slack.default_channel)
+        channel = route(config.slack.channels, run.repo, plan.owners, config.slack.default_channel)
         if channel:
-            channels[channel].append(line)
-        if run.plan.escalate:
-            escalations.append(_escalation_line(run, config))
+            msgs.channels[channel].append(line)
+        if plan.escalation:
+            msgs.escalations.append(_escalation_line(run, config))
         if config.slack.dm_owners:
-            for owner in owners:
+            for owner in [*plan.owners, *plan.dm]:
                 user = config.slack.dm_target(owner)
-                if user and line not in dms[user]:
-                    dms[user].append(line)
+                if user and line not in msgs.dms[user]:
+                    msgs.dms[user].append(line)
 
-    messages: list[tuple[str, str, list[str]]] = [
-        (channel, "Vulnerable dependencies need attention in these repos:", lines)
-        for channel, lines in channels.items()
-    ]
-    if escalations and config.slack.escalation_channel:
-        leads = "".join(f"{config.slack.mention(m)} " for m in config.escalation.mentions)
-        header = f"{leads}🚨 Escalation: these alerts are well past their fix deadline."
-        messages.append((config.slack.escalation_channel, header, escalations))
-    messages += [
-        (user, "Updates on vulnerable dependencies in repos you own:", lines)
-        for user, lines in dms.items()
-    ]
+    messages: list[tuple[str, str, list[str]]] = []
+    for msgs in topics.values():
+        spec = msgs.spec
+        messages += [(channel, spec.slack_header, lines) for channel, lines in msgs.channels.items()]
+        if msgs.escalations and config.slack.escalation_channel:
+            leads = "".join(f"{config.slack.mention(m)} " for m in config.escalation.mentions)
+            header = leads + spec.escalation_header
+            messages.append((config.slack.escalation_channel, header, msgs.escalations))
+        messages += [(user, spec.slack_dm_header, lines) for user, lines in msgs.dms.items()]
     return [
         _post(
             target,

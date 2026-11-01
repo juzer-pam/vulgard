@@ -175,14 +175,15 @@ class GitHub:
             raise
         return [t["path"] for t in data.get("tree", []) if t.get("type") == "blob"]
 
-    def find_open_issue(self, org: str, repo: str, label: str) -> dict[str, Any] | None:
+    def find_issue(self, org: str, repo: str, label: str) -> dict[str, Any] | None:
+        """The open issue with this label, else the most recently created closed one."""
         issues = self._json(
             "GET",
             f"/repos/{org}/{repo}/issues",
-            params={"labels": label, "state": "open", "per_page": 10},
+            params={"labels": label, "state": "all", "sort": "created", "per_page": 20},
         )
         issues = [i for i in issues if "pull_request" not in i]
-        return issues[0] if issues else None
+        return next((i for i in issues if i["state"] == "open"), issues[0] if issues else None)
 
     def find_open_pr(self, org: str, repo: str, head_branch: str) -> dict[str, Any] | None:
         prs = self._json(

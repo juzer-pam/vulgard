@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .clients import Clients
+from .config import IssueConfig
 from .policy import now_utc
 
 RELATIVE_RE = re.compile(r"^@-(\d+)d$")
@@ -22,6 +23,11 @@ def _resolve_dates(value: Any, now: datetime) -> Any:
     if isinstance(value, str) and (m := RELATIVE_RE.match(value)):
         return (now - timedelta(days=int(m.group(1)))).strftime("%Y-%m-%dT%H:%M:%SZ")
     return value
+
+
+def issue_key(repo: str, label: str) -> str:
+    """Fixture key for a repo's tracking issue: the repo for the default label, else repo#label."""
+    return repo if label == IssueConfig().label else f"{repo}#{label}"
 
 
 class FixtureGitHub:
@@ -60,9 +66,8 @@ class FixtureGitHub:
     def list_tree_paths(self, org: str, repo: str, branch: str) -> list[str]:
         return self.data.get("trees", {}).get(repo, [])
 
-    def find_open_issue(self, org: str, repo: str, label: str) -> dict[str, Any] | None:
-        issue = self.data.get("issues", {}).get(repo)
-        return issue if issue and issue.get("state", "open") == "open" else None
+    def find_issue(self, org: str, repo: str, label: str) -> dict[str, Any] | None:
+        return self.data.get("issues", {}).get(issue_key(repo, label))
 
     def find_open_pr(self, org: str, repo: str, head_branch: str) -> dict[str, Any] | None:
         return self.data.get("open_prs", {}).get(repo, {}).get(head_branch)
@@ -94,12 +99,16 @@ class FixtureGitHub:
             "html_url": f"https://github.com/{org}/{repo}/issues/{self._next_issue}",
             "assignees": assignees or [],
         }
-        self.data.setdefault("issues", {})[repo] = issue
+        self.data.setdefault("issues", {})[issue_key(repo, labels[0])] = issue
         self._record("create_issue", repo, title, body)
         return issue
 
     def update_issue(self, org: str, repo: str, number: int, **fields: Any) -> dict[str, Any]:
-        issue = self.data["issues"][repo]
+        issue = next(
+            i
+            for key, i in self.data["issues"].items()
+            if key.split("#")[0] == repo and i["number"] == number
+        )
         issue.update(fields)
         self._record("update_issue", repo, number, fields)
         return issue

@@ -17,12 +17,12 @@ from .enforce import apply_enforce, plan_enforce
 from .fixtures import fixture_clients
 from .github import GitHubError
 from .linear import LinearError
-from .nag import nag
 from .plan import ActionKind
 from .policy import RepoReport, evaluate, now_utc, parse_codeowners_default, summarize_closed
 from .render import render_org_summary
 from .rollout import apply_rollout, plan_rollout
 from .slack import SlackError, leaderboard_message, notify_slack, send_leaderboard
+from .vulns import nag
 
 CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")
 

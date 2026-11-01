@@ -7,17 +7,8 @@ from typing import Any, Protocol, assert_never
 
 import httpx
 
-from .config import SEVERITIES, Config, LinearTarget
-from .plan import Action, ActionKind, IssueOp, LinearRef, RepoPlan
-from .policy import RepoReport, SlaStatus
-from .render import (
-    alert_sections,
-    escalation_md,
-    newly_overdue_md,
-    newly_ready_md,
-    pr_sections,
-    severity_summary,
-)
+from .config import Config, LinearTarget
+from .plan import Action, ActionKind, IssueOp, LinearContent, LinearRef, RepoPlan
 
 API_URL = "https://api.linear.app/graphql"
 PRIORITY = {"critical": 1, "high": 2, "medium": 3, "low": 4}  # Linear: 1 urgent … 4 low
@@ -189,9 +180,9 @@ def _open_state(team: dict[str, Any], target: LinearTarget) -> str:
     return state_named(team, target.state) if target.state else state_id(team, "unstarted")
 
 
-def _issue_target(config: Config, plan: RepoPlan, team_key: str) -> LinearTarget:
+def _issue_target(config: Config, plan: RepoPlan[Any], team_key: str) -> LinearTarget:
     """Settings for an existing issue: its route if that still points at the issue's team."""
-    target = config.linear.target(plan.repo, plan.report.owners)
+    target = config.linear.target(plan.repo, plan.owners)
     if target is not None and target.team == team_key:
         return target
     linear = config.linear
@@ -219,47 +210,6 @@ def _severity_label_changes(
     return changes
 
 
-def issue_title(repo: str, config: Config) -> str:
-    return f"{repo}: {config.issue.title}"
-
-
-def render_description(report: RepoReport) -> str:
-    n = len(report.alerts)
-    lines = [
-        f"**{report.repo}** has {n} open vulnerable dependenc{'y' if n == 1 else 'ies'}: "
-        f"{severity_summary(report.severity_counts())}.",
-        *alert_sections(report, relative=False),
-        *pr_sections(report, relative=False),
-        "",
-        "---",
-        "_Synced by vulgard from GitHub. The description, priority, and due date are "
-        "overwritten on each run, and the issue closes itself once every alert is resolved._",
-    ]
-    return "\n".join(lines)
-
-
-def worst_severity(report: RepoReport) -> str | None:
-    counts = report.severity_counts()
-    return next((s for s in SEVERITIES if counts[s]), None)
-
-
-def issue_fields(report: RepoReport, config: Config) -> dict[str, Any]:
-    worst = worst_severity(report) or "low"
-    urgent = any(
-        a.known_exploited or (a.severity == "critical" and a.status == SlaStatus.OVERDUE)
-        for a in report.alerts
-    )
-    fields: dict[str, Any] = {
-        "title": issue_title(report.repo, config),
-        "description": render_description(report),
-        "priority": 1 if urgent else PRIORITY[worst],
-    }
-    deadlines = [a.deadline for a in report.alerts if a.deadline]
-    if deadlines:
-        fields["dueDate"] = min(deadlines).date().isoformat()
-    return fields
-
-
 def _digest(fields: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()[:12]
 
@@ -272,9 +222,9 @@ class LinearResult:
 
 
 def _owned_issue(
-    client: LinearClient, plan: RepoPlan
+    client: LinearClient, plan: RepoPlan[Any]
 ) -> tuple[LinearRef, dict[str, Any]] | None:
-    """The tracked Linear issue, if it still exists and belongs to this repo.
+    """The tracked Linear issue, if it still exists and belongs to this repo and topic.
 
     The ref comes from the GitHub issue body, which anyone with write access can edit, so a
     ref pointing at an unrelated issue is ignored instead of overwritten.
@@ -283,12 +233,12 @@ def _owned_issue(
     if ref is None:
         return None
     issue = client.get_issue(ref.id)
-    if issue is None or not issue["title"].startswith(f"{plan.repo}: "):
+    if issue is None or issue["title"] != f"{plan.repo}: {plan.spec.title}":
         return None
     return ref, issue
 
 
-def _close(client: LinearClient, plan: RepoPlan, apply: bool) -> LinearResult:
+def _close(client: LinearClient, plan: RepoPlan[Any], apply: bool) -> LinearResult:
     owned = _owned_issue(client, plan)
     if owned is None:
         return LinearResult(plan.state.linear)
@@ -296,7 +246,7 @@ def _close(client: LinearClient, plan: RepoPlan, apply: bool) -> LinearResult:
     if issue["state"]["type"] in CLOSED_STATES:
         return LinearResult(ref)
     if apply:
-        client.comment(ref.id, "✅ All Dependabot alerts are resolved. Closing.")
+        client.comment(ref.id, plan.spec.linear_closed)
         done = state_id(client.team(issue["team"]["key"]), "completed")
         client.update_issue(ref.id, {"stateId": done})
     return LinearResult(ref, [Action(plan.repo, ActionKind.LINEAR_CLOSE, ref.identifier)])
@@ -313,10 +263,14 @@ def _assignee_id(client: LinearClient, config: Config, owners: list[str]) -> str
 
 
 def _create(
-    client: LinearClient, config: Config, plan: RepoPlan, fields: dict[str, Any], apply: bool
+    client: LinearClient,
+    config: Config,
+    plan: RepoPlan[Any],
+    content: LinearContent,
+    apply: bool,
 ) -> LinearResult:
     repo = plan.repo
-    target = config.linear.target(repo, plan.report.owners)
+    target = config.linear.target(repo, plan.owners)
     if target is None:
         skip = Action(repo, ActionKind.LINEAR_SKIP, "no team mapped; set linear.default_team")
         return LinearResult(None, [skip])
@@ -326,11 +280,11 @@ def _create(
         return LinearResult(None, [Action(repo, ActionKind.LINEAR_CREATE, detail)])
     team = client.team(target.team)
     labels = list(target.labels)
-    worst = worst_severity(plan.report)
+    worst = content.worst_severity
     if worst in target.severity_labels:
         labels.append(target.severity_labels[worst])
     payload = {
-        **fields,
+        **content.fields,
         "teamId": team["id"],
         "labelIds": [client.label_id(name, team["id"]) for name in labels],
     }
@@ -338,46 +292,32 @@ def _create(
         payload["projectId"] = client.project_id(target.project)
     if target.state:
         payload["stateId"] = state_named(team, target.state)
-    assignee = _assignee_id(client, config, plan.report.owners)
+    assignee = _assignee_id(client, config, plan.owners)
     if assignee:
         payload["assigneeId"] = assignee
     created = client.create_issue(payload)
-    ref = LinearRef(created["id"], created["identifier"], created["url"], _digest(fields))
-    if plan.escalate:
-        client.comment(ref.id, escalation_md(plan.escalate, config.escalation, relative=False))
+    ref = LinearRef(created["id"], created["identifier"], created["url"], _digest(content.fields))
+    if plan.escalation:
+        client.comment(ref.id, plan.escalation.linear_md)
     return LinearResult(ref, [Action(repo, ActionKind.LINEAR_CREATE, ref.identifier)], True)
-
-
-def _update_comments(plan: RepoPlan, config: Config, reopened: bool) -> list[str]:
-    comments = []
-    if reopened:
-        comments.append(
-            f"Reopened by vulgard: {len(plan.report.alerts)} alert(s) are still open in GitHub. "
-            "This issue closes itself once they're fixed. To accept a risk instead, dismiss the "
-            "alert in GitHub with a reason or add an exception with an expiry date to vulgard.yml."
-        )
-    if plan.newly_overdue:
-        comments.append(newly_overdue_md(plan.newly_overdue, relative=False))
-    if plan.newly_ready:
-        comments.append(newly_ready_md(plan.newly_ready, relative=False))
-    if plan.escalate:
-        comments.append(escalation_md(plan.escalate, config.escalation, relative=False))
-    return comments
 
 
 def _update(
     client: LinearClient,
     config: Config,
-    plan: RepoPlan,
-    fields: dict[str, Any],
+    plan: RepoPlan[Any],
+    content: LinearContent,
     ref: LinearRef,
     issue: dict[str, Any],
     apply: bool,
 ) -> LinearResult:
-    digest = _digest(fields)
+    digest = _digest(content.fields)
     reopened = issue["state"]["type"] in CLOSED_STATES
     changed = digest != ref.digest
-    comments = _update_comments(plan, config, reopened)
+    comments = [content.reopened] if reopened else []
+    comments += content.news
+    if plan.escalation:
+        comments.append(plan.escalation.linear_md)
     if not (changed or reopened or comments):
         return LinearResult(ref)
     action = Action(
@@ -386,32 +326,35 @@ def _update(
     if not apply:
         return LinearResult(ref, [action])
     if changed or reopened:
-        update: dict[str, Any] = dict(fields)
+        update: dict[str, Any] = dict(content.fields)
         team_key = issue["team"]["key"]
         team = client.team(team_key)
         target = _issue_target(config, plan, team_key)
         if reopened:
             update["stateId"] = _open_state(team, target)
         current = {n["id"] for n in (issue.get("labels") or {}).get("nodes", [])}
-        worst = worst_severity(plan.report)
-        update |= _severity_label_changes(client, target, team["id"], worst, current)
+        update |= _severity_label_changes(
+            client, target, team["id"], content.worst_severity, current
+        )
         client.update_issue(ref.id, update)
     for comment in comments:
         client.comment(ref.id, comment)
     return LinearResult(LinearRef(ref.id, ref.identifier, ref.url, digest), [action])
 
 
-def sync_linear(client: LinearClient, config: Config, plan: RepoPlan, apply: bool) -> LinearResult:
+def sync_linear(
+    client: LinearClient, config: Config, plan: RepoPlan[Any], apply: bool
+) -> LinearResult:
     match plan.op:
         case IssueOp.NONE:
             return LinearResult(plan.state.linear)
         case IssueOp.CLOSE:
             return _close(client, plan, apply)
-        case IssueOp.CREATE | IssueOp.UPDATE:
-            fields = issue_fields(plan.report, config)
+        case IssueOp.CREATE | IssueOp.REOPEN | IssueOp.UPDATE:
+            assert plan.linear is not None
             owned = _owned_issue(client, plan)
             if owned is None:
-                return _create(client, config, plan, fields, apply)
-            return _update(client, config, plan, fields, *owned, apply)
+                return _create(client, config, plan, plan.linear, apply)
+            return _update(client, config, plan, plan.linear, *owned, apply)
         case _ as unreachable:
             assert_never(unreachable)
