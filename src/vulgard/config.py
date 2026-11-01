@@ -201,6 +201,7 @@ class DeploymentsConfig:
     """The stale-deployments topic. Without `enabled`, no AWS or Vercel client is built."""
 
     enabled: bool = False
+    report_only: bool = False  # findings go to the step summary only: no issues, Linear, Slack
     stale_days: int = 30
     baseline_days: int = 14  # time to act once flagged, before it's overdue
     repo_inactive_days: int = 90

@@ -299,6 +299,18 @@ def test_nag_tracks_stale_deployments_from_fixtures(capsys):
     assert "web-storefront: create" in out and "payments-api: create" in out
 
 
+def test_report_only_writes_the_summary_and_nothing_else(tmp_path, capsys):
+    cfg = tmp_path / "vulgard.yml"
+    text = (EXAMPLES / "vulgard.yml").read_text()
+    cfg.write_text(text.replace("deployments:\n", "deployments:\n  report_only: true\n", 1))
+    summary = tmp_path / "summary.md"
+    args = ["--fixtures", str(EXAMPLES / "demo-org.json"), "--config", str(cfg)]
+    assert main([*args, "nag", "--topic", "stale", "--summary-file", str(summary)]) == 0
+    out = capsys.readouterr().out
+    assert "report-only: 5 repo(s)" in out and "create" not in out
+    assert "web-storefront" in summary.read_text()
+
+
 def test_stale_failure_does_not_stop_the_vulns_run(monkeypatch, capsys):
     def boom(*_, **__):
         raise LinearError("scanner exploded")

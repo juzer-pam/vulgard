@@ -217,7 +217,9 @@ commits to. [The design doc](docs/design/stale-deployments.md) has the rationale
 - Deployments with no known repo land in `unattributed_repo`. Tag stacks with `vulgard:repo`,
   or map them in `deployments.attribution`.
 - `vulgard report --topic stale` lists every stale deployment and inactive repo without
-  writing anything.
+  writing anything. To trial it org-wide first, set `deployments.report_only: true`: `nag`
+  then writes the findings to the workflow summary and opens no issues, Linear issues, or
+  Slack messages.
 
 ## Caveats
 

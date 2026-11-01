@@ -260,23 +260,28 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
         closed = summarize_closed(gh.list_closed_alerts(config.org, since), set(reports), since)
     stale_reports: dict[str, stale.StaleReport] = {}
     stale_runs: list[RepoRun] = []
+    report_only = config.deployments.report_only
     if Topic.STALE in topics:
         try:
             stale_reports, stale_runs = stale.run(
                 gh,
-                linear,
+                None if report_only else linear,
                 config,
                 selected_repos(gh, config, args.repo),
                 clients.scanners(),
                 partial(resolve_owners, gh, config),
-                args.apply,
+                args.apply and not report_only,
                 now,
                 scoped=bool(args.repo),
             )
         except STALE_ERRORS as e:
             print(f"error: skipped stale deployments: {e}", file=sys.stderr)
             failed = True
-        runs += stale_runs
+        if report_only:
+            n = sum(1 for r in stale_reports.values() if r.findings)
+            print(f"Stale deployments are report-only: {n} repo(s) would get a tracking issue.")
+        else:
+            runs += stale_runs
     actions = [a for r in runs for a in r.actions]
 
     if args.slack:

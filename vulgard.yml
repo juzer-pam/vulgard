@@ -90,6 +90,7 @@ rollout:
 # delete, or `/vulgard keep` / `/vulgard active` on the repo's `vulgard-stale` issue.
 deployments:
   enabled: false                  # also scans AWS (CloudFormation, SST, Amplify) and Vercel
+  report_only: false              # true: findings in the step summary only; no issues or pings
   stale_days: 30
   baseline_days: 14
   repo_inactive_days: 90
