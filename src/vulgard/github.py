@@ -175,6 +175,17 @@ class GitHub:
             raise
         return [t["path"] for t in data.get("tree", []) if t.get("type") == "blob"]
 
+    def list_commits(self, org: str, repo: str, branch: str, n: int = 30) -> list[dict[str, Any]]:
+        """The latest `n` commits on `branch`, newest first. Empty for an empty repo."""
+        try:
+            return self._json(
+                "GET", f"/repos/{org}/{repo}/commits", params={"sha": branch, "per_page": n}
+            )
+        except GitHubError as e:
+            if e.status in (404, 409):
+                return []
+            raise
+
     def find_issue(self, org: str, repo: str, label: str) -> dict[str, Any] | None:
         """The open issue with this label, else the most recently created closed one."""
         issues = self._json(

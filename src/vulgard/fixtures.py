@@ -7,9 +7,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .aws import sight_amplify_branch, sight_cfn_stack, sight_sst_objects
 from .clients import Clients
 from .config import IssueConfig
+from .estate import Sighting
 from .policy import now_utc
+from .vercel import sight_vercel_project
 
 RELATIVE_RE = re.compile(r"^@-(\d+)d$")
 
@@ -65,6 +68,12 @@ class FixtureGitHub:
 
     def list_tree_paths(self, org: str, repo: str, branch: str) -> list[str]:
         return self.data.get("trees", {}).get(repo, [])
+
+    def list_commits(self, org: str, repo: str, branch: str, n: int = 30) -> list[dict[str, Any]]:
+        return [
+            {"commit": {"committer": {"date": c["date"]}}, "author": {"login": c.get("login", "")}}
+            for c in self.data.get("commits", {}).get(repo, [])
+        ][:n]
 
     def find_issue(self, org: str, repo: str, label: str) -> dict[str, Any] | None:
         return self.data.get("issues", {}).get(issue_key(repo, label))
@@ -214,6 +223,31 @@ class FakeLinear:
         self.writes.append(("attach_url", (issue_id, url)))
 
 
+class FixtureScanner:
+    """Replays raw AWS and Vercel API shapes from the fixture through the real parsers."""
+
+    def __init__(self, data: dict[str, Any]):
+        self._aws = data.get("aws") or {}
+        self._vercel = data.get("vercel") or {}
+
+    def scan(self) -> list[Sighting]:
+        account, region = self._aws.get("account", "000000000000"), "us-east-1"
+        found = [
+            s for st in self._aws.get("stacks", []) if (s := sight_cfn_stack(st, account, region))
+        ]
+        sst = self._aws.get("sst")
+        if sst:
+            found += sight_sst_objects(sst["objects"], sst["bucket"], account, region)
+        for entry in self._aws.get("amplify", []):
+            for b in entry["branches"]:
+                found.append(sight_amplify_branch(entry["app"], b, b.get("job"), account, region))
+        team = self._vercel.get("team_id", "team_demo")
+        found += [
+            s for p in self._vercel.get("projects", []) if (s := sight_vercel_project(p, team))
+        ]
+        return found
+
+
 class FakeSlack:
     def __init__(self) -> None:
         self.messages: list[tuple[str, str]] = []
@@ -226,5 +260,10 @@ def fixture_clients(path: str | Path) -> Clients:
     gh = FixtureGitHub.from_file(path)
     kev = frozenset(gh.data.get("kev", []))
     return Clients(
-        github=gh, linear=FakeLinear(), slack=FakeSlack(), slack_webhook=None, kev=lambda: kev
+        github=gh,
+        linear=FakeLinear(),
+        slack=FakeSlack(),
+        slack_webhook=None,
+        kev=lambda: kev,
+        scanners=lambda: [FixtureScanner(gh.data)],
     )

@@ -14,10 +14,11 @@ import httpx
 from .clients import Clients, live_clients
 from .config import SEVERITIES, Config, load_config
 from .enforce import apply_enforce, plan_enforce
+from .estate import build_index, discover, repo_activity
 from .fixtures import fixture_clients
 from .github import GitHubError
 from .linear import LinearError
-from .plan import ActionKind
+from .plan import ActionKind, Topic
 from .policy import RepoReport, evaluate, now_utc, parse_codeowners_default, summarize_closed
 from .render import render_org_summary
 from .rollout import apply_rollout, plan_rollout
@@ -80,6 +81,15 @@ def collect(
     return reports
 
 
+def print_rows(header: list[str], rows: list[list[str]]) -> None:
+    table = [header, *rows]
+    widths = [max(len(row[i]) for row in table) for i in range(len(header))]
+    for i, row in enumerate(table):
+        print("  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)))
+        if i == 0:
+            print("  ".join("-" * w for w in widths))
+
+
 def print_table(reports: dict[str, RepoReport]) -> None:
     rows = sorted(
         (r for r in reports.values() if r.alerts or r.dependabot_prs), key=lambda r: -r.risk_score
@@ -90,13 +100,12 @@ def print_table(reports: dict[str, RepoReport]) -> None:
     header = [
         "repo", *SEVERITIES, "overdue", "due soon", "exploited", "ready PRs", "stale PRs", "owners"
     ]
-    table = [header]
-    for r in rows:
-        c = r.severity_counts()
-        table.append(
+    print_rows(
+        header,
+        [
             [
                 r.repo,
-                *(str(c[s]) for s in SEVERITIES),
+                *(str(r.severity_counts()[s]) for s in SEVERITIES),
                 str(len(r.overdue)),
                 str(len(r.due_soon)),
                 str(len(r.known_exploited)),
@@ -104,12 +113,9 @@ def print_table(reports: dict[str, RepoReport]) -> None:
                 str(len(r.stale_prs)),
                 " ".join(r.owners) or "-",
             ]
-        )
-    widths = [max(len(row[i]) for row in table) for i in range(len(header))]
-    for i, row in enumerate(table):
-        print("  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)))
-        if i == 0:
-            print("  ".join("-" * w for w in widths))
+            for r in rows
+        ],
+    )
 
 
 def report_json(reports: dict[str, RepoReport]) -> str:
@@ -129,7 +135,76 @@ def write_step_summary(markdown: str, path: str | None) -> None:
             f.write(markdown + "\n")
 
 
+def report_stale(clients: Clients, config: Config, args: argparse.Namespace) -> int:
+    """Every deployment with its repo, attribution, tier and person; then inactive repos."""
+    cfg, now = config.deployments, now_utc()
+    repos = selected_repos(clients.github, config, args.repo)
+    index = build_index(clients.github, config, repos)
+    deployments = discover(clients.scanners(), index, cfg)
+    if args.repo:
+        deployments = [d for d in deployments if d.repo in args.repo]
+    activity = repo_activity(clients.github, config, repos)
+    if args.format == "json":
+        payload = {
+            "deployments": [
+                {
+                    "key": d.key,
+                    "name": d.name,
+                    "repo": d.repo,
+                    "attributed_by": d.attributed_by,
+                    "framework": d.framework,
+                    "tier": d.tier,
+                    "person": d.person,
+                    "last_deployed": d.last_deployed.isoformat(),
+                    "protected": d.sighting.protected,
+                    "in_progress": d.sighting.in_progress,
+                }
+                for d in deployments
+            ],
+            "repos": {a.repo: a.last_commit.isoformat() if a.last_commit else None
+                      for a in activity},
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+    shown = [d for d in deployments if args.all or (now - d.last_deployed).days >= cfg.stale_days]
+    print(f"{len(shown)} of {len(deployments)} deployment(s)"
+          + ("" if args.all else f" not deployed in {cfg.stale_days}+ days") + ":")
+    print_rows(
+        ["repo", "deployment", "framework", "tier", "person", "days", "repo from", "flags"],
+        [
+            [
+                d.repo or "-",
+                d.name,
+                d.framework,
+                d.tier,
+                d.person or "-",
+                str((now - d.last_deployed).days),
+                d.attributed_by,
+                " ".join(
+                    f for f, on in (("protected", d.sighting.protected),
+                                    ("deploying", d.sighting.in_progress)) if on
+                ) or "-",
+            ]
+            for d in shown
+        ],
+    )
+    inactive = sorted(
+        (a for a in activity
+         if a.last_commit is None or (now - a.last_commit).days >= cfg.repo_inactive_days),
+        key=lambda a: a.last_commit or now,
+    )
+    print(f"\n{len(inactive)} of {len(activity)} repo(s) with no human commits in "
+          f"{cfg.repo_inactive_days}+ days:")
+    print_rows(
+        ["repo", "last commit"],
+        [[a.repo, f"{a.last_commit:%Y-%m-%d}" if a.last_commit else "never"] for a in inactive],
+    )
+    return 0
+
+
 def cmd_report(clients: Clients, config: Config, args: argparse.Namespace) -> int:
+    if args.topic == Topic.STALE:
+        return report_stale(clients, config, args)
     reports = collect(clients.github, config, args.repo, load_kev(clients, config))
     if args.format == "json":
         print(report_json(reports))
@@ -247,6 +322,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("report", help="show open alerts and SLA status per repo")
     p.add_argument("--format", choices=["table", "markdown", "json"], default="table")
+    p.add_argument(
+        "--topic", choices=[t.value for t in Topic], default=Topic.VULNS, help="what to report"
+    )
+    p.add_argument(
+        "--all", action="store_true", help="with --topic stale, list every deployment"
+    )
     add_repo_filter(p)
     p.set_defaults(func=cmd_report)
 

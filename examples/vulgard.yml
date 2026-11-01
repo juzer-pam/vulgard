@@ -38,3 +38,18 @@ exceptions:
     package: nanoid
     reason: Only used by build tooling; never shipped to browsers.
     expires: 2030-12-31
+deployments:
+  enabled: true
+  people:
+    jlee: "@jlee"
+  attribution:
+    "storefront*": web-storefront
+  unattributed_repo: vulgard
+  workflows:
+    payments-api: deploy.yml
+  aws:
+    regions: [us-east-1]
+  vercel:
+    team_id: team_acme
+  auto:
+    repos: ["payments-*"]

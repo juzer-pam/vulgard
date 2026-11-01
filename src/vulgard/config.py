@@ -151,6 +151,96 @@ class RiskException:
     repo: str = "*"
 
 
+TIERS = ("production", "shared", "personal")
+DEFAULT_TIER_SEVERITY = {"production": "high", "shared": "medium", "personal": "low"}
+
+
+@dataclass
+class AwsConfig:
+    regions: list[str] = field(default_factory=lambda: ["us-east-1"])
+
+
+@dataclass
+class VercelConfig:
+    team_id: str | None = None
+    token_env: str = "VERCEL_TOKEN"
+
+
+@dataclass
+class AutoConfig:
+    """Automatic redeploys and deletes of PERSONAL deployments. Off unless `repos` matches."""
+
+    repos: list[str] = field(default_factory=list)  # opt-in globs; [] means nowhere
+    delete: bool = False  # False: redeploy only
+    personal_stale_days: int = 90
+    notice_days: int = 7
+
+    def enabled_for(self, repo: str | None) -> bool:
+        return repo is not None and any(fnmatch.fnmatch(repo, p) for p in self.repos)
+
+
+@dataclass
+class DeploymentsConfig:
+    """The stale-deployments topic. Without `enabled`, no AWS or Vercel client is built."""
+
+    enabled: bool = False
+    stale_days: int = 30
+    baseline_days: int = 14  # time to act once flagged, before it's overdue
+    repo_inactive_days: int = 90
+    max_keep_days: int = 180
+    production_stages: list[str] = field(default_factory=lambda: ["production", "prod", "live"])
+    shared_stages: list[str] = field(
+        default_factory=lambda: ["development", "dev", "staging", "stage", "preview", "test"]
+    )
+    severity: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_TIER_SEVERITY))
+    repo_severity: str = "low"
+    people: dict[str, str] = field(default_factory=dict)  # stage / OS username -> "@handle"
+    attribution: dict[str, str] = field(default_factory=dict)  # app or stack glob -> repo
+    ignore: list[str] = field(default_factory=list)  # app or stack globs never tracked
+    unattributed_repo: str | None = None  # where deployments with no known repo are tracked
+    workflows: dict[str, str] = field(default_factory=dict)  # repo -> lifecycle workflow file
+    lifecycle_workflow: str = "vulgard-lifecycle.yml"
+    label: str = "vulgard-stale"
+    title: str = "Stale deployments need a baseline"
+    aws: AwsConfig = field(default_factory=AwsConfig)
+    vercel: VercelConfig = field(default_factory=VercelConfig)
+    auto: AutoConfig = field(default_factory=AutoConfig)
+
+    def __post_init__(self) -> None:
+        for key, cls in (("aws", AwsConfig), ("vercel", VercelConfig), ("auto", AutoConfig)):
+            value = getattr(self, key)
+            if isinstance(value, dict):
+                setattr(self, key, _section({key: value}, key, cls))
+        self.severity = {
+            **DEFAULT_TIER_SEVERITY,
+            **{k.lower(): v.lower() for k, v in self.severity.items()},
+        }
+        bad = set(self.severity) - set(TIERS)
+        if bad:
+            raise ValueError(f"deployments.severity: unknown tiers {', '.join(sorted(bad))}")
+        bad = {v for v in [*self.severity.values(), self.repo_severity] if v not in SEVERITIES}
+        if bad:
+            raise ValueError(f"deployments: unknown severities {', '.join(sorted(bad))}")
+        both = set(self.production_stages) & set(self.shared_stages)
+        if both:
+            raise ValueError(
+                f"deployments: stages can't be both production and shared: {', '.join(both)}"
+            )
+        bad_people = [k for k, v in self.people.items() if not v.startswith("@")]
+        if bad_people:
+            raise ValueError(
+                f"deployments.people values are GitHub handles starting with @: {bad_people}"
+            )
+        if self.enabled and not self.unattributed_repo:
+            raise ValueError(
+                "deployments.unattributed_repo is required: deployments with no known repo "
+                "are tracked there"
+            )
+
+    def workflow_for(self, repo: str) -> str:
+        return self.workflows.get(repo, self.lifecycle_workflow)
+
+
 @dataclass
 class Config:
     org: str
@@ -170,6 +260,7 @@ class Config:
     linear: LinearConfig = field(default_factory=LinearConfig)
     kev: KevConfig = field(default_factory=KevConfig)
     exceptions: list[RiskException] = field(default_factory=list)
+    deployments: DeploymentsConfig = field(default_factory=DeploymentsConfig)
 
     def repo_selected(self, name: str) -> bool:
         if any(fnmatch.fnmatch(name, pat) for pat in self.exclude):
@@ -260,6 +351,7 @@ def parse_config(raw: dict[str, Any], org_override: str | None = None) -> Config
         linear=_section(raw, "linear", LinearConfig),
         kev=_section(raw, "kev", KevConfig),
         exceptions=_parse_exceptions(raw.get("exceptions")),
+        deployments=_section(raw, "deployments", DeploymentsConfig),
     )
 
 

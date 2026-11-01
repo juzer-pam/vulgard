@@ -1,106 +1,343 @@
 {
   "repos": [
-    {"id": 101, "name": "payments-api", "default_branch": "main", "archived": false},
-    {"id": 102, "name": "web-storefront", "default_branch": "main", "archived": false},
-    {"id": 103, "name": "inventory-service", "default_branch": "main", "archived": false},
-    {"id": 104, "name": "data-pipeline", "default_branch": "master", "archived": false},
-    {"id": 105, "name": "sandbox-experiments", "default_branch": "main", "archived": false},
-    {"id": 106, "name": "legacy-billing", "default_branch": "main", "archived": true},
-    {"id": 107, "name": "vulgard", "default_branch": "main", "archived": false}
+    {
+      "id": 101,
+      "name": "payments-api",
+      "default_branch": "main",
+      "archived": false
+    },
+    {
+      "id": 102,
+      "name": "web-storefront",
+      "default_branch": "main",
+      "archived": false
+    },
+    {
+      "id": 103,
+      "name": "inventory-service",
+      "default_branch": "main",
+      "archived": false
+    },
+    {
+      "id": 104,
+      "name": "data-pipeline",
+      "default_branch": "master",
+      "archived": false
+    },
+    {
+      "id": 105,
+      "name": "sandbox-experiments",
+      "default_branch": "main",
+      "archived": false
+    },
+    {
+      "id": 106,
+      "name": "legacy-billing",
+      "default_branch": "main",
+      "archived": true
+    },
+    {
+      "id": 107,
+      "name": "vulgard",
+      "default_branch": "main",
+      "archived": false
+    }
   ],
   "alerts": [
     {
       "number": 12,
-      "repository": {"name": "payments-api"},
+      "repository": {
+        "name": "payments-api"
+      },
       "created_at": "@-19d",
       "html_url": "https://github.com/acme/payments-api/security/dependabot/12",
-      "dependency": {"package": {"ecosystem": "npm", "name": "jsonwebtoken"}, "manifest_path": "package-lock.json"},
-      "security_advisory": {"ghsa_id": "GHSA-8cf7-32gw-wr33", "cve_id": "CVE-2022-23539", "summary": "Insecure key type validation allows signature bypass", "severity": "critical"},
-      "security_vulnerability": {"package": {"ecosystem": "npm", "name": "jsonwebtoken"}, "severity": "critical", "first_patched_version": {"identifier": "9.0.0"}}
+      "dependency": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "jsonwebtoken"
+        },
+        "manifest_path": "package-lock.json"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-8cf7-32gw-wr33",
+        "cve_id": "CVE-2022-23539",
+        "summary": "Insecure key type validation allows signature bypass",
+        "severity": "critical"
+      },
+      "security_vulnerability": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "jsonwebtoken"
+        },
+        "severity": "critical",
+        "first_patched_version": {
+          "identifier": "9.0.0"
+        }
+      }
     },
     {
       "number": 14,
-      "repository": {"name": "payments-api"},
+      "repository": {
+        "name": "payments-api"
+      },
       "created_at": "@-41d",
       "html_url": "https://github.com/acme/payments-api/security/dependabot/14",
-      "dependency": {"package": {"ecosystem": "npm", "name": "axios"}, "manifest_path": "package-lock.json"},
-      "security_advisory": {"ghsa_id": "GHSA-wf5p-g6vw-rhxx", "cve_id": "CVE-2023-45857", "summary": "CSRF token leaked to third-party hosts", "severity": "high"},
-      "security_vulnerability": {"package": {"ecosystem": "npm", "name": "axios"}, "severity": "high", "first_patched_version": {"identifier": "1.6.0"}}
+      "dependency": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "axios"
+        },
+        "manifest_path": "package-lock.json"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-wf5p-g6vw-rhxx",
+        "cve_id": "CVE-2023-45857",
+        "summary": "CSRF token leaked to third-party hosts",
+        "severity": "high"
+      },
+      "security_vulnerability": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "axios"
+        },
+        "severity": "high",
+        "first_patched_version": {
+          "identifier": "1.6.0"
+        }
+      }
     },
     {
       "number": 15,
-      "repository": {"name": "payments-api"},
+      "repository": {
+        "name": "payments-api"
+      },
       "created_at": "@-3d",
       "html_url": "https://github.com/acme/payments-api/security/dependabot/15",
-      "dependency": {"package": {"ecosystem": "npm", "name": "semver"}, "manifest_path": "package-lock.json"},
-      "security_advisory": {"ghsa_id": "GHSA-c2qf-rxjj-qqgw", "cve_id": "CVE-2022-25883", "summary": "Regular expression denial of service", "severity": "medium"},
-      "security_vulnerability": {"package": {"ecosystem": "npm", "name": "semver"}, "severity": "medium", "first_patched_version": {"identifier": "7.5.2"}}
+      "dependency": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "semver"
+        },
+        "manifest_path": "package-lock.json"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-c2qf-rxjj-qqgw",
+        "cve_id": "CVE-2022-25883",
+        "summary": "Regular expression denial of service",
+        "severity": "medium"
+      },
+      "security_vulnerability": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "semver"
+        },
+        "severity": "medium",
+        "first_patched_version": {
+          "identifier": "7.5.2"
+        }
+      }
     },
     {
       "number": 3,
-      "repository": {"name": "web-storefront"},
+      "repository": {
+        "name": "web-storefront"
+      },
       "created_at": "@-87d",
       "html_url": "https://github.com/acme/web-storefront/security/dependabot/3",
-      "dependency": {"package": {"ecosystem": "npm", "name": "postcss"}, "manifest_path": "package-lock.json"},
-      "security_advisory": {"ghsa_id": "GHSA-7fh5-64p2-3v2j", "cve_id": "CVE-2023-44270", "summary": "Line return parsing error", "severity": "medium"},
-      "security_vulnerability": {"package": {"ecosystem": "npm", "name": "postcss"}, "severity": "medium", "first_patched_version": {"identifier": "8.4.31"}}
+      "dependency": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "postcss"
+        },
+        "manifest_path": "package-lock.json"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-7fh5-64p2-3v2j",
+        "cve_id": "CVE-2023-44270",
+        "summary": "Line return parsing error",
+        "severity": "medium"
+      },
+      "security_vulnerability": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "postcss"
+        },
+        "severity": "medium",
+        "first_patched_version": {
+          "identifier": "8.4.31"
+        }
+      }
     },
     {
       "number": 4,
-      "repository": {"name": "web-storefront"},
+      "repository": {
+        "name": "web-storefront"
+      },
       "created_at": "@-10d",
       "html_url": "https://github.com/acme/web-storefront/security/dependabot/4",
-      "dependency": {"package": {"ecosystem": "npm", "name": "nanoid"}, "manifest_path": "package-lock.json"},
-      "security_advisory": {"ghsa_id": "GHSA-qrpm-p2h7-hrv2", "cve_id": "CVE-2021-23566", "summary": "Information exposure via valueOf()", "severity": "low"},
-      "security_vulnerability": {"package": {"ecosystem": "npm", "name": "nanoid"}, "severity": "low", "first_patched_version": {"identifier": "3.1.31"}}
+      "dependency": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "nanoid"
+        },
+        "manifest_path": "package-lock.json"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-qrpm-p2h7-hrv2",
+        "cve_id": "CVE-2021-23566",
+        "summary": "Information exposure via valueOf()",
+        "severity": "low"
+      },
+      "security_vulnerability": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "nanoid"
+        },
+        "severity": "low",
+        "first_patched_version": {
+          "identifier": "3.1.31"
+        }
+      }
     },
     {
       "number": 7,
-      "repository": {"name": "data-pipeline"},
+      "repository": {
+        "name": "data-pipeline"
+      },
       "created_at": "@-62d",
       "html_url": "https://github.com/acme/data-pipeline/security/dependabot/7",
-      "dependency": {"package": {"ecosystem": "pip", "name": "urllib3"}, "manifest_path": "requirements.txt"},
-      "security_advisory": {"ghsa_id": "GHSA-v845-jxx5-vc9f", "cve_id": "CVE-2023-43804", "summary": "Cookie header not stripped on cross-origin redirects", "severity": "high"},
-      "security_vulnerability": {"package": {"ecosystem": "pip", "name": "urllib3"}, "severity": "high", "first_patched_version": {"identifier": "2.0.6"}}
+      "dependency": {
+        "package": {
+          "ecosystem": "pip",
+          "name": "urllib3"
+        },
+        "manifest_path": "requirements.txt"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-v845-jxx5-vc9f",
+        "cve_id": "CVE-2023-43804",
+        "summary": "Cookie header not stripped on cross-origin redirects",
+        "severity": "high"
+      },
+      "security_vulnerability": {
+        "package": {
+          "ecosystem": "pip",
+          "name": "urllib3"
+        },
+        "severity": "high",
+        "first_patched_version": {
+          "identifier": "2.0.6"
+        }
+      }
     },
     {
       "number": 1,
-      "repository": {"name": "sandbox-experiments"},
+      "repository": {
+        "name": "sandbox-experiments"
+      },
       "created_at": "@-300d",
       "html_url": "https://github.com/acme/sandbox-experiments/security/dependabot/1",
-      "dependency": {"package": {"ecosystem": "npm", "name": "minimist"}, "manifest_path": "package-lock.json"},
-      "security_advisory": {"ghsa_id": "GHSA-xvch-5gv4-984h", "cve_id": "CVE-2021-44906", "summary": "Prototype pollution", "severity": "critical"},
-      "security_vulnerability": {"package": {"ecosystem": "npm", "name": "minimist"}, "severity": "critical", "first_patched_version": {"identifier": "1.2.6"}}
+      "dependency": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "minimist"
+        },
+        "manifest_path": "package-lock.json"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-xvch-5gv4-984h",
+        "cve_id": "CVE-2021-44906",
+        "summary": "Prototype pollution",
+        "severity": "critical"
+      },
+      "security_vulnerability": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "minimist"
+        },
+        "severity": "critical",
+        "first_patched_version": {
+          "identifier": "1.2.6"
+        }
+      }
     }
   ],
-  "kev": ["CVE-2022-23539"],
+  "kev": [
+    "CVE-2022-23539"
+  ],
   "closed_alerts": [
     {
       "number": 11,
       "state": "fixed",
-      "repository": {"name": "payments-api"},
+      "repository": {
+        "name": "payments-api"
+      },
       "created_at": "@-30d",
       "updated_at": "@-2d",
       "fixed_at": "@-2d",
       "html_url": "https://github.com/acme/payments-api/security/dependabot/11",
-      "dependency": {"package": {"ecosystem": "npm", "name": "follow-redirects"}, "manifest_path": "package-lock.json"},
-      "security_advisory": {"ghsa_id": "GHSA-cxjh-pqwp-8mfp", "cve_id": "CVE-2024-28849", "summary": "Proxy-Authorization header kept across hosts", "severity": "medium"},
-      "security_vulnerability": {"package": {"ecosystem": "npm", "name": "follow-redirects"}, "severity": "medium", "first_patched_version": {"identifier": "1.15.6"}}
+      "dependency": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "follow-redirects"
+        },
+        "manifest_path": "package-lock.json"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-cxjh-pqwp-8mfp",
+        "cve_id": "CVE-2024-28849",
+        "summary": "Proxy-Authorization header kept across hosts",
+        "severity": "medium"
+      },
+      "security_vulnerability": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "follow-redirects"
+        },
+        "severity": "medium",
+        "first_patched_version": {
+          "identifier": "1.15.6"
+        }
+      }
     },
     {
       "number": 6,
       "state": "dismissed",
-      "repository": {"name": "data-pipeline"},
+      "repository": {
+        "name": "data-pipeline"
+      },
       "created_at": "@-40d",
       "updated_at": "@-1d",
       "dismissed_at": "@-1d",
       "dismissed_reason": "tolerable_risk",
       "dismissed_comment": null,
-      "dismissed_by": {"login": "mchen"},
+      "dismissed_by": {
+        "login": "mchen"
+      },
       "html_url": "https://github.com/acme/data-pipeline/security/dependabot/6",
-      "dependency": {"package": {"ecosystem": "pip", "name": "requests"}, "manifest_path": "requirements.txt"},
-      "security_advisory": {"ghsa_id": "GHSA-9wx4-h78v-vm56", "cve_id": "CVE-2024-35195", "summary": "Session verify=False persists for the connection", "severity": "high"},
-      "security_vulnerability": {"package": {"ecosystem": "pip", "name": "requests"}, "severity": "high", "first_patched_version": {"identifier": "2.32.0"}}
+      "dependency": {
+        "package": {
+          "ecosystem": "pip",
+          "name": "requests"
+        },
+        "manifest_path": "requirements.txt"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-9wx4-h78v-vm56",
+        "cve_id": "CVE-2024-35195",
+        "summary": "Session verify=False persists for the connection",
+        "severity": "high"
+      },
+      "security_vulnerability": {
+        "package": {
+          "ecosystem": "pip",
+          "name": "requests"
+        },
+        "severity": "high",
+        "first_patched_version": {
+          "identifier": "2.32.0"
+        }
+      }
     }
   ],
   "dependabot_prs": [
@@ -145,12 +382,294 @@
     },
     "inventory-service": {
       ".github/workflows/vulgard.yml": "name: vulgard\n",
-      ".github/dependabot.yml": "version: 2\nupdates: []\n"
+      ".github/dependabot.yml": "version: 2\nupdates: []\n",
+      "sst.config.ts": "export default $config({\n  app(input) {\n    return { name: \"inventory\", home: \"aws\" };\n  },\n  async run() {},\n});\n"
+    },
+    "payments-api": {
+      "serverless.yml": "service: payments-api\nframeworkVersion: '3'\nprovider:\n  name: aws\n  stage: ${opt:stage, 'dev'}\n"
     }
   },
   "trees": {
-    "payments-api": ["package.json", "package-lock.json", "Dockerfile", ".github/workflows/ci.yml", "src/index.ts"],
-    "data-pipeline": ["pyproject.toml", "jobs/ingest/requirements.txt", "infra/main.tf", "node_modules/x/package.json"],
-    "web-storefront": ["package.json", ".github/workflows/deploy.yml"]
+    "payments-api": [
+      "package.json",
+      "package-lock.json",
+      "Dockerfile",
+      ".github/workflows/ci.yml",
+      "src/index.ts",
+      "serverless.yml"
+    ],
+    "data-pipeline": [
+      "pyproject.toml",
+      "jobs/ingest/requirements.txt",
+      "infra/main.tf",
+      "node_modules/x/package.json"
+    ],
+    "web-storefront": [
+      "package.json",
+      ".github/workflows/deploy.yml"
+    ],
+    "inventory-service": [
+      "sst.config.ts",
+      "package.json"
+    ]
+  },
+  "aws": {
+    "account": "111122223333",
+    "stacks": [
+      {
+        "StackName": "payments-api-production",
+        "StackId": "arn:aws:cloudformation:us-east-1:111122223333:stack/payments-api-production/1",
+        "StackStatus": "UPDATE_COMPLETE",
+        "CreationTime": "@-400d",
+        "LastUpdatedTime": "@-45d",
+        "Outputs": [
+          {
+            "OutputKey": "ServerlessDeploymentBucketName",
+            "OutputValue": "payments-api-production-deploys"
+          }
+        ]
+      },
+      {
+        "StackName": "payments-api-dev",
+        "StackId": "arn:aws:cloudformation:us-east-1:111122223333:stack/payments-api-dev/1",
+        "StackStatus": "UPDATE_COMPLETE",
+        "CreationTime": "@-400d",
+        "LastUpdatedTime": "@-10d",
+        "Outputs": [
+          {
+            "OutputKey": "ServerlessDeploymentBucketName",
+            "OutputValue": "payments-api-dev-deploys"
+          }
+        ]
+      },
+      {
+        "StackName": "payments-api-jlee",
+        "StackId": "arn:aws:cloudformation:us-east-1:111122223333:stack/payments-api-jlee/1",
+        "StackStatus": "UPDATE_COMPLETE",
+        "CreationTime": "@-400d",
+        "LastUpdatedTime": "@-100d",
+        "Outputs": [
+          {
+            "OutputKey": "ServerlessDeploymentBucketName",
+            "OutputValue": "payments-api-jlee-deploys"
+          }
+        ]
+      },
+      {
+        "StackName": "legacy-reports-staging",
+        "StackId": "arn:aws:cloudformation:us-east-1:111122223333:stack/legacy-reports-staging/1",
+        "StackStatus": "UPDATE_COMPLETE",
+        "CreationTime": "@-400d",
+        "LastUpdatedTime": "@-300d",
+        "Outputs": [
+          {
+            "OutputKey": "ServerlessDeploymentBucketName",
+            "OutputValue": "legacy-reports-staging-deploys"
+          }
+        ]
+      },
+      {
+        "StackName": "DataPipelineStack",
+        "StackId": "arn:aws:cloudformation:us-east-1:111122223333:stack/DataPipelineStack/1",
+        "StackStatus": "UPDATE_COMPLETE",
+        "CreationTime": "@-40d",
+        "Parameters": [
+          {
+            "ParameterKey": "BootstrapVersion",
+            "ParameterValue": "/cdk-bootstrap/hnb659fds/version"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "repository",
+            "Value": "acme/data-pipeline"
+          }
+        ]
+      },
+      {
+        "StackName": "DataPipelineProduction",
+        "StackId": "arn:aws:cloudformation:us-east-1:111122223333:stack/DataPipelineProduction/1",
+        "StackStatus": "UPDATE_COMPLETE",
+        "CreationTime": "@-200d",
+        "Parameters": [
+          {
+            "ParameterKey": "BootstrapVersion",
+            "ParameterValue": "/cdk-bootstrap/hnb659fds/version"
+          }
+        ],
+        "EnableTerminationProtection": true,
+        "Tags": [
+          {
+            "Key": "repository",
+            "Value": "acme/data-pipeline"
+          }
+        ]
+      },
+      {
+        "StackName": "CDKToolkit",
+        "StackId": "arn:aws:cloudformation:us-east-1:111122223333:stack/CDKToolkit/1",
+        "StackStatus": "UPDATE_COMPLETE",
+        "CreationTime": "@-500d",
+        "Parameters": [
+          {
+            "ParameterKey": "BootstrapVersion",
+            "ParameterValue": "/cdk-bootstrap/hnb659fds/version"
+          }
+        ]
+      },
+      {
+        "StackName": "DataPipelineStackNested",
+        "StackId": "arn:aws:cloudformation:us-east-1:111122223333:stack/DataPipelineStackNested/1",
+        "StackStatus": "UPDATE_COMPLETE",
+        "CreationTime": "@-40d",
+        "Parameters": [
+          {
+            "ParameterKey": "BootstrapVersion",
+            "ParameterValue": "/cdk-bootstrap/hnb659fds/version"
+          }
+        ],
+        "ParentId": "arn:parent"
+      },
+      {
+        "StackName": "amplify-storefront-jlee-sandbox-1a2b3c",
+        "StackId": "arn:aws:cloudformation:us-east-1:111122223333:stack/amplify-storefront-jlee-sandbox-1a2b3c/1",
+        "StackStatus": "CREATE_COMPLETE",
+        "CreationTime": "@-95d"
+      },
+      {
+        "StackName": "hand-made-vpc",
+        "StackId": "arn:aws:cloudformation:us-east-1:111122223333:stack/hand-made-vpc/1",
+        "StackStatus": "CREATE_COMPLETE",
+        "CreationTime": "@-900d"
+      }
+    ],
+    "sst": {
+      "bucket": "sst-state-demo",
+      "objects": [
+        {
+          "Key": "app/inventory/production.json",
+          "LastModified": "@-5d"
+        },
+        {
+          "Key": "app/inventory/jlee.json",
+          "LastModified": "@-120d"
+        },
+        {
+          "Key": "lock/inventory/jlee.json",
+          "LastModified": "@-1d"
+        },
+        {
+          "Key": "passphrase/inventory/jlee",
+          "LastModified": "@-120d"
+        }
+      ]
+    },
+    "amplify": [
+      {
+        "app": {
+          "appId": "d1abc",
+          "name": "web-storefront-site",
+          "repository": "https://github.com/acme/web-storefront",
+          "productionBranch": {
+            "branchName": "main"
+          }
+        },
+        "branches": [
+          {
+            "branchName": "main",
+            "createTime": "@-300d",
+            "job": {
+              "status": "SUCCEED",
+              "endTime": "@-60d"
+            }
+          },
+          {
+            "branchName": "feature-x",
+            "createTime": "@-80d",
+            "job": {
+              "status": "SUCCEED",
+              "endTime": "@-50d"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "vercel": {
+    "team_id": "team_acme",
+    "projects": [
+      {
+        "id": "prj_docs",
+        "name": "storefront-docs",
+        "link": {
+          "type": "github",
+          "org": "acme",
+          "repo": "web-storefront"
+        },
+        "targets": {
+          "production": {
+            "createdAt": "@-33d",
+            "alias": [
+              "docs.acme.com",
+              "storefront-docs.vercel.app"
+            ],
+            "readyState": "READY"
+          }
+        }
+      },
+      {
+        "id": "prj_preview",
+        "name": "storefront-experiments",
+        "link": {
+          "type": "github",
+          "org": "acme",
+          "repo": "web-storefront"
+        },
+        "targets": {
+          "production": {
+            "createdAt": "@-70d",
+            "alias": [
+              "storefront-experiments.vercel.app"
+            ],
+            "readyState": "READY"
+          }
+        }
+      },
+      {
+        "id": "prj_never",
+        "name": "never-deployed",
+        "targets": {}
+      }
+    ]
+  },
+  "commits": {
+    "payments-api": [
+      {
+        "date": "@-2d",
+        "login": "mchen"
+      }
+    ],
+    "web-storefront": [
+      {
+        "date": "@-5d",
+        "login": "jlee"
+      }
+    ],
+    "inventory-service": [
+      {
+        "date": "@-200d",
+        "login": "mchen"
+      }
+    ],
+    "data-pipeline": [
+      {
+        "date": "@-20d",
+        "login": "dependabot[bot]"
+      },
+      {
+        "date": "@-130d",
+        "login": "dependabot[bot]"
+      }
+    ]
   }
 }
