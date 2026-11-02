@@ -61,14 +61,30 @@ jobs:
       STAGE: ${{ inputs.stage }}
       STACK: ${{ inputs.stack }}
     steps:
+      # These two run before checkout, so they can't use the job's working-directory default.
+      - name: Only vulgard's app or a repo admin can run this
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          case "$ACTOR" in *"[bot]") exit 0 ;; esac
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+          if [ "$perm" != admin ]; then
+            echo "$ACTOR is neither an app nor a repo admin"; exit 1
+          fi
       - name: Validate inputs
+        working-directory: ${{ github.workspace }}
         run: |
           case "$ACTION" in redeploy|delete) ;; *) echo "bad action: $ACTION"; exit 1 ;; esac
           case "$FRAMEWORK" in serverless|sst|cdk) ;; *) echo "bad framework: $FRAMEWORK"; exit 1 ;; esac
           for v in "$STAGE" "$STACK"; do
             if ! [[ "$v" =~ ^[A-Za-z0-9._-]*$ ]]; then echo "bad stage or stack: $v"; exit 1; fi
           done
-          if [[ "$STAGE" =~ ^(prod|production|live)$ ]] && [ "$ACTION" = delete ]; then
+          # Same idea as vulgard's own tiering: a production word anywhere in the name, any case.
+          lc=$(printf '%s %s' "$STAGE" "$STACK" | tr '[:upper:]' '[:lower:]')
+          if [ "$ACTION" = delete ] && [[ "$lc" =~ (^|[^a-z0-9])(prod|prd|production|live)([^a-z0-9]|$) ]]; then
             echo "vulgard never deletes production"; exit 1
           fi
       - uses: actions/checkout@v4
@@ -90,7 +106,6 @@ jobs:
         run: |
           case "$FRAMEWORK:$ACTION" in
             serverless:redeploy) npx serverless deploy --stage "$STAGE" ;;
-            serverless:delete)   npx serverless remove --stage "$STAGE" ;;
             sst:redeploy)        npx sst deploy --stage "$STAGE" ;;
             sst:delete)          npx sst remove --stage "$STAGE" ;;
             cdk:redeploy)        npx cdk deploy "$STACK" --require-approval never ;;

@@ -149,15 +149,21 @@ AUTOMERGE_OFF = (
 
 @dataclass
 class RolloutPlan:
+    """Files to put on a branch and open a PR for. `plan_rollout` and `plan_lifecycle_rollout`
+    differ only in what they fill in here, and `apply_rollout` doesn't need to know which."""
+
     repo: str
     default_branch: str
+    branch: str  # the PR's head branch
+    pr_title: str = ""
+    pr_body: str = ""
+    enable_security: bool = True  # also turn on Dependabot alerts, security updates and auto-merge
     files: dict[str, str] = field(default_factory=dict)
     skipped_reason: str | None = None
     existing_pr: str | None = None
-    lifecycle: bool = False  # the vulgard-lifecycle.yml rollout, on its own branch
 
 
-def render_lifecycle_workflow(config: Config) -> str:
+def render_lifecycle_workflow(config: Config, role: str) -> str:
     r, aws = config.rollout, config.deployments.aws
     source = f"{config.org}/{r.workflow_repo}"
     title = "vulgard ${{ inputs.action }} ${{ inputs.stage || inputs.stack }}"
@@ -202,7 +208,7 @@ jobs:
       stage: ${{{{ inputs.stage }}}}
       stack: ${{{{ inputs.stack }}}}
       request_id: ${{{{ inputs.request_id }}}}
-      role: {aws.deploy_role_arn}
+      role: {role}
       region: {aws.regions[0]}
 """
 
@@ -213,34 +219,41 @@ stale Serverless, SST or CDK stack of this repo when someone comments \
 `/vulgard redeploy <name>` or `/vulgard delete <name>` on the repo's stale-deployments issue.
 
 It runs from the default branch with this repo's own deploy role, and it never deletes \
-production. If your deploys need more than `npm ci` and the framework CLI (secrets, build \
-steps, a monorepo path), say so here and we'll point vulgard at your existing deploy workflow \
-instead.
+production. Only vulgard's GitHub App and repo admins can dispatch it. If your deploys need \
+more than `npm ci` and the framework CLI (secrets, build steps, a monorepo path), say so here \
+and we'll point vulgard at your existing deploy workflow instead.
 """
 
 
 def plan_lifecycle_rollout(
     gh: Any, config: Config, repo: dict[str, Any], frameworks: frozenset[Framework]
 ) -> RolloutPlan:
-    name, branch = repo["name"], repo.get("default_branch", "main")
-    plan = RolloutPlan(repo=name, default_branch=branch, lifecycle=True)
+    name, default = repo["name"], repo.get("default_branch", "main")
+    plan = RolloutPlan(
+        repo=name,
+        default_branch=default,
+        branch=LIFECYCLE_BRANCH,
+        pr_title="ci: let vulgard redeploy or remove stale stacks",
+        enable_security=False,
+    )
     cfg = config.deployments
-    if not cfg.aws.deploy_role_arn:
+    role = cfg.aws.deploy_role_arn
+    if not role:
         plan.skipped_reason = "set deployments.aws.deploy_role_arn first"
-        return plan
-    if not frameworks & WORKFLOW_FRAMEWORKS:
+    elif not frameworks & WORKFLOW_FRAMEWORKS:
         plan.skipped_reason = "no Serverless, SST or CDK app"
-        return plan
-    if name in cfg.workflows:
+    elif name in cfg.workflows:
         plan.skipped_reason = f"uses {cfg.workflows[name]}"
+    if plan.skipped_reason or not role:
         return plan
     existing = gh.find_open_pr(config.org, name, LIFECYCLE_BRANCH)
     plan.existing_pr = existing["html_url"] if existing else None
     path = f".github/workflows/{cfg.lifecycle_workflow}"
-    current = gh.get_file(config.org, name, path, LIFECYCLE_BRANCH if existing else branch)
-    desired = render_lifecycle_workflow(config)
+    current = gh.get_file(config.org, name, path, LIFECYCLE_BRANCH if existing else default)
+    desired = render_lifecycle_workflow(config, role)
     if current != desired and (current is None or current.startswith(MANAGED_MARK)):
         plan.files[path] = desired
+        plan.pr_body = LIFECYCLE_BODY.format(path=path)
     else:
         plan.skipped_reason = "up to date"
     return plan
@@ -248,17 +261,22 @@ def plan_lifecycle_rollout(
 
 def plan_rollout(gh: Any, config: Config, repo: dict[str, Any]) -> RolloutPlan:
     """Files to add or refresh. Compares against the open rollout PR's branch if there is one."""
-    name, branch = repo["name"], repo.get("default_branch", "main")
-    plan = RolloutPlan(repo=name, default_branch=branch)
+    name, default = repo["name"], repo.get("default_branch", "main")
+    plan = RolloutPlan(
+        repo=name,
+        default_branch=default,
+        branch=config.rollout.branch,
+        pr_title="chore(security): enable vulgard dependency checks",
+    )
     if repo.get("archived") or repo.get("fork"):
         plan.skipped_reason = "archived" if repo.get("archived") else "fork"
         return plan
     existing = gh.find_open_pr(config.org, name, config.rollout.branch)
     plan.existing_pr = existing["html_url"] if existing else None
-    ref = config.rollout.branch if existing else branch
+    ref = config.rollout.branch if existing else default
 
     if gh.get_file(config.org, name, DEPENDABOT_PATH, ref) is None:
-        ecosystems = detect_ecosystems(gh.list_tree_paths(config.org, name, branch))
+        ecosystems = detect_ecosystems(gh.list_tree_paths(config.org, name, default))
         if ecosystems:
             plan.files[DEPENDABOT_PATH] = render_dependabot_config(
                 ecosystems, config.rollout.schedule_interval
@@ -269,41 +287,28 @@ def plan_rollout(gh: Any, config: Config, repo: dict[str, Any]) -> RolloutPlan:
         plan.files[WORKFLOW_PATH] = desired
     if not plan.files:
         plan.skipped_reason = "up to date"
+        return plan
+    items = "\n".join(f"- `{p}`" for p in plan.files)
+    automerge = AUTOMERGE_ON if config.auto_merges(name) else AUTOMERGE_OFF
+    severity = config.rollout.fail_on_severity
+    plan.pr_body = PR_BODY.format(items=items, severity=severity, automerge=automerge)
     return plan
 
 
 def apply_rollout(gh: Any, config: Config, plan: RolloutPlan) -> str | None:
     org = config.org
-    branch = LIFECYCLE_BRANCH if plan.lifecycle else config.rollout.branch
-    if not plan.lifecycle:
-        auto_merge = config.auto_merges(plan.repo)
-        gh.enable_security_features(org, plan.repo, allow_auto_merge=auto_merge)
+    if plan.enable_security:
+        gh.enable_security_features(org, plan.repo, allow_auto_merge=config.auto_merges(plan.repo))
     if not plan.files:
         return None
-    if gh.get_branch_sha(org, plan.repo, branch) is None:
+    if gh.get_branch_sha(org, plan.repo, plan.branch) is None:
         base_sha = gh.get_branch_sha(org, plan.repo, plan.default_branch)
-        gh.create_branch(org, plan.repo, branch, base_sha)
+        gh.create_branch(org, plan.repo, plan.branch, base_sha)
     for path, content in plan.files.items():
-        gh.put_file(org, plan.repo, path, content, f"chore(security): vulgard {path}", branch)
+        gh.put_file(org, plan.repo, path, content, f"chore(security): vulgard {path}", plan.branch)
     if plan.existing_pr:
         return plan.existing_pr
-    if plan.lifecycle:
-        (path,) = plan.files
-        title = "ci: let vulgard redeploy or remove stale stacks"
-        pr = gh.create_pr(
-            org, plan.repo, title, LIFECYCLE_BODY.format(path=path), branch, plan.default_branch
-        )
-        return pr["html_url"]
-    items = "\n".join(f"- `{p}`" for p in plan.files)
-    automerge = AUTOMERGE_ON if config.auto_merges(plan.repo) else AUTOMERGE_OFF
     pr = gh.create_pr(
-        org,
-        plan.repo,
-        "chore(security): enable vulgard dependency checks",
-        PR_BODY.format(
-            items=items, severity=config.rollout.fail_on_severity, automerge=automerge
-        ),
-        branch,
-        plan.default_branch,
+        org, plan.repo, plan.pr_title, plan.pr_body, plan.branch, plan.default_branch
     )
     return pr["html_url"]

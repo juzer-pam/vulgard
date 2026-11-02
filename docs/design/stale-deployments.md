@@ -99,8 +99,12 @@ deterministic `request_id`.
    - A deployment is PERSONAL only on positive evidence: its stage maps to a known person, or
      it's an Amplify sandbox.
    - Automatic ops need all four of: an `auto.repos` match, `--apply`, `--execute`, and a
-     notice at least `auto.notice_days` old. A notice recorded today never runs today.
-   - The executor re-reads the live target before deleting.
+     notice at least `auto.notice_days` old. The notice time is the `created_at` of vulgard's own
+     comment, found by a hidden marker in a comment whose author ends in `[bot]`, so editing the
+     issue body can't backdate it. A notice only counts if it is newer than the deployment's last
+     deploy and the last keep, and a notice posted today never runs today.
+   - `recheck` repeats the planning rules against a fresh read of the target right before the
+     delete, for every framework including SST.
 6. **Ops are idempotent.** `request_id` is a hash of the decision. It goes into the workflow
    run name, the CFN `ClientRequestToken`, the Amplify `jobReason` and the Vercel `meta`.
    `execute` always looks for an existing op before starting one.
@@ -120,9 +124,14 @@ Module map. The stale path is `cli`, then `stale`, then `nag`/`lifecycle`.
 | `aws.py` | AWS scanners and native ops |
 | `vercel.py` | Vercel scanner and ops |
 | `baseline.py` | command parsing and `fold` |
-| `lifecycle.py` | `reconcile`, the framework table, `execute` |
-| `executor.py` | the live executor that maps steps to GitHub, AWS and Vercel |
-| `stale.py` | stale topic: policy, planner, rendering |
+| `lifecycle.py` | `Op`, `check_delete`, `recheck`, notices, `reconcile` (pure) |
+| `execute.py` | the `Executor` protocol and idempotent `execute` |
+| `executor.py` | the live executor: GitHub, AWS and Vercel, failures become `OpFailed` |
+| `stale.py` | stale model and policy: findings, `evaluate`, `survey` |
+| `stale_plan.py` | stale topic: the `RepoPlan` for one repo |
+| `stale_render.py` | stale topic: issue body, comments, summary, leaderboard, tables |
+| `repos.py` | GitHub-side repo data: selection, owners, framework index, activity |
+| `topics.py` | one runner per topic, so `nag` loops instead of branching |
 
 What it deliberately doesn't do:
 
@@ -208,14 +217,17 @@ Rejected from candidate A:
 
 - Generic redeploys through `vulgard-lifecycle.yml` fail for repos whose deploys need secrets
   or build steps beyond `npm ci`. Those repos set `deployments.workflows`.
-- The notice clock starts when the notice is recorded in issue memory, which the engine writes
-  just before posting the comment. If posting fails after the body write, the op can still run
-  after the notice period without a visible notice.
+- The notice marker is trusted when its comment's author ends in `[bot]`. Another GitHub App
+  with write access to the repo could post one. Pinning the vulgard App's login would close
+  that, at the cost of one more setting.
+- A failed op is retried on every run and comments on the issue each time. Nothing throttles
+  the repeats yet.
 
 ## Implementation slices
 
-1. **Engine extraction.** Generic `plan.py` and `nag.track`, a `vulns.py` topic, and REOPEN. No
-   behavior change.
+1. **Engine extraction.** Generic `plan.py` and `nag.track`, a `vulns.py` topic, and REOPEN. One
+   behavior change for vulnerabilities: a closed tracking issue is reopened when alerts return,
+   instead of a new one being opened. Everything else is byte-identical.
 2. **Read-only discovery.** `estate.py`, the `aws.py` and `vercel.py` scanners, config, and
    `report --topic stale --all`.
 3. **Stale topic.** Baselines, the planner, notifications and leaderboard sections, without

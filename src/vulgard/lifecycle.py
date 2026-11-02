@@ -1,4 +1,4 @@
-"""Lifecycle: turn baselines into redeploys and deletes, and carry them out idempotently.
+"""Lifecycle: turn baselines into redeploys and deletes. Pure policy, no I/O.
 
 Ops come from two sources.
 
@@ -7,11 +7,15 @@ next `nag --apply --execute` run carries it out.
 
 An automatic op targets a PERSONAL deployment in an `auto.repos` repo that hasn't deployed in
 `auto.personal_stale_days`, or whose repo has open critical alerts. vulgard first posts a
-notice on the tracking issue. It acts once `auto.notice_days` have passed since the notice was
-first planned. `/vulgard keep` or `/vulgard cancel` stops it.
+notice on the tracking issue. It acts once `auto.notice_days` have passed since that comment
+was posted. `/vulgard keep` or `/vulgard cancel` stops it.
 
-Every delete is built from a `SafeDelete`, which only `check_delete` can create, and the
-executor re-reads the live target before deleting. Production is never deleted.
+The notice time comes from the bot's own comment, never from the issue body, because anyone
+with write access can edit the body. A notice only counts when it is newer than the
+deployment's last deploy and than the last keep, so a stale notice can't fire an op later.
+
+Every delete carries a `SafeDelete` from `check_delete`, and `recheck` repeats the same rules
+against the live target right before the delete.
 
 Each op has a deterministic `request_id`. Every API receives it as an idempotency key: the
 workflow run name, the CloudFormation `ClientRequestToken`, the Amplify `jobReason` and the
@@ -21,25 +25,32 @@ Vercel `meta`. `execute` looks for an existing op with that id before it starts 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+import json
+import re
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
-from typing import Protocol, assert_never
+from typing import assert_never
 
-from .baseline import Cancel, Delete, Issued, Redeploy, Request
-from .config import DeploymentsConfig
+from .baseline import Decisions, Delete, Issued, Redeploy, Request, pending_requests
+from .config import DeploymentsConfig, Tier
 from .estate import (
+    EMPTY_INDEX,
     AmplifyBranch,
     CfnStack,
     Deployment,
     Framework,
+    Sighting,
     SstStage,
-    Tier,
     VercelProject,
+    classify,
 )
+from .plan import IssueComment
 
-_TOKEN = object()
+RUNNING_NOW = "a deploy or delete is running right now"
+NO_REPO = "no repo to run it from; attribute the deployment first"
+SANDBOX = "Amplify sandboxes run from a laptop (`npx ampx sandbox`); delete it instead"
+NOTICE_RE = re.compile(r"<!-- vulgard-notice (\{.*?\}) -->")
 
 
 class Verb(StrEnum):
@@ -63,67 +74,22 @@ TRIGGER_WHY = {
 
 @dataclass(frozen=True)
 class SafeDelete:
-    """Proof that a deployment passed `check_delete`. Delete steps only accept this."""
+    """Proof that a deployment passed `check_delete`. Executors delete only with one."""
 
     deployment: Deployment
-    token: object = field(repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        assert self.token is _TOKEN, "SafeDelete is only created by check_delete"
 
 
 def check_delete(d: Deployment, automatic: bool) -> SafeDelete | str:
     """A SafeDelete, or why this deployment can't be deleted."""
-    s = d.sighting
-    if d.tier is Tier.PRODUCTION or s.protected:
-        return "vulgard never deletes production or protected deployments"
-    if s.in_progress:
-        return "a deploy is running right now"
+    if d.delete_refusal:
+        return d.delete_refusal
+    if d.sighting.in_progress:
+        return RUNNING_NOW
     if automatic and d.tier is not Tier.PERSONAL:
         return "automatic deletes only apply to personal deployments"
     if automatic and d.framework is Framework.VERCEL:
         return "Vercel projects are never deleted automatically"
-    return SafeDelete(d, _TOKEN)
-
-
-# --- steps: how an op is carried out
-
-
-@dataclass(frozen=True)
-class Dispatch:
-    """Run the repo's lifecycle workflow (or `deployments.workflows[repo]`)."""
-
-    repo: str
-    workflow: str
-    inputs: Mapping[str, str]
-
-
-@dataclass(frozen=True)
-class CfnDelete:
-    target: SafeDelete  # Serverless and CDK stacks, and Amplify sandboxes
-
-
-@dataclass(frozen=True)
-class AmplifyRelease:
-    branch: AmplifyBranch
-
-
-@dataclass(frozen=True)
-class AmplifyDelete:
-    target: SafeDelete
-
-
-@dataclass(frozen=True)
-class VercelRedeploy:
-    project: VercelProject
-
-
-@dataclass(frozen=True)
-class VercelDelete:
-    target: SafeDelete
-
-
-type Step = Dispatch | CfnDelete | AmplifyRelease | AmplifyDelete | VercelRedeploy | VercelDelete
+    return SafeDelete(d)
 
 
 def request_id(key: str, verb: Verb, origin: str) -> str:
@@ -132,77 +98,62 @@ def request_id(key: str, verb: Verb, origin: str) -> str:
     return f"vg-{digest[:12]}"
 
 
-def _inputs(d: Deployment, verb: Verb, rid: str) -> dict[str, str]:
-    stack = d.sighting.native.name if isinstance(d.sighting.native, CfnStack) else ""
-    return {
-        "action": verb.value,
-        "framework": d.framework.value,
-        "app": d.sighting.app,
-        "stage": d.sighting.stage or "",
-        "stack": stack,
-        "request_id": rid,
-    }
-
-
-def _dispatch(d: Deployment, verb: Verb, rid: str, cfg: DeploymentsConfig) -> Dispatch | str:
-    if d.repo is None:
-        return "no repo to run it from; attribute the deployment first"
-    return Dispatch(d.repo, cfg.workflow_for(d.repo), _inputs(d, verb, rid))
-
-
-def plan_step(
-    d: Deployment, verb: Verb, rid: str, cfg: DeploymentsConfig, automatic: bool
-) -> Step | str:
-    """Pure. How to carry out `verb` on `d`, or why vulgard can't."""
-    native = d.sighting.native
-    match verb:
-        case Verb.REDEPLOY:
-            if d.sighting.in_progress:
-                return "a deploy is running right now"
-            match native:
-                case AmplifyBranch():
-                    return AmplifyRelease(native)
-                case VercelProject():
-                    return VercelRedeploy(native)
-                case CfnStack() if d.framework is Framework.AMPLIFY:
-                    return "Amplify sandboxes run from a laptop (`npx ampx sandbox`); delete it"
-                case CfnStack() | SstStage():
-                    return _dispatch(d, verb, rid, cfg)
-                case _ as unreachable:
-                    assert_never(unreachable)
-        case Verb.DELETE:
-            safe = check_delete(d, automatic)
-            if isinstance(safe, str):
-                return safe
-            match native:
-                case CfnStack():
-                    return CfnDelete(safe)
-                case SstStage():
-                    return _dispatch(d, verb, rid, cfg)  # only `sst remove` can delete SST
-                case AmplifyBranch():
-                    return AmplifyDelete(safe)
-                case VercelProject():
-                    return VercelDelete(safe)
-                case _ as unreachable:
-                    assert_never(unreachable)
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
 @dataclass(frozen=True)
 class Op:
+    """One redeploy or delete. A runnable delete carries its proof, and anything vulgard can't
+    do says why in `blocked`."""
+
     deployment: Deployment
     verb: Verb
     trigger: Trigger
     request_id: str
-    step: Step | str  # str: why it can't be done automatically
+    delete: SafeDelete | None = None
+    blocked: str | None = None
+
+    def __post_init__(self) -> None:
+        carries_proof = self.verb is Verb.DELETE and self.blocked is None
+        assert carries_proof == (self.delete is not None), "a runnable delete carries its proof"
 
     @property
     def runnable(self) -> bool:
-        return not isinstance(self.step, str)
+        return self.blocked is None
+
+    @property
+    def automatic(self) -> bool:
+        return self.trigger is not Trigger.REQUEST
 
 
-def requested_op(req: Issued[Request], d: Deployment, cfg: DeploymentsConfig) -> Op:
+def _redeploy_blocker(d: Deployment) -> str | None:
+    if d.sighting.in_progress:
+        return RUNNING_NOW
+    match d.sighting.native:
+        case AmplifyBranch() | VercelProject():
+            return None
+        case CfnStack() | SstStage():
+            if d.framework is Framework.AMPLIFY:
+                return SANDBOX
+            return NO_REPO if d.repo is None else None
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def plan_op(d: Deployment, verb: Verb, trigger: Trigger, rid: str) -> Op:
+    """Pure. An op, or the reason vulgard can't carry it out."""
+    match verb:
+        case Verb.DELETE:
+            safe = check_delete(d, automatic=trigger is not Trigger.REQUEST)
+            if isinstance(safe, str):
+                return Op(d, verb, trigger, rid, blocked=safe)
+            if isinstance(d.sighting.native, SstStage) and d.repo is None:
+                return Op(d, verb, trigger, rid, blocked=NO_REPO)  # only `sst remove` deletes SST
+            return Op(d, verb, trigger, rid, delete=safe)
+        case Verb.REDEPLOY:
+            return Op(d, verb, trigger, rid, blocked=_redeploy_blocker(d))
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def requested_op(req: Issued[Request], d: Deployment) -> Op:
     match req.command:
         case Redeploy():
             verb = Verb.REDEPLOY
@@ -211,7 +162,28 @@ def requested_op(req: Issued[Request], d: Deployment, cfg: DeploymentsConfig) ->
         case _ as unreachable:
             assert_never(unreachable)
     rid = request_id(d.key, verb, f"comment:{req.comment_id}")
-    return Op(d, verb, Trigger.REQUEST, rid, plan_step(d, verb, rid, cfg, automatic=False))
+    return plan_op(d, verb, Trigger.REQUEST, rid)
+
+
+def recheck(
+    proof: SafeDelete, live: Sighting | None, cfg: DeploymentsConfig, automatic: bool
+) -> str | None:
+    """Why a delete must not go ahead, from a fresh read of the target. It repeats the planning
+    rules on what the target looks like now, and refuses if it was deployed again since."""
+    planned = proof.deployment
+    if live is None:
+        return "it's already gone"
+    if live.last_deployed > planned.last_deployed:
+        return "it was deployed again since it was planned; leaving it alone"
+    now = classify(live, EMPTY_INDEX, cfg)
+    if now is None:
+        return "it's ignored by the configuration now"
+    refused = check_delete(now, automatic)
+    if isinstance(refused, str):
+        return refused
+    if now.tier is not planned.tier:
+        return "its tier changed since it was planned"
+    return None
 
 
 # --- automatic ops and their notices
@@ -219,38 +191,51 @@ def requested_op(req: Issued[Request], d: Deployment, cfg: DeploymentsConfig) ->
 
 @dataclass(frozen=True)
 class Notice:
-    """Recorded in issue memory with the date it was first planned. The notice period counts
-    from that date."""
+    """An announcement vulgard posted that it will act on `key`."""
 
     key: str
     verb: Verb
-    trigger: Trigger
-    posted: date
+    at: datetime  # when the bot's comment was posted
 
-    def to_json(self) -> list[str]:
-        return [self.key, self.verb.value, self.trigger.value, self.posted.isoformat()]
 
-    @classmethod
-    def from_json(cls, raw: list[str]) -> Notice:
-        key, verb, trigger, posted = raw
-        return cls(key, Verb(verb), Trigger(trigger), date.fromisoformat(posted))
+def notice_marker(key: str, verb: Verb) -> str:
+    """Hidden line that goes in the notice comment, one per deployment announced."""
+    return f"<!-- vulgard-notice {json.dumps({'key': key, 'verb': verb.value}, sort_keys=True)} -->"
+
+
+def notices_from(comments: tuple[IssueComment, ...]) -> list[Notice]:
+    """Notices in comments by a `[bot]` author. A person can't post one, so a person can't
+    backdate one either."""
+    found: list[Notice] = []
+    for c in comments:
+        if not c.author.endswith("[bot]"):
+            continue
+        for m in NOTICE_RE.finditer(c.body):
+            try:
+                raw = json.loads(m[1])
+                found.append(Notice(raw["key"], Verb(raw["verb"]), c.created_at))
+            except (ValueError, KeyError):
+                continue
+    return found
 
 
 @dataclass(frozen=True)
 class Scheduled:
-    notice: Notice
+    """An automatic op still inside its notice period."""
+
     deployment: Deployment
+    verb: Verb
+    trigger: Trigger
     due: date
-    fresh: bool  # notice posted this run
+    fresh: bool  # no notice comment exists yet, so this run must post one
 
 
-@dataclass
+@dataclass(frozen=True)
 class Lifecycle:
     """What a repo's tracking issue says about ops, and what `--execute` may run."""
 
-    scheduled: list[Scheduled] = field(default_factory=list)  # notice period running
-    ops: list[Op] = field(default_factory=list)  # requested, and automatic ones now due
-    notices: list[Notice] = field(default_factory=list)  # to remember: scheduled and due
+    scheduled: tuple[Scheduled, ...] = ()
+    ops: tuple[Op, ...] = ()
 
 
 def auto_trigger(
@@ -265,106 +250,47 @@ def auto_trigger(
     return Trigger.VULNERABLE if vulnerable else None
 
 
+def _first_notice(
+    notices: list[Notice], d: Deployment, verb: Verb, decisions: Decisions
+) -> date | None:
+    """The date of the earliest notice that still counts: newer than the last deploy and the
+    last keep, so an old notice can't make an op fire without fresh warning."""
+    floor = max(d.last_deployed, decisions.last_keep.get(d.key, d.last_deployed))
+    valid = [n.at for n in notices if n.key == d.key and n.verb is verb and n.at > floor]
+    return min(valid).date() if valid else None
+
+
 def reconcile(
     deployments: list[Deployment],
-    requests: list[tuple[Issued[Request], Deployment]],
-    kept: set[str],
-    cancels: Mapping[str, Issued[Cancel]],
-    notices: tuple[Notice, ...],
+    decisions: Decisions,
+    notices: list[Notice],
     cfg: DeploymentsConfig,
     vulnerable: bool,
     now: datetime,
 ) -> Lifecycle:
-    """Pure. Requests become ops. Qualifying personal deployments get a notice, then an op once
-    the notice period has passed. A keep, or a cancel newer than the last deploy, stops it."""
-    life = Lifecycle(ops=[requested_op(req, d, cfg) for req, d in requests])
-    requested = {d.key for _, d in requests}
-    prev = {n.key: n for n in notices}
-    today = now.date()
+    """Pure. Requests become ops. A qualifying personal deployment gets a notice, then an op
+    once the notice period has passed. A keep, or a cancel newer than the last deploy, stops
+    it, whichever trigger qualified it."""
+    ops = [requested_op(req, d) for req, d in pending_requests(decisions, deployments)]
+    requested = {op.deployment.key for op in ops}
     verb = Verb.DELETE if cfg.auto.delete else Verb.REDEPLOY
+    today = now.date()
+    scheduled: list[Scheduled] = []
     for d in deployments:
         trigger = auto_trigger(d, cfg, vulnerable, now)
-        cancel = cancels.get(d.key)
-        stopped = d.key in kept or (cancel is not None and cancel.at > d.last_deployed)
-        if trigger is None or stopped or d.key in requested:
+        cancel = decisions.cancels.get(d.key)
+        cancelled = cancel is not None and cancel.at > d.last_deployed
+        if trigger is None or d.key in requested or d.key in decisions.keeps or cancelled:
             continue
-        notice = prev.get(d.key)
-        fresh = notice is None or notice.verb is not verb
-        if fresh:
-            notice = Notice(d.key, verb, trigger, today)
-        assert notice is not None
-        life.notices.append(notice)
-        due = notice.posted + timedelta(days=cfg.auto.notice_days)
-        if notice.posted < today and due <= today:
-            rid = request_id(d.key, verb, f"auto:{notice.posted.isoformat()}")
-            op = Op(d, verb, notice.trigger, rid, plan_step(d, verb, rid, cfg, automatic=True))
-            life.ops.append(op)
+        posted = _first_notice(notices, d, verb, decisions)
+        due = (posted or today) + timedelta(days=cfg.auto.notice_days)
+        if posted is not None and posted < today and due <= today:
+            rid = request_id(d.key, verb, f"auto:{posted.isoformat()}")
+            ops.append(plan_op(d, verb, trigger, rid))
         else:
-            life.scheduled.append(Scheduled(notice, d, due, fresh))
-    return life
-
-
-# --- execution
-
-
-class OpFailed(RuntimeError):
-    """A lifecycle op that the control plane reports as failed."""
-
-
-class Outcome(StrEnum):
-    STARTED = "started"
-    RUNNING = "running"  # an op with this request id already exists
-    FAILED = "failed"
-    SKIPPED = "skipped"
-
-
-@dataclass(frozen=True)
-class Result:
-    op: Op
-    outcome: Outcome
-    detail: str  # a link when started or running, else the reason
-    url: str | None = None
-
-
-class Executor(Protocol):
-    """Live or fixture. `find` returns a link to an existing op with this request id."""
-
-    def find(self, step: Step, request_id: str) -> str | None: ...
-    def recheck(self, step: Step) -> str | None: ...  # why a delete must not proceed
-    def start(self, step: Step, request_id: str) -> str: ...
-
-
-def execute(op: Op, executor: Executor, errors: tuple[type[Exception], ...]) -> Result:
-    """Idempotent: an op already started with this request id is reported, not repeated."""
-    step = op.step
-    if isinstance(step, str):
-        return Result(op, Outcome.SKIPPED, step)
-    try:
-        existing = executor.find(step, op.request_id)
-        if existing:
-            return Result(op, Outcome.RUNNING, existing, existing)
-        if isinstance(step, (CfnDelete, AmplifyDelete, VercelDelete)):
-            why = executor.recheck(step)
-            if why:
-                return Result(op, Outcome.SKIPPED, why)
-        url = executor.start(step, op.request_id)
-    except errors as e:
-        return Result(op, Outcome.FAILED, str(e))
-    return Result(op, Outcome.STARTED, url, url)
+            scheduled.append(Scheduled(d, verb, trigger, due, fresh=posted is None))
+    return Lifecycle(tuple(scheduled), tuple(ops))
 
 
 def describe(op: Op) -> str:
     return f"{op.verb} `{op.deployment.name}` ({TRIGGER_WHY[op.trigger]}, {op.request_id})"
-
-
-def result_comment(r: Result, mentions: str) -> str | None:
-    """The tracking-issue comment for a result, or None when there's nothing new to say."""
-    match r.outcome:
-        case Outcome.STARTED:
-            return f"{mentions} Started {describe(r.op)}. [Progress]({r.url})".strip()
-        case Outcome.FAILED:
-            return f"{mentions} Couldn't {describe(r.op)}: {r.detail}".strip()
-        case Outcome.RUNNING | Outcome.SKIPPED:
-            return None
-        case _ as unreachable:
-            assert_never(unreachable)

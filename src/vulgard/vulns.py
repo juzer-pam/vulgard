@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Self
 
-from .config import SEVERITIES, Config
+from .config import SEVERITIES, Config, team_of_owners
 from .linear import PRIORITY, LinearClient
 from .nag import load_issues, track
 from .plan import (
@@ -20,8 +21,19 @@ from .plan import (
     TrackedIssue,
     TrackingState,
     issue_op,
+    mention_prefix,
+    reminder_clock,
+    reminder_due,
+    slack_summary,
 )
-from .policy import RepoReport, SlaStatus, now_utc
+from .policy import (
+    ClosedSummary,
+    RepoReport,
+    SlaStatus,
+    evaluate,
+    now_utc,
+    org_totals,
+)
 from .render import (
     alert_sections,
     escalation_md,
@@ -31,6 +43,8 @@ from .render import (
     render_issue_body,
     severity_summary,
 )
+from .repos import resolve_owners, selected_repos
+from .slack import MAX_ROWS, ranking
 
 RESOLVED = "✅ All Dependabot alerts are resolved. Thanks! Closing this issue."
 
@@ -65,7 +79,35 @@ def spec(config: Config) -> TopicSpec:
         slack_dm_header="Updates on vulnerable dependencies in repos you own:",
         escalation_header="🚨 Escalation: these alerts are well past their fix deadline.",
         linear_closed="✅ All Dependabot alerts are resolved. Closing.",
+        memory_type=VulnMemory,
     )
+
+
+def collect(
+    gh: Any,
+    config: Config,
+    only: list[str] | None = None,
+    kev: frozenset[str] = frozenset(),
+) -> dict[str, RepoReport]:
+    """Open alerts and Dependabot PRs for every selected repo, with owners where there is work."""
+    repos = [r["name"] for r in selected_repos(gh, config, only)]
+    reports = evaluate(
+        config,
+        gh.list_open_alerts(config.org),
+        gh.list_dependabot_prs(config.org),
+        repos,
+        kev=kev,
+    )
+    for report in reports.values():
+        if report.alerts or report.dependabot_prs:
+            report.owners = resolve_owners(gh, config, report.repo)
+    return reports
+
+
+def critical_repos(reports: dict[str, RepoReport]) -> frozenset[str]:
+    """Repos with an open critical alert. Their personal deployments become eligible for
+    automatic redeploys and deletes."""
+    return frozenset(repo for repo, r in reports.items() if r.severity_counts()["critical"])
 
 
 def _reminder(report: RepoReport, config: Config) -> str | None:
@@ -161,10 +203,6 @@ def plan_repo(
     escalate = [
         a for a in report.escalation_due(config.escalation) if a.number not in prev.memory.escalated
     ]
-    reminder_due = prev.last_reminder is None or (
-        (now - prev.last_reminder).days >= config.reminder_interval_days
-    )
-
     comments: list[str] = []
     detail = None
     reminder = False
@@ -179,24 +217,27 @@ def plan_repo(
             sections.append(newly_ready_md(newly_ready))
         comments.append(f"{' '.join(report.owners)} " + "\n\n".join(sections))
         detail = f"{len(newly_overdue)} newly overdue, {len(newly_ready)} newly ready PR(s)"
-    elif not fresh and reminder_due and (text := _reminder(report, config)):
+    elif (
+        not fresh
+        and reminder_due(prev, now, config.reminder_interval_days)
+        and (text := _reminder(report, config))
+    ):
         comments.append(text)
         reminder = True
         detail = "periodic reminder"
     escalation = None
     if escalate:
-        leads = "".join(f"{m} " for m in config.escalation.mentions)
+        leads = mention_prefix(config.escalation.mentions)
         comments.append(leads + escalation_md(escalate, config.escalation))
-        worst = ", ".join(
+        worst = [
             f"{a.severity} `{a.package}` {-a.days_left}d overdue"
             + (" 🔥" if a.known_exploited else "")
-            for a in escalate[:3]
-        )
-        more = f" (+{len(escalate) - 3} more)" if len(escalate) > 3 else ""
+            for a in escalate
+        ]
         escalation = Escalation(
             detail=f"{len(escalate)} alert(s)",
             linear_md=escalation_md(escalate, config.escalation, relative=False),
-            slack_detail=worst + more,
+            slack_detail=slack_summary(worst),
         )
 
     open_numbers = {a.number for a in report.alerts}
@@ -208,7 +249,7 @@ def plan_repo(
             ),
             ready_prs=tuple(sorted(p.number for p in report.ready_prs)),
         ),
-        last_reminder=now if comments or fresh else prev.last_reminder,
+        last_reminder=reminder_clock(prev, now, bool(comments) or fresh),
         linear=prev.linear,
     )
     news = [newly_overdue_md(newly_overdue, relative=False)] if newly_overdue else []
@@ -253,3 +294,74 @@ def nag(
     issues = load_issues(gh, config, spec(config), sorted(reports))
     plans = [plan_repo(reports[repo], config, issues[repo], now) for repo in sorted(reports)]
     return track(gh, linear, config, plans, issues, apply)
+
+
+def leaderboard_blocks(
+    config: Config, reports: dict[str, RepoReport], closed: ClosedSummary | None
+) -> list[str]:
+    """The weekly org-wide scoreboard as Slack mrkdwn blocks. Names teams without pinging."""
+    org = config.org
+    ranked = sorted(
+        (
+            r
+            for r in reports.values()
+            if r.overdue or r.stale_prs or r.known_exploited or r.ready_prs
+        ),
+        key=lambda r: -r.risk_score,
+    )
+    totals = org_totals(reports)
+    fixed = closed.fixed if closed is not None else Counter()
+    blocks = [
+        f"*🏆 Vulnerability leaderboard for {org}*: {sum(fixed.values())} fixed in the "
+        f"last 7 days, {totals.overdue} past deadline, {totals.exploited} actively exploited."
+    ]
+
+    fixed_by_team: Counter[str] = Counter()
+    for repo, n in fixed.items():
+        fixed_by_team[team_of_owners(reports[repo].owners)] += n
+    if fixed_by_team:
+        rows = [f"{team}: {n}" for team, n in fixed_by_team.most_common()]
+        blocks.append(ranking("Most fixed this week", rows, medals=True))
+
+    overdue_by_team: Counter[str] = Counter()
+    exploited_by_team: Counter[str] = Counter()
+    for r in reports.values():
+        team = team_of_owners(r.owners)
+        overdue_by_team[team] += len(r.overdue)
+        exploited_by_team[team] += len(r.known_exploited)
+    rows = [
+        f"{team}: {n} overdue"
+        + (f" (🔥 {exploited_by_team[team]} exploited)" if exploited_by_team[team] else "")
+        for team, n in (+overdue_by_team).most_common()
+    ]
+    if rows:
+        blocks.append(ranking("Most overdue", rows, medals=False))
+
+    if totals.ready_prs:
+        blocks.append(f"*✅ {totals.ready_prs} Dependabot PR(s) pass CI and only need a merge.*")
+
+    if closed is not None and closed.unexplained:
+        rows = [
+            f"• <{d.html_url}|{d.repo}#{d.number}> {d.severity} `{d.package}` dismissed as "
+            f"_{d.reason}_ by @{d.by} with no comment"
+            for d in closed.unexplained[:10]
+        ]
+        title = "⚠️ *High-severity dismissals with no justification:*"
+        blocks.append(title + "\n" + "\n".join(rows))
+
+    rows = [
+        f"• <https://github.com/{org}/{r.repo}/security/dependabot|{r.repo}>: "
+        f"{len(r.overdue)} overdue, {len(r.stale_prs)} stale PR(s)"
+        + (f", ✅ {len(r.ready_prs)} ready" if r.ready_prs else "")
+        + (f", 🔥 {len(r.known_exploited)} exploited" if r.known_exploited else "")
+        + (f" (owners: {', '.join(r.owners)})" if r.owners else "")
+        for r in ranked[:MAX_ROWS]
+    ]
+    if len(ranked) > MAX_ROWS:
+        rows.append(f"…and {len(ranked) - MAX_ROWS} more.")
+    if rows:
+        blocks.append("*Repos needing attention*\n" + "\n".join(rows))
+    else:
+        blocks.append("Nothing overdue. 🎉")
+    return blocks
+

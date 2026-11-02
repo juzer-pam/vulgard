@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 from dataclasses import dataclass, field, replace
 from datetime import date
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -151,7 +152,14 @@ class RiskException:
     repo: str = "*"
 
 
-TIERS = ("production", "shared", "personal")
+class Tier(StrEnum):
+    """How much vulgard may do with a deployment, by blast radius."""
+
+    PRODUCTION = "production"  # notify only; vulgard never deletes it, even when asked
+    SHARED = "shared"  # notify; redeploy or delete only on a human request
+    PERSONAL = "personal"  # notify; automatic redeploy or delete when the repo opts in
+
+
 DEFAULT_TIER_SEVERITY = {"production": "high", "shared": "medium", "personal": "low"}
 
 
@@ -228,21 +236,11 @@ class DeploymentsConfig:
     linear: LinearOverride = field(default_factory=LinearOverride)
 
     def __post_init__(self) -> None:
-        sections = (
-            ("aws", AwsConfig),
-            ("vercel", VercelConfig),
-            ("auto", AutoConfig),
-            ("linear", LinearOverride),
-        )
-        for key, cls in sections:
-            value = getattr(self, key)
-            if isinstance(value, dict):
-                setattr(self, key, _section({key: value}, key, cls))
         self.severity = {
             **DEFAULT_TIER_SEVERITY,
             **{k.lower(): v.lower() for k, v in self.severity.items()},
         }
-        bad = set(self.severity) - set(TIERS)
+        bad = set(self.severity) - {t.value for t in Tier}
         if bad:
             raise ValueError(f"deployments.severity: unknown tiers {', '.join(sorted(bad))}")
         bad = {v for v in [*self.severity.values(), self.repo_severity] if v not in SEVERITIES}
@@ -311,6 +309,11 @@ def route[T](mapping: dict[str, T], repo: str, owners: list[str], default: T | N
     return default
 
 
+def team_of_owners(owners: list[str]) -> str:
+    """The first team owner, else the first owner. Used to group leaderboards."""
+    return next((o for o in owners if "/" in o), owners[0] if owners else "unowned")
+
+
 def _section(raw: dict[str, Any], key: str, cls: type) -> Any:
     data = raw.get(key) or {}
     known = {f for f in cls.__dataclass_fields__}
@@ -318,6 +321,22 @@ def _section(raw: dict[str, Any], key: str, cls: type) -> Any:
     if unknown:
         raise ValueError(f"Unknown keys in '{key}': {', '.join(sorted(unknown))}")
     return cls(**data)
+
+
+DEPLOYMENT_SECTIONS: tuple[tuple[str, type], ...] = (
+    ("aws", AwsConfig),
+    ("vercel", VercelConfig),
+    ("auto", AutoConfig),
+    ("linear", LinearOverride),
+)
+
+
+def parse_deployments(raw: dict[str, Any]) -> DeploymentsConfig:
+    unknown = set(raw) - set(DeploymentsConfig.__dataclass_fields__)
+    if unknown:
+        raise ValueError(f"Unknown keys in 'deployments': {', '.join(sorted(unknown))}")
+    nested = {key: _section(raw, key, cls) for key, cls in DEPLOYMENT_SECTIONS}
+    return DeploymentsConfig(**{**raw, **nested})
 
 
 def _parse_exceptions(items: list[dict[str, Any]] | None) -> list[RiskException]:
@@ -378,7 +397,7 @@ def parse_config(raw: dict[str, Any], org_override: str | None = None) -> Config
         linear=_section(raw, "linear", LinearConfig),
         kev=_section(raw, "kev", KevConfig),
         exceptions=_parse_exceptions(raw.get("exceptions")),
-        deployments=_section(raw, "deployments", DeploymentsConfig),
+        deployments=parse_deployments(raw.get("deployments") or {}),
     )
 
 

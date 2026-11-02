@@ -33,6 +33,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Only repo admins can execute by hand
+        if: github.event_name == 'workflow_dispatch' && inputs.execute
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+          if [ "$perm" != admin ]; then
+            echo "Only repo admins can run nag with execute"; exit 1
+          fi
+
       - id: app-token
         uses: actions/create-github-app-token@v2
         with:

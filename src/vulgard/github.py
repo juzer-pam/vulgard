@@ -224,14 +224,19 @@ class GitHub:
         return self._paginate(f"/repos/{org}/{repo}/issues/{number}/comments")
 
     def can_write(self, org: str, repo: str, user: str) -> bool:
-        """Whether `user` has write, maintain or admin access to the repo."""
+        """Whether `user` has write, maintain or admin access to the repo. `permission` is the
+        legacy four-level field, where maintain reads as write; `role_name` names the role."""
         try:
             data = self._json("GET", f"/repos/{org}/{repo}/collaborators/{user}/permission")
         except GitHubError as e:
             if e.status == 404:
                 return False
             raise
-        return data.get("permission") in ("write", "admin")
+        return data.get("permission") in ("write", "admin") or data.get("role_name") in (
+            "write",
+            "maintain",
+            "admin",
+        )
 
     def find_open_pr(self, org: str, repo: str, head_branch: str) -> dict[str, Any] | None:
         prs = self._json(

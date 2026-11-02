@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import assert_never
 
-from .estate import Deployment, Tier
+from .estate import Deployment
 from .plan import IssueComment
 
 COMMAND_RE = re.compile(r"^[ \t]*/vulgard[ \t]+(?P<verb>\w+)[ \t]*(?P<rest>.*)$", re.M)
@@ -91,6 +91,7 @@ class Decisions:
     active: Issued[Active] | None = None  # unexpired
     requests: Mapping[str, Issued[Request]] = field(default_factory=dict)
     cancels: Mapping[str, Issued[Cancel]] = field(default_factory=dict)
+    last_keep: Mapping[str, datetime] = field(default_factory=dict)  # by key, expired or not
     rejected: tuple[Rejection, ...] = ()
 
 
@@ -138,8 +139,8 @@ def parse_line(
                 return Redeploy(d.key)
             if verb == "cancel":
                 return Cancel(d.key)
-            if not deletable_by_request(d):
-                return "vulgard never deletes production; delete it by hand if you need to"
+            if d.delete_refusal:
+                return f"{d.delete_refusal}; delete it by hand if you need to"
             return Delete(d.key)
         case "keep":
             parsed = _until(rest, today, max_days)
@@ -180,6 +181,7 @@ def fold(
     keeps: dict[str, Issued[Keep]] = {}
     requests: dict[str, Issued[Request]] = {}
     cancels: dict[str, Issued[Cancel]] = {}
+    last_keep: dict[str, datetime] = {}
     active: Issued[Active] | None = None
     rejected: list[Rejection] = []
     for c in sorted(comments, key=lambda c: (c.created_at, c.id)):
@@ -201,6 +203,7 @@ def fold(
             match parsed:
                 case Keep(target=t):
                     keeps[t] = Issued(parsed, c.id, c.author, c.created_at, c.html_url)
+                    last_keep[t] = c.created_at
                     requests.pop(t, None)
                     cancels.pop(t, None)
                 case Redeploy(target=t) | Delete(target=t):
@@ -221,21 +224,27 @@ def fold(
         active=active if active and active.command.until > today else None,
         requests=requests,
         cancels=cancels,
+        last_keep=last_keep,
         rejected=tuple(rejected),
     )
 
 
-def is_satisfied(request: Issued[Request], d: Deployment | None) -> bool:
-    """Read from the world: a redeploy is done once it was deployed after the comment, a delete
-    once the deployment is gone."""
+def pending_requests(
+    decisions: Decisions, deployments: list[Deployment]
+) -> list[tuple[Issued[Request], Deployment]]:
+    """Requests whose target still exists and hasn't been redeployed since the comment. A
+    deployment that's gone no longer needs its request, so a finished delete drops out here."""
+    by_key = {d.key: d for d in deployments}
+    pending = [(req, by_key.get(key)) for key, req in decisions.requests.items()]
+    return [(req, d) for req, d in pending if d is not None and not _done(req, d)]
+
+
+def _done(request: Issued[Request], d: Deployment) -> bool:
+    """Read from the world: a redeploy is done once it was deployed after the comment."""
     match request.command:
         case Redeploy():
-            return d is not None and d.last_deployed >= request.at
+            return d.last_deployed >= request.at
         case Delete():
-            return d is None
+            return False
         case _ as unreachable:
             assert_never(unreachable)
-
-
-def deletable_by_request(d: Deployment) -> bool:
-    return d.tier is not Tier.PRODUCTION and not d.sighting.protected

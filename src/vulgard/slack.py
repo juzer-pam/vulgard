@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
@@ -10,8 +10,7 @@ from typing import Any, Protocol, assert_never
 import httpx
 
 from .config import Config, route
-from .plan import Action, ActionKind, IssueOp, LeaderboardSection, RepoRun, TopicSpec
-from .policy import ClosedSummary, RepoReport, org_totals
+from .plan import Action, ActionKind, IssueOp, RepoRun, TopicSpec
 
 API_URL = "https://slack.com/api"
 MAX_ROWS = 15
@@ -158,101 +157,19 @@ def _section(text: str) -> dict[str, Any]:
     return {"type": "section", "text": {"type": "mrkdwn", "text": text[:3000]}}
 
 
-def team_of_owners(owners: list[str]) -> str:
-    """The first team owner, else the first owner. Used to group the leaderboard."""
-    return next((o for o in owners if "/" in o), owners[0] if owners else "unowned")
-
-
-def team_of(report: RepoReport) -> str:
-    return team_of_owners(report.owners)
-
-
-def _ranking(title: str, rows: list[str], medals: bool) -> dict[str, Any]:
+def ranking(title: str, rows: list[str], medals: bool) -> str:
     lines = [
         f"{MEDALS[i] if medals and i < len(MEDALS) else f'{i + 1}.'} {row}"
         for i, row in enumerate(rows[:LEADERBOARD_ROWS])
     ]
-    return _section(f"*{title}*\n" + "\n".join(lines))
+    return f"*{title}*\n" + "\n".join(lines)
 
 
-def leaderboard_message(
-    config: Config,
-    reports: dict[str, RepoReport],
-    closed: ClosedSummary | None,
-    sections: list[LeaderboardSection] | None = None,
-) -> tuple[str, list[dict[str, Any]]]:
-    """Weekly org-wide scoreboard for `slack.default_channel`. Names teams without pinging.
-    `sections` come from other topics and follow the vulnerability blocks."""
-    org = config.org
-    ranked = sorted(
-        (
-            r
-            for r in reports.values()
-            if r.overdue or r.stale_prs or r.known_exploited or r.ready_prs
-        ),
-        key=lambda r: -r.risk_score,
-    )
-    totals = org_totals(reports)
-    fixed = closed.fixed if closed is not None else Counter()
-    header = (
-        f"*🏆 Vulnerability leaderboard for {org}*: {sum(fixed.values())} fixed in the "
-        f"last 7 days, {totals.overdue} past deadline, {totals.exploited} actively exploited."
-    )
-    blocks: list[dict[str, Any]] = [_section(header)]
-
-    fixed_by_team: Counter[str] = Counter()
-    for repo, n in fixed.items():
-        fixed_by_team[team_of(reports[repo])] += n
-    if fixed_by_team:
-        rows = [f"{team}: {n}" for team, n in fixed_by_team.most_common()]
-        blocks.append(_ranking("Most fixed this week", rows, medals=True))
-
-    overdue_by_team: Counter[str] = Counter()
-    exploited_by_team: Counter[str] = Counter()
-    for r in reports.values():
-        overdue_by_team[team_of(r)] += len(r.overdue)
-        exploited_by_team[team_of(r)] += len(r.known_exploited)
-    rows = [
-        f"{team}: {n} overdue"
-        + (f" (🔥 {exploited_by_team[team]} exploited)" if exploited_by_team[team] else "")
-        for team, n in (+overdue_by_team).most_common()
-    ]
-    if rows:
-        blocks.append(_ranking("Most overdue", rows, medals=False))
-
-    if totals.ready_prs:
-        blocks.append(
-            _section(f"*✅ {totals.ready_prs} Dependabot PR(s) pass CI and only need a merge.*")
-        )
-
-    if closed is not None:
-        if closed.unexplained:
-            rows = [
-                f"• <{d.html_url}|{d.repo}#{d.number}> {d.severity} `{d.package}` dismissed as "
-                f"_{d.reason}_ by @{d.by} with no comment"
-                for d in closed.unexplained[:10]
-            ]
-            title = "⚠️ *High-severity dismissals with no justification:*"
-            blocks.append(_section(title + "\n" + "\n".join(rows)))
-
-    rows = [
-        f"• <https://github.com/{org}/{r.repo}/security/dependabot|{r.repo}>: "
-        f"{len(r.overdue)} overdue, {len(r.stale_prs)} stale PR(s)"
-        + (f", ✅ {len(r.ready_prs)} ready" if r.ready_prs else "")
-        + (f", 🔥 {len(r.known_exploited)} exploited" if r.known_exploited else "")
-        + (f" (owners: {', '.join(r.owners)})" if r.owners else "")
-        for r in ranked[:MAX_ROWS]
-    ]
-    if len(ranked) > MAX_ROWS:
-        rows.append(f"…and {len(ranked) - MAX_ROWS} more.")
-    if rows:
-        blocks.append(_section("*Repos needing attention*\n" + "\n".join(rows)))
-    else:
-        blocks.append(_section("Nothing overdue. 🎉"))
-    for s in sections or []:
-        blocks.append(_ranking(s.title, s.rows, s.medals) if s.rows else _section(f"*{s.title}*"))
-    text = "\n\n".join(b["text"]["text"] for b in blocks)
-    return text, blocks
+def leaderboard_message(blocks: list[str]) -> tuple[str, list[dict[str, Any]]]:
+    """The weekly org-wide scoreboard for `slack.default_channel`, from the mrkdwn blocks each
+    topic produced."""
+    sections = [_section(b) for b in blocks]
+    return "\n\n".join(b["text"]["text"] for b in sections), sections
 
 
 def send_leaderboard(

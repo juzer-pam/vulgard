@@ -12,10 +12,17 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
-from .estate import AmplifyBranch, CfnStack, Framework, Sighting, SstStage
-from .lifecycle import OpFailed
+from .estate import (
+    AmplifyBranch,
+    CfnStack,
+    Framework,
+    OpFailed,
+    ScanError,
+    Sighting,
+    SstStage,
+)
 from .policy import parse_time
 
 SST_BOOTSTRAP = "/sst/bootstrap"
@@ -116,7 +123,7 @@ def sight_amplify_branch(
     last = (job.get("endTime") or job.get("startTime")) if job else None
     return Sighting(
         Framework.AMPLIFY,
-        AmplifyBranch(account, region, app["appId"], name),
+        AmplifyBranch(account, region, app["appId"], name, app["name"]),
         app["name"],
         name,
         _time(last or branch.get("updateTime") or branch["createTime"]),
@@ -144,10 +151,13 @@ class AwsScanner:
 
     def scan(self) -> list[Sighting]:
         found: list[Sighting] = []
-        for region in self._regions:
-            found += self._cfn(region)
-            found += self._sst(region)
-            found += self._amplify(region)
+        try:
+            for region in self._regions:
+                found += self._cfn(region)
+                found += self._sst(region)
+                found += self._amplify(region)
+        except (BotoCoreError, ClientError) as e:
+            raise ScanError(f"AWS scan failed: {e}") from e
         return found
 
     def _cfn(self, region: str) -> list[Sighting]:
@@ -232,10 +242,11 @@ class AwsOps:
         return self.stack_url(ref)
 
     def deleting(self, ref: CfnStack, request_id: str) -> str | None:
-        """A link if a delete with this token is running or done. Raises OpFailed if it failed."""
+        """A link if a delete with this token is running. Raises OpFailed if it failed. None when
+        the stack is gone, because that says nothing about who deleted it."""
         stack = self.stack(ref)
         if stack is None:
-            return self.stack_url(ref)
+            return None
         events = self._client("cloudformation", ref.region).describe_stack_events(
             StackName=ref.name
         )["StackEvents"]
@@ -255,6 +266,22 @@ class AwsOps:
             ]
             if keys:
                 s3.delete_objects(Bucket=bucket, Delete={"Objects": keys, "Quiet": True})
+
+    def sst_stage(self, ref: SstStage) -> Sighting | None:
+        """The stage's state object (and lock, if any), read fresh. None when the state is gone."""
+        s3 = self._client("s3", ref.region)
+        objects = []
+        for prefix in ("app", "lock"):
+            key = f"{prefix}/{ref.app}/{ref.stage}.json"
+            try:
+                head = s3.head_object(Bucket=ref.state_bucket, Key=key)
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+                    continue
+                raise
+            objects.append({"Key": key, "LastModified": head["LastModified"]})
+        found = sight_sst_objects(objects, ref.state_bucket, ref.account, ref.region)
+        return found[0] if found else None
 
     def amplify_branch(self, ref: AmplifyBranch) -> Sighting | None:
         amplify = self._client("amplify", ref.region)

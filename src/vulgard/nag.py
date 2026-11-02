@@ -12,6 +12,7 @@ from typing import Any, assert_never
 import httpx
 
 from .config import Config
+from .github import GitHubError
 from .linear import LinearClient, LinearError, sync_linear
 from .plan import (
     Action,
@@ -72,22 +73,22 @@ def _individual_owners(owners: list[str]) -> list[str]:
 
 def _write_issue(
     gh: Any, config: Config, plan: RepoPlan[Any], issue: TrackedIssue | None
-) -> str | None:
+) -> TrackedIssue | None:
     """Apply plan.op. The body (with the state) is written before comments, so a crash in
     between re-diffs to "nothing new" instead of posting twice."""
     org, repo, spec = config.org, plan.repo, plan.spec
     match plan.op:
         case IssueOp.NONE:
-            return issue.html_url if issue else None
+            return issue
         case IssueOp.CLOSE:
             assert issue is not None
             fields: dict[str, Any] = {"state": "closed"}
-            if TrackingState.from_body(issue.body, type(plan.state.memory)) != plan.state:
+            if TrackingState.from_body(issue.body, spec.memory_type) != plan.state:
                 fields["body"] = plan.render(plan.state)
             for c in plan.comments:
                 gh.comment_issue(org, repo, issue.number, c)
             gh.update_issue(org, repo, issue.number, **fields)
-            return issue.html_url
+            return issue
         case IssueOp.CREATE:
             gh.ensure_label(org, repo, spec.label)
             raw = gh.create_issue(
@@ -111,7 +112,7 @@ def _write_issue(
             assert_never(unreachable)
     for c in plan.comments:
         gh.comment_issue(org, repo, issue.number, c)
-    return issue.html_url
+    return issue
 
 
 def _apply(
@@ -122,6 +123,7 @@ def _apply(
     issue: TrackedIssue | None,
     apply: bool,
 ) -> RepoRun:
+    """One repo. A GitHub or Linear failure is recorded on its run and doesn't stop the others."""
     run = RepoRun(plan, issue.html_url if issue else None, plan.actions())
     created_in_linear = False
     if linear is not None:
@@ -135,7 +137,13 @@ def _apply(
             created_in_linear = result.created
     if not apply:
         return run
-    run.issue_url = _write_issue(gh, config, plan, issue)
+    try:
+        written = _write_issue(gh, config, plan, issue)
+    except (GitHubError, httpx.HTTPError) as e:
+        run.actions.append(Action(plan.repo, ActionKind.GITHUB_ERROR, str(e)))
+        return run
+    run.issue_url = written.html_url if written else None
+    run.issue_number = written.number if written else None
     ref = plan.state.linear
     if linear is not None and created_in_linear and ref and run.issue_url:
         try:

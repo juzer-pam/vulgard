@@ -234,7 +234,9 @@ commits to. [The design doc](docs/design/stale-deployments.md) has the rationale
   deployed in `auto.personal_stale_days` (90), or whose repo has open critical alerts, gets a
   notice on the issue mentioning its owner. After `auto.notice_days` (7), the next
   `--execute` run redeploys it, or deletes it with `auto.delete: true`.
-  `/vulgard keep` or `/vulgard cancel` stops it.
+  `/vulgard keep` or `/vulgard cancel` stops it. The 7 days count from vulgard's own notice
+  comment, so editing the issue body can't shorten them, and a notice older than the stack's
+  last deploy or last keep no longer counts.
 - vulgard never deletes production or protected deployments. Those are a production stage or
   tag, CloudFormation termination protection, an Amplify production branch (or one named `main`
   or `master`), and a Vercel project with a custom domain. Before every delete it re-reads the
@@ -265,6 +267,11 @@ Redeploys and SST removes run in the target repo with its own deploy role
 (`deployments.aws.deploy_role_arn`, e.g. `GithubCI`). The vulgard GitHub App needs
 the Actions write permission to dispatch them. Set the `VULGARD_EXECUTE` variable to `true` to add
 `--execute` to the scheduled run.
+
+Two gates keep a manual run from bypassing the issue thread. Running the `nag` workflow by hand
+with `execute` checked needs repo admin. The per-repo `vulgard-lifecycle.yml` accepts a dispatch
+only from an app (such as vulgard's) or a repo admin, and refuses to delete a stage with a
+production word (`prod`, `prd`, `production`, `live`, in any case) in its name.
 
 ## Caveats
 

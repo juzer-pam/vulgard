@@ -182,9 +182,7 @@ def _open_state(team: dict[str, Any], target: LinearTarget) -> str:
 
 def _target(config: Config, plan: RepoPlan[Any]) -> LinearTarget | None:
     target = config.linear.target(plan.repo, plan.owners)
-    if target is None or plan.spec.linear is None:
-        return target
-    return plan.spec.linear.apply(target)
+    return plan.spec.linear.apply(target) if target is not None else None
 
 
 def _issue_target(config: Config, plan: RepoPlan[Any], team_key: str) -> LinearTarget:
@@ -196,7 +194,7 @@ def _issue_target(config: Config, plan: RepoPlan[Any], team_key: str) -> LinearT
     fallback = LinearTarget(
         team_key, tuple(linear.labels), None, linear.state, linear.severity_labels
     )
-    return plan.spec.linear.apply(fallback) if plan.spec.linear else fallback
+    return plan.spec.linear.apply(fallback)
 
 
 def _severity_label_changes(

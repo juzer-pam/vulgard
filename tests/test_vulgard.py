@@ -23,7 +23,7 @@ from vulgard.rollout import (
     render_dependabot_config,
 )
 from vulgard.slack import leaderboard_message, notify_slack, send_leaderboard
-from vulgard.vulns import VulnMemory, nag, plan_repo
+from vulgard.vulns import VulnMemory, leaderboard_blocks, nag, plan_repo
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
 NOW = datetime(2026, 11, 1, 12, tzinfo=UTC)
@@ -444,7 +444,7 @@ def test_weekly_summary_flags_unexplained_dismissals():
     assert [(d.repo, d.by) for d in closed.unexplained] == [("data-pipeline", "mchen")]
 
     config = example_config()
-    text, blocks = leaderboard_message(config, collect(gh, config), closed)
+    text, blocks = leaderboard_message(leaderboard_blocks(config, collect(gh, config), closed))
     rendered = json.dumps(blocks, ensure_ascii=False)
     assert "1 fixed" in rendered and "no justification" in rendered and "mchen" in rendered
     assert "Most fixed this week" in rendered and "🥇 @acme/payments: 1" in rendered

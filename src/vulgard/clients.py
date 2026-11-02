@@ -10,10 +10,10 @@ import boto3
 from .aws import AwsOps, AwsScanner
 from .config import Config
 from .estate import Scanner
+from .execute import Executor
 from .executor import LiveExecutor
 from .github import GitHub
 from .kev import fetch_kev
-from .lifecycle import Executor
 from .linear import Linear, LinearClient
 from .slack import Slack, SlackClient
 from .vercel import Vercel
@@ -26,8 +26,8 @@ class Clients:
     slack: SlackClient | None
     slack_webhook: str | None
     kev: Callable[[], frozenset[str]]
-    scanners: Callable[[], list[Scanner]] = list  # built on first use: they need cloud creds
-    executor: Callable[[], Executor] | None = None
+    scanners: Callable[[], list[Scanner]]  # built on first use: they need cloud creds
+    executor: Callable[[], Executor]
 
 
 def _vercel(config: Config) -> Vercel | None:

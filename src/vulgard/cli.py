@@ -6,108 +6,27 @@ import os
 import sys
 from collections import Counter
 from dataclasses import asdict
-from datetime import timedelta
-from functools import partial
 from typing import Any
 
-import httpx
-from botocore.exceptions import BotoCoreError, ClientError
-
-from . import stale
+from . import stale_render
 from .clients import Clients, live_clients
 from .config import SEVERITIES, Config, load_config
 from .enforce import apply_enforce, plan_enforce
-from .estate import build_index, discover, repo_activity
 from .fixtures import fixture_clients
 from .github import GitHubError
-from .lifecycle import OpFailed
 from .linear import LinearError
-from .plan import ActionKind, RepoRun, Topic
-from .policy import (
-    ClosedSummary,
-    RepoReport,
-    evaluate,
-    now_utc,
-    parse_codeowners_default,
-    summarize_closed,
-)
-from .render import render_org_summary
+from .plan import ActionKind, Topic
+from .policy import RepoReport, now_utc
+from .render import format_table, render_org_summary
+from .repos import build_index, selected_repos
 from .rollout import apply_rollout, plan_lifecycle_rollout, plan_rollout
-from .slack import (
-    SlackError,
-    leaderboard_message,
-    notify_slack,
-    send_leaderboard,
-    team_of_owners,
-)
-from .vercel import VercelError
-from .vulns import nag
-
-CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")
-STALE_ERRORS = (GitHubError, LinearError, VercelError, BotoCoreError, ClientError, httpx.HTTPError)
-EXECUTE_ERRORS = (*STALE_ERRORS, OpFailed, RuntimeError)
-
-
-def selected_repos(gh: Any, config: Config, only: list[str] | None = None) -> list[dict]:
-    repos = [
-        r
-        for r in gh.list_repos(config.org)
-        if not r.get("archived") and config.repo_selected(r["name"])
-    ]
-    if only:
-        repos = [r for r in repos if r["name"] in only]
-    return repos
-
-
-def resolve_owners(gh: Any, config: Config, repo: str) -> list[str]:
-    if repo in config.owners:
-        return config.owners[repo]
-    for path in CODEOWNERS_PATHS:
-        text = gh.get_file(config.org, repo, path)
-        if text:
-            owners = parse_codeowners_default(text)
-            if owners:
-                return owners
-    return config.default_owners
-
-
-def load_kev(clients: Clients, config: Config) -> frozenset[str]:
-    if not config.kev.enabled:
-        return frozenset()
-    try:
-        return clients.kev()
-    except (httpx.HTTPError, ValueError, KeyError) as e:
-        print(f"warning: couldn't load the CISA KEV catalog, skipping: {e}", file=sys.stderr)
-        return frozenset()
-
-
-def collect(
-    gh: Any,
-    config: Config,
-    only: list[str] | None = None,
-    kev: frozenset[str] = frozenset(),
-) -> dict[str, RepoReport]:
-    repos = [r["name"] for r in selected_repos(gh, config, only)]
-    reports = evaluate(
-        config,
-        gh.list_open_alerts(config.org),
-        gh.list_dependabot_prs(config.org),
-        repos,
-        kev=kev,
-    )
-    for report in reports.values():
-        if report.alerts or report.dependabot_prs:
-            report.owners = resolve_owners(gh, config, report.repo)
-    return reports
-
+from .slack import SlackError, leaderboard_message, notify_slack, send_leaderboard
+from .stale import survey
+from .topics import RUNNERS, NagContext, load_kev
+from .vulns import collect
 
 def print_rows(header: list[str], rows: list[list[str]]) -> None:
-    table = [header, *rows]
-    widths = [max(len(row[i]) for row in table) for i in range(len(header))]
-    for i, row in enumerate(table):
-        print("  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)))
-        if i == 0:
-            print("  ".join("-" * w for w in widths))
+    print(format_table(header, rows))
 
 
 def print_table(reports: dict[str, RepoReport]) -> None:
@@ -156,69 +75,12 @@ def write_step_summary(markdown: str, path: str | None) -> None:
 
 
 def report_stale(clients: Clients, config: Config, args: argparse.Namespace) -> int:
-    """Every deployment with its repo, attribution, tier and person; then inactive repos."""
-    cfg, now = config.deployments, now_utc()
     repos = selected_repos(clients.github, config, args.repo)
-    index = build_index(clients.github, config, repos)
-    deployments = discover(clients.scanners(), index, cfg)
-    if args.repo:
-        deployments = [d for d in deployments if d.repo in args.repo]
-    activity = repo_activity(clients.github, config, repos)
+    found = survey(clients.github, config, repos, clients.scanners(), scoped=bool(args.repo))
     if args.format == "json":
-        payload = {
-            "deployments": [
-                {
-                    "key": d.key,
-                    "name": d.name,
-                    "repo": d.repo,
-                    "attributed_by": d.attributed_by,
-                    "framework": d.framework,
-                    "tier": d.tier,
-                    "person": d.person,
-                    "last_deployed": d.last_deployed.isoformat(),
-                    "protected": d.sighting.protected,
-                    "in_progress": d.sighting.in_progress,
-                }
-                for d in deployments
-            ],
-            "repos": {a.repo: a.last_commit.isoformat() if a.last_commit else None
-                      for a in activity},
-        }
-        print(json.dumps(payload, indent=2))
-        return 0
-    shown = [d for d in deployments if args.all or (now - d.last_deployed).days >= cfg.stale_days]
-    print(f"{len(shown)} of {len(deployments)} deployment(s)"
-          + ("" if args.all else f" not deployed in {cfg.stale_days}+ days") + ":")
-    print_rows(
-        ["repo", "deployment", "framework", "tier", "person", "days", "repo from", "flags"],
-        [
-            [
-                d.repo or "-",
-                d.name,
-                d.framework,
-                d.tier,
-                d.person or "-",
-                str((now - d.last_deployed).days),
-                d.attributed_by,
-                " ".join(
-                    f for f, on in (("protected", d.sighting.protected),
-                                    ("deploying", d.sighting.in_progress)) if on
-                ) or "-",
-            ]
-            for d in shown
-        ],
-    )
-    inactive = sorted(
-        (a for a in activity
-         if a.last_commit is None or (now - a.last_commit).days >= cfg.repo_inactive_days),
-        key=lambda a: a.last_commit or now,
-    )
-    print(f"\n{len(inactive)} of {len(activity)} repo(s) with no human commits in "
-          f"{cfg.repo_inactive_days}+ days:")
-    print_rows(
-        ["repo", "last commit"],
-        [[a.repo, f"{a.last_commit:%Y-%m-%d}" if a.last_commit else "never"] for a in inactive],
-    )
+        print(json.dumps(stale_render.survey_json(found), indent=2))
+    else:
+        print(stale_render.survey_text(found, config.deployments, now_utc(), args.all))
     return 0
 
 
@@ -242,7 +104,6 @@ def nag_topics(config: Config, args: argparse.Namespace) -> list[Topic]:
 
 
 def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
-    gh, now = clients.github, now_utc()
     topics = nag_topics(config, args)
     if Topic.STALE in topics and not config.deployments.enabled:
         print("error: --topic stale needs deployments.enabled in the config", file=sys.stderr)
@@ -254,57 +115,19 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     if args.linear and linear is None:
         print(f"Skipping Linear: ${config.linear.api_key_env} is not set.", file=sys.stderr)
 
-    runs: list[RepoRun] = []
-    failed = False
-    reports: dict[str, RepoReport] = {}
-    closed: ClosedSummary | None = None
-    if Topic.VULNS in topics:
-        reports = collect(gh, config, args.repo, load_kev(clients, config))
-        runs += nag(gh, config, reports, apply=args.apply, now=now, linear=linear)
-        since = now - timedelta(days=7)
-        closed = summarize_closed(gh.list_closed_alerts(config.org, since), set(reports), since)
-    stale_reports: dict[str, stale.StaleReport] = {}
-    stale_runs: list[RepoRun] = []
-    report_only = config.deployments.report_only
-    if Topic.STALE in topics:
-        try:
-            vulnerable: frozenset[str] = frozenset()
-            if config.deployments.auto.repos:
-                alerts = reports or collect(gh, config, args.repo)
-                critical = (r for r, a in alerts.items() if a.severity_counts()["critical"])
-                vulnerable = frozenset(critical)
-            stale_reports, stale_runs = stale.run(
-                gh,
-                None if report_only else linear,
-                config,
-                selected_repos(gh, config, args.repo),
-                clients.scanners(),
-                partial(resolve_owners, gh, config),
-                args.apply and not report_only,
-                now,
-                scoped=bool(args.repo),
-                vulnerable=vulnerable,
-            )
-        except STALE_ERRORS as e:
-            print(f"error: skipped stale deployments: {e}", file=sys.stderr)
-            failed = True
-        if report_only:
-            n = sum(1 for r in stale_reports.values() if r.findings)
-            print(f"Stale deployments are report-only: {n} repo(s) would get a tracking issue.")
-        else:
-            runs += stale_runs
-    actions = [a for r in runs for a in r.actions]
-    if args.execute and stale_runs and not report_only:
-        assert clients.executor is not None
-        actions += stale.execute_ops(
-            gh,
-            config,
-            stale_reports,
-            stale_runs,
-            clients.executor(),
-            EXECUTE_ERRORS,
-            args.apply,
-        )
+    ctx = NagContext(
+        clients=clients,
+        config=config,
+        only=args.repo,
+        apply=args.apply,
+        execute=args.execute,
+        leaderboard=args.slack and not args.no_leaderboard,
+        now=now_utc(),
+        linear=linear,
+    )
+    results = [RUNNERS[topic](ctx) for topic in topics]
+    runs = [run for res in results for run in res.runs]
+    actions = [a for run in runs for a in run.actions] + [a for res in results for a in res.actions]
 
     if args.slack:
         if clients.slack is None:
@@ -314,19 +137,14 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
             )
         else:
             actions += notify_slack(clients.slack, config, runs, args.apply)
-        if Topic.VULNS in topics and not args.no_leaderboard:
-            assert closed is not None
-            for repo in closed.fixed:
-                if not reports[repo].owners:
-                    reports[repo].owners = resolve_owners(gh, config, repo)
-            sections = (
-                stale.leaderboard_sections(stale_reports, stale_runs, team_of_owners, now)
-                if Topic.STALE in topics and not failed
-                else None
+        blocks = [block for res in results for block in res.leaderboard]
+        if blocks:
+            text, payload = leaderboard_message(blocks)
+            actions.append(
+                send_leaderboard(
+                    clients.slack, clients.slack_webhook, config, text, payload, args.apply
+                )
             )
-            text, blocks = leaderboard_message(config, reports, closed, sections)
-            send = partial(send_leaderboard, clients.slack, clients.slack_webhook, config)
-            actions.append(send(text, blocks, args.apply))
 
     prefix = "" if args.apply else "[dry-run] "
     taken = [a for a in actions if a.kind != ActionKind.NOOP]
@@ -336,28 +154,29 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     else:
         for a in taken:
             print(f"{prefix}{a.repo or 'slack'}: {a.kind} ({a.detail})")
-        if Topic.VULNS in topics:
-            write_step_summary(render_org_summary(config, reports, closed), args.summary_file)
-        if stale_runs:
-            write_step_summary(stale.render_summary(stale_reports), args.summary_file)
-    repos = len(set(reports) | set(stale_reports))
-    print(f"{prefix}{len(taken)} action(s) across {repos} repos.")
-    return 1 if failed or any(a.kind.is_error for a in actions) else 0
+        for res in results:
+            if res.summary:
+                write_step_summary(res.summary, args.summary_file)
+    repos = {repo for res in results for repo in res.repos}
+    print(f"{prefix}{len(taken)} action(s) across {len(repos)} repos.")
+    failed = any(res.failed for res in results) or any(a.kind.is_error for a in actions)
+    return 1 if failed else 0
 
 
 def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     gh = clients.github
     prefix = "" if args.apply else "[dry-run] "
-    repos = selected_repos(gh, config, args.repo)
-    index = build_index(gh, config, repos) if args.lifecycle else None
-    for repo in repos:
-        if repo["name"] == config.rollout.workflow_repo:
-            continue
-        if index is not None:
-            frameworks = index.frameworks.get(repo["name"], frozenset())
-            plan = plan_lifecycle_rollout(gh, config, repo, frameworks)
-        else:
-            plan = plan_rollout(gh, config, repo)
+    own = config.rollout.workflow_repo
+    repos = [r for r in selected_repos(gh, config, args.repo) if r["name"] != own]
+    if args.lifecycle:
+        frameworks = build_index(gh, config, repos).frameworks
+        plans = [
+            plan_lifecycle_rollout(gh, config, r, frameworks.get(r["name"], frozenset()))
+            for r in repos
+        ]
+    else:
+        plans = [plan_rollout(gh, config, r) for r in repos]
+    for plan in plans:
         if plan.skipped_reason:
             print(f"{prefix}{plan.repo}: skip ({plan.skipped_reason})")
             continue

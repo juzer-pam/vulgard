@@ -38,8 +38,9 @@ class TopicSpec:
     slack_dm_header: str
     escalation_header: str  # after the escalation mentions, in slack.escalation_channel
     linear_closed: str  # Linear comment when the topic goes clean
+    memory_type: type[Memory]  # parses the topic's part of the state comment
     reads_commands: bool = False  # the engine loads issue comments only for these topics
-    linear: LinearOverride | None = None  # replaces the routed labels, project and state
+    linear: LinearOverride = field(default_factory=LinearOverride)  # replaces routed settings
 
 
 class ActionKind(StrEnum):
@@ -58,12 +59,18 @@ class ActionKind(StrEnum):
     SLACK = "slack"
     SLACK_SKIP = "slack-skip"
     SLACK_ERROR = "slack-error"
+    GITHUB_ERROR = "github-error"
     EXECUTE = "execute"
     EXECUTE_ERROR = "execute-error"
 
     @property
     def is_error(self) -> bool:
-        return self in (ActionKind.LINEAR_ERROR, ActionKind.SLACK_ERROR, ActionKind.EXECUTE_ERROR)
+        return self in (
+            ActionKind.LINEAR_ERROR,
+            ActionKind.SLACK_ERROR,
+            ActionKind.GITHUB_ERROR,
+            ActionKind.EXECUTE_ERROR,
+        )
 
 
 @dataclass
@@ -144,15 +151,6 @@ def issue_op(issue: TrackedIssue | None, needs_tracking: bool) -> IssueOp:
             return IssueOp.CREATE
         return IssueOp.UPDATE if issue.open else IssueOp.REOPEN
     return IssueOp.CLOSE if issue is not None and issue.open else IssueOp.NONE
-
-
-@dataclass(frozen=True)
-class LeaderboardSection:
-    """A topic's block in the weekly leaderboard: a title and optional ranked rows."""
-
-    title: str
-    rows: list[str] = field(default_factory=list)
-    medals: bool = False
 
 
 @dataclass(frozen=True)
@@ -249,7 +247,32 @@ class RepoRun:
     plan: RepoPlan[Any]
     issue_url: str | None
     actions: list[Action]
+    issue_number: int | None = None
 
     @property
     def repo(self) -> str:
         return self.plan.repo
+
+
+# --- helpers the topic planners share
+
+
+def mention_prefix(mentions: list[str]) -> str:
+    """`@a @b ` ready to put in front of a comment."""
+    return "".join(f"{m} " for m in mentions)
+
+
+def slack_summary(items: list[str]) -> str:
+    """The first three items, then how many more."""
+    more = f" (+{len(items) - 3} more)" if len(items) > 3 else ""
+    return ", ".join(items[:3]) + more
+
+
+def reminder_due(prev: TrackingState[Any], now: datetime, interval_days: int) -> bool:
+    return prev.last_reminder is None or (now - prev.last_reminder).days >= interval_days
+
+
+def reminder_clock(prev: TrackingState[Any], now: datetime, spoke: bool) -> datetime | None:
+    """The reminder clock restarts whenever vulgard says something on the issue."""
+    return now if spoke else prev.last_reminder
+

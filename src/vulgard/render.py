@@ -9,6 +9,18 @@ from .policy import Alert, ClosedSummary, DependabotPR, RepoReport, SlaStatus, o
 SEVERITY_ICON = {"critical": "🟥", "high": "🟧", "medium": "🟨", "low": "⬜"}
 
 
+def format_table(header: list[str], rows: list[list[str]]) -> str:
+    """Left-aligned columns with a dashed rule under the header."""
+    table = [header, *rows]
+    widths = [max(len(str(row[i])) for row in table) for i in range(len(header))]
+    lines = []
+    for i, row in enumerate(table):
+        lines.append("  ".join(str(cell).ljust(w) for cell, w in zip(row, widths, strict=True)))
+        if i == 0:
+            lines.append("  ".join("-" * w for w in widths))
+    return "\n".join(lines)
+
+
 def severity_summary(counts: dict[str, int]) -> str:
     return ", ".join(f"{counts[s]} {s}" for s in SEVERITIES if counts[s])
 

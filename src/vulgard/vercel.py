@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from .estate import Framework, Sighting, VercelProject
+from .estate import Framework, ScanError, Sighting, VercelProject
 from .policy import parse_time
 
 API_URL = "https://api.vercel.com"
@@ -36,7 +36,7 @@ def sight_vercel_project(project: dict[str, Any], team_id: str) -> Sighting | No
     domains = prod.get("alias") or []
     return Sighting(
         Framework.VERCEL,
-        VercelProject(team_id, project["id"]),
+        VercelProject(team_id, project["id"], project["name"]),
         project["name"],
         None,
         _when(prod["createdAt"]),
@@ -60,6 +60,12 @@ class Vercel:
         return resp.json()
 
     def scan(self) -> list[Sighting]:
+        try:
+            return self._scan()
+        except (VercelError, httpx.HTTPError) as e:
+            raise ScanError(f"Vercel scan failed: {e}") from e
+
+    def _scan(self) -> list[Sighting]:
         found: list[Sighting] = []
         params: dict[str, Any] = {"limit": 100}
         while True:

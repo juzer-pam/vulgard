@@ -7,8 +7,9 @@ import pytest
 
 from vulgard.aws import sight_amplify_branch, sight_cfn_stack, sight_sst_objects
 from vulgard.cli import main
-from vulgard.config import DeploymentsConfig, load_config, parse_config
+from vulgard.config import AutoConfig, DeploymentsConfig, load_config, parse_config
 from vulgard.estate import (
+    AmplifyBranch,
     Attribution,
     CfnStack,
     Deployment,
@@ -16,13 +17,13 @@ from vulgard.estate import (
     RepoIndex,
     Sighting,
     Tier,
-    build_index,
     classify,
     discover,
-    last_human_commit,
     manifest_identity,
+    unique_names,
 )
 from vulgard.fixtures import FixtureGitHub, fixture_clients
+from vulgard.repos import build_index, last_human_commit
 from vulgard.vercel import sight_vercel_project
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
@@ -162,7 +163,46 @@ def test_deployments_config_validation():
     with pytest.raises(ValueError, match="starting with @"):
         DeploymentsConfig(people={"jlee": "jlee"})
     with pytest.raises(ValueError, match="Unknown keys in 'auto'"):
-        DeploymentsConfig(auto={"repoz": []})
+        parse_config({"org": "acme", "deployments": {"auto": {"repoz": []}}})
+    with pytest.raises(ValueError, match="Unknown keys in 'deployments'"):
+        parse_config({"org": "acme", "deployments": {"stale_dayz": 3}})
+    nested = {"auto": {"repos": ["api"]}, "aws": {"regions": ["eu-west-1"]}}
+    parsed = parse_config({"org": "acme", "deployments": nested})
+    assert parsed.deployments.auto == AutoConfig(repos=["api"])
+    assert parsed.deployments.aws.regions == ["eu-west-1"]
+
+
+def test_delete_refusal_is_one_rule_for_production_and_protected():
+    assert classify(sighting(stage="dev"), EMPTY, cfg()).delete_refusal is None
+    prod = classify(sighting(stage="prod"), EMPTY, cfg())
+    assert "never deletes production" in prod.delete_refusal
+    protected = classify(sighting(stage="dev", protected=True), EMPTY, cfg())
+    assert protected.delete_refusal
+
+
+def test_same_named_deployments_get_unique_names_so_commands_stay_unambiguous():
+    def stack(region, name="api-dev", account="1"):
+        native = CfnStack(account, region, name, "id")
+        return classify(Sighting(Framework.SERVERLESS, native, "api", "dev", NOW), EMPTY, cfg())
+
+    def branch(app_id):
+        s = Sighting(
+            Framework.AMPLIFY,
+            AmplifyBranch("1", "us-east-1", app_id, "feature", "site"),
+            "site",
+            "feature",
+            NOW,
+        )
+        return classify(s, EMPTY, cfg())
+
+    alone = unique_names([stack("us-east-1"), stack("us-east-1", "other")])
+    assert [d.name for d in alone] == ["api-dev", "other"]
+    twins = unique_names([stack("us-east-1"), stack("eu-west-1")])
+    assert {d.name for d in twins} == {"api-dev@us-east-1", "api-dev@eu-west-1"}
+    same_name_apps = unique_names([branch("d1"), branch("d2")])
+    assert {d.name for d in same_name_apps} == {"site/feature@d1", "site/feature@d2"}
+    two_accounts = unique_names([stack("us-east-1"), stack("us-east-1", account="2")])
+    assert {d.name for d in two_accounts} == {"api-dev@us-east-1#1", "api-dev@us-east-1#2"}
 
 
 def test_fixture_estate_end_to_end(capsys):

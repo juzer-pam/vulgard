@@ -10,8 +10,8 @@ from typing import Any
 from .aws import sight_amplify_branch, sight_cfn_stack, sight_sst_objects
 from .clients import Clients
 from .config import IssueConfig
-from .estate import Sighting
-from .lifecycle import Step
+from .estate import Deployment, NativeRef, Sighting
+from .lifecycle import Op, SafeDelete, Verb
 from .policy import now_utc
 from .vercel import sight_vercel_project
 
@@ -38,9 +38,11 @@ class FixtureGitHub:
     """In-memory stand-in for the GitHub client, backed by a JSON file. Writes are recorded."""
 
     def __init__(self, data: dict[str, Any], now: datetime | None = None):
-        self.data = _resolve_dates(copy.deepcopy(data), now or now_utc())
+        self.now = now or now_utc()
+        self.data = _resolve_dates(copy.deepcopy(data), self.now)
         self.writes: list[tuple[str, tuple[Any, ...]]] = []
         self._next_issue = 1000
+        self._next_comment = 5000
 
     @classmethod
     def from_file(cls, path: str | Path, now: datetime | None = None) -> FixtureGitHub:
@@ -131,7 +133,20 @@ class FixtureGitHub:
         return issue
 
     def comment_issue(self, org: str, repo: str, number: int, body: str) -> None:
+        """Recorded, and added to the thread as the bot, so later runs read it back."""
         self._record("comment_issue", repo, number, body)
+        self._next_comment += 1
+        thread = self.data.setdefault("comments", {}).setdefault(f"{repo}#{number}", [])
+        thread.append(
+            {
+                "id": self._next_comment,
+                "user": {"login": "vulgard[bot]"},
+                "body": body,
+                "created_at": self.now.isoformat(),
+                "html_url": f"https://github.com/{org}/{repo}/issues/{number}"
+                f"#issuecomment-{self._next_comment}",
+            }
+        )
 
     def create_branch(self, org: str, repo: str, branch: str, sha: str) -> None:
         self._record("create_branch", repo, branch)
@@ -265,23 +280,28 @@ class FakeSlack:
 
 
 class FixtureExecutor:
-    """Records started ops. `data["ops"]` maps request ids of ops that already exist to a link,
-    and `data["recheck"]` maps deployment names to a reason a delete must not proceed."""
+    """Records the ops it is asked to start. `data["ops"]` maps the request ids of ops that
+    already exist to a link, and `observe` re-reads targets from the same estate the scanner
+    replays."""
 
     def __init__(self, data: dict[str, Any]):
         self.data = data
-        self.started: list[tuple[Step, str]] = []
+        self.started: list[tuple[Verb, Deployment, str]] = []
 
-    def find(self, step: Step, request_id: str) -> str | None:
-        return self.data.get("ops", {}).get(request_id)
+    def observe(self, native: NativeRef) -> Sighting | None:
+        return next((s for s in FixtureScanner(self.data).scan() if s.native == native), None)
 
-    def recheck(self, step: Step) -> str | None:
-        target = getattr(step, "target", None)
-        name = target.deployment.name if target else ""
-        return self.data.get("recheck", {}).get(name)
+    def find(self, op: Op) -> str | None:
+        return self.data.get("ops", {}).get(op.request_id)
 
-    def start(self, step: Step, request_id: str) -> str:
-        self.started.append((step, request_id))
+    def redeploy(self, d: Deployment, request_id: str) -> str:
+        return self._start(Verb.REDEPLOY, d, request_id)
+
+    def delete(self, proof: SafeDelete, request_id: str) -> str:
+        return self._start(Verb.DELETE, proof.deployment, request_id)
+
+    def _start(self, verb: Verb, d: Deployment, request_id: str) -> str:
+        self.started.append((verb, d, request_id))
         url = f"https://example.test/ops/{request_id}"
         self.data.setdefault("ops", {})[request_id] = url
         return url

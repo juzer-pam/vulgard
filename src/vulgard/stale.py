@@ -1,4 +1,5 @@
-"""The stale topic: deployments not deployed in 30 days and repos with no commits in 90.
+"""The stale topic's model and policy: deployments not deployed in 30 days and repos with no
+commits in 90.
 
 Staleness is one more SLA, so escalation, Linear priority and severity labels, and the
 leaderboard work the same way they do for alerts:
@@ -10,122 +11,107 @@ leaderboard work the same way they do for alerts:
 
 Every clock comes from cloud and GitHub timestamps and vulgard never stores one, so editing a
 tracking issue can't reset it.
+
+This module is pure apart from `survey`. Rendering is in `stale_render.py`, the issue plan in
+`stale_plan.py`, and the run itself in `topics.py`.
 """
 
 from __future__ import annotations
 
-from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from functools import cache, partial
-from typing import Any, Self, assert_never
+from typing import Any, Self
 
-from .baseline import (
-    Active,
-    Cancel,
-    Decisions,
-    Issued,
-    Keep,
-    Redeploy,
-    Rejection,
-    Request,
-    deletable_by_request,
-    fold,
-    is_satisfied,
-)
+from .baseline import Active, Decisions, Issued, Keep, Rejection, Request, pending_requests
 from .config import SEVERITIES, Config
-from .estate import Deployment, RepoActivity, Scanner, build_index, discover, repo_activity
-from .lifecycle import (
-    PAST,
-    TRIGGER_WHY,
-    Executor,
-    Lifecycle,
-    Notice,
-    Outcome,
-    Trigger,
-    describe,
-    execute,
-    reconcile,
-    result_comment,
-)
-from .linear import PRIORITY, LinearClient
-from .nag import load_issues, track
-from .plan import (
-    Action,
-    ActionKind,
-    Escalation,
-    IssueOp,
-    LeaderboardSection,
-    LinearContent,
-    RepoPlan,
-    RepoRun,
-    Topic,
-    TopicSpec,
-    TrackedIssue,
-    TrackingState,
-    issue_op,
-)
+from .estate import Deployment, Scanner, discover
+from .lifecycle import Lifecycle, Notice, reconcile
+from .plan import Topic, TopicSpec
 from .policy import SlaStatus
-from .render import SEVERITY_ICON
+from .repos import RepoActivity, build_index, repo_activity
 
 REPO_KEY = "repo"
-BASELINED_DAYS = 14
-CLOSED = "✅ Every deployment here is up to date or baselined, and the repo is active. Closing."
 
 
 @dataclass(frozen=True)
-class StaleDeployment:
-    deployment: Deployment
-    days: int  # since last deployed
-
-
-@dataclass(frozen=True)
-class InactiveRepo:
-    last_commit: datetime | None
-    days: int | None  # None: no commits at all
-
-
-type Subject = StaleDeployment | InactiveRepo
-
-
-@dataclass(frozen=True)
-class StaleFinding:
-    key: str  # deployment key, or REPO_KEY
-    subject: Subject
+class Sla:
     severity: str
     flagged_at: datetime
     deadline: datetime
     status: SlaStatus
     escalate: bool
-    deadline_days: int  # negative when overdue
+    days_left: int  # negative when overdue
+
+
+@dataclass(frozen=True)
+class DeploymentFinding:
+    deployment: Deployment
+    sla: Sla
+
+    @property
+    def key(self) -> str:
+        return self.deployment.key
 
     @property
     def name(self) -> str:
-        match self.subject:
-            case StaleDeployment(deployment=d):
-                return d.name
-            case InactiveRepo():
-                return "repo"
-            case _ as unreachable:
-                assert_never(unreachable)
+        return self.deployment.name
 
 
-@dataclass
+@dataclass(frozen=True)
+class RepoFinding:
+    last_commit: datetime | None
+    days: int | None  # None: no commits at all
+    sla: Sla
+
+    @property
+    def key(self) -> str:
+        return REPO_KEY
+
+    @property
+    def name(self) -> str:
+        return "repo"
+
+
+type Finding = DeploymentFinding | RepoFinding
+
+
+@dataclass(frozen=True)
 class StaleReport:
-    """Everything the planner renders for one repo."""
+    """Everything the planner renders for one repo. Built once by `evaluate`; the owners are
+    attached afterwards because looking them up costs an API call."""
 
     repo: str
-    owners: list[str]
     deployments: list[Deployment]  # attributed here, for the inventory
-    notes: dict[str, str] = field(default_factory=dict)  # key -> why it landed in this repo
-    findings: list[StaleFinding] = field(default_factory=list)  # needing a baseline
-    kept: list[tuple[StaleFinding, Issued[Keep]]] = field(default_factory=list)
-    active: Issued[Active] | None = None
-    requests: list[tuple[Issued[Request], Deployment]] = field(default_factory=list)  # pending
-    cancels: Mapping[str, Issued[Cancel]] = field(default_factory=dict)
-    lifecycle: Lifecycle = field(default_factory=Lifecycle)
-    rejected: tuple[Rejection, ...] = ()
+    notes: dict[str, str]  # key -> why it landed in this repo
+    decisions: Decisions
+    deployment_findings: list[DeploymentFinding]  # needing a baseline
+    kept: list[tuple[DeploymentFinding, Issued[Keep]]]
+    repo_finding: RepoFinding | None
+    requests: list[tuple[Issued[Request], Deployment]]  # still pending
+    lifecycle: Lifecycle
+    owners: list[str] = field(default_factory=list)
+
+    @property
+    def findings(self) -> list[Finding]:
+        """Most urgent first."""
+        found: list[Finding] = [*self.deployment_findings]
+        if self.repo_finding is not None:
+            found.append(self.repo_finding)
+        rank = {s: i for i, s in enumerate(SEVERITIES)}
+        return sorted(found, key=lambda f: (f.sla.days_left, rank[f.sla.severity]))
+
+    @property
+    def overdue(self) -> list[Finding]:
+        return [f for f in self.findings if f.sla.status is SlaStatus.OVERDUE]
+
+    @property
+    def active(self) -> Issued[Active] | None:
+        return self.decisions.active
+
+    @property
+    def rejected(self) -> tuple[Rejection, ...]:
+        return self.decisions.rejected
 
     @property
     def needs_tracking(self) -> bool:
@@ -133,27 +119,25 @@ class StaleReport:
         return bool(self.findings or self.requests or life.scheduled or life.ops)
 
     @property
-    def overdue(self) -> list[StaleFinding]:
-        return [f for f in self.findings if f.status is SlaStatus.OVERDUE]
-
-    @property
     def persons(self) -> list[str]:
-        found = [
-            f.subject.deployment.person
-            for f in self.findings
-            if isinstance(f.subject, StaleDeployment) and f.subject.deployment.person
-        ]
-        return sorted({p for p in found if p not in self.owners})
+        """People whose personal deployments are listed, other than the owners."""
+        found = {
+            f.deployment.person
+            for f in self.deployment_findings
+            if f.deployment.person and f.deployment.person not in self.owners
+        }
+        return sorted(found)
 
 
 @dataclass(frozen=True)
 class StaleMemory:
+    """Hints only. Losing them may repeat an announcement and never causes an op."""
+
     seen: tuple[str, ...] = ()  # deployment names, so commands for deleted ones are moot
     flagged: tuple[str, ...] = ()  # finding keys already announced
     overdue: tuple[str, ...] = ()
     escalated: tuple[str, ...] = ()
     baselined: tuple[tuple[str, str], ...] = ()  # (key, ISO date) resolved recently
-    notices: tuple[Notice, ...] = ()  # automatic ops announced, with when
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -162,7 +146,6 @@ class StaleMemory:
             "overdue": list(self.overdue),
             "escalated": list(self.escalated),
             "baselined": [list(b) for b in self.baselined],
-            "notices": [n.to_json() for n in self.notices],
         }
 
     @classmethod
@@ -173,11 +156,7 @@ class StaleMemory:
             overdue=tuple(raw.get("overdue", ())),
             escalated=tuple(raw.get("escalated", ())),
             baselined=tuple((k, d) for k, d in raw.get("baselined", ())),
-            notices=tuple(Notice.from_json(n) for n in raw.get("notices", ())),
         )
-
-
-type StaleState = TrackingState[StaleMemory]
 
 
 def spec(config: Config) -> TopicSpec:
@@ -190,599 +169,143 @@ def spec(config: Config) -> TopicSpec:
         slack_dm_header="Stale deployments need a baseline in repos you own:",
         escalation_header="🚨 Escalation: these deployments are well past their baseline deadline.",
         linear_closed="✅ Every deployment is up to date or baselined. Closing.",
+        memory_type=StaleMemory,
         reads_commands=True,
         linear=cfg.linear,
     )
 
 
-def _status(deadline: datetime, now: datetime, due_soon_days: int) -> tuple[SlaStatus, int]:
+def _sla(config: Config, severity: str, since: datetime, days: int, now: datetime) -> Sla:
+    flagged = since + timedelta(days=days)
+    deadline = flagged + timedelta(days=config.deployments.baseline_days)
     left = (deadline - now).days
     if now > deadline:
-        return SlaStatus.OVERDUE, left
-    if left <= due_soon_days:
-        return SlaStatus.DUE_SOON, left
-    return SlaStatus.OK, left
-
-
-def _finding(
-    config: Config,
-    key: str,
-    subject: Subject,
-    severity: str,
-    since: datetime,
-    days: int,
-    now: datetime,
-) -> StaleFinding:
-    cfg = config.deployments
-    flagged = since + timedelta(days=days)
-    deadline = flagged + timedelta(days=cfg.baseline_days)
-    status, left = _status(deadline, now, config.due_soon_days)
+        status = SlaStatus.OVERDUE
+    elif left <= config.due_soon_days:
+        status = SlaStatus.DUE_SOON
+    else:
+        status = SlaStatus.OK
     esc = config.escalation
     escalate = (
         status is SlaStatus.OVERDUE
         and severity in esc.severities
         and -left >= esc.after_days_overdue
     )
-    return StaleFinding(key, subject, severity, flagged, deadline, status, escalate, left)
+    return Sla(severity, flagged, deadline, status, escalate, left)
+
+
+def _deployment_finding(config: Config, d: Deployment, now: datetime) -> DeploymentFinding | None:
+    cfg = config.deployments
+    if (now - d.last_deployed).days < cfg.stale_days:
+        return None
+    sla = _sla(config, cfg.severity[d.tier], d.last_deployed, cfg.stale_days, now)
+    return DeploymentFinding(d, sla)
+
+
+def _repo_finding(config: Config, a: RepoActivity | None, now: datetime) -> RepoFinding | None:
+    if a is None:
+        return None
+    cfg = config.deployments
+    limit = cfg.repo_inactive_days
+    idle = (now - a.last_commit).days if a.last_commit else None
+    if idle is not None and idle < limit:
+        return None
+    since = a.last_commit or a.created_at or now - timedelta(days=limit)
+    return RepoFinding(a.last_commit, idle, _sla(config, cfg.repo_severity, since, limit, now))
+
+
+def _why_unattributed(d: Deployment) -> str:
+    if d.repo:
+        return f"attributed to `{d.repo}`, which vulgard doesn't track"
+    return "no repo found: tag the stack with `vulgard:repo` or add it to `deployments.attribution`"
+
+
+def _no_decisions(repo: str, found: list[Deployment]) -> Decisions:
+    return Decisions()
+
+
+def _no_notices(repo: str) -> list[Notice]:
+    return []
 
 
 def evaluate(
     config: Config,
     deployments: list[Deployment],
     activity: list[RepoActivity],
-    decide: Callable[[str, list[Deployment]], Decisions],
     tracked: set[str],
     now: datetime,
+    decide: Callable[[str, list[Deployment]], Decisions] = _no_decisions,
+    notices_of: Callable[[str], list[Notice]] = _no_notices,
+    vulnerable: frozenset[str] = frozenset(),
 ) -> dict[str, StaleReport]:
-    """Pure given `decide` (repo, its deployments -> baselines). Groups deployments by repo and
-    builds findings. Owners are left empty for the caller to resolve.
+    """Pure given `decide` (repo, its deployments -> baselines) and `notices_of` (repo -> the
+    notices vulgard posted). Groups deployments by repo and builds each repo's report.
 
     Deployments without a repo, or attributed to a repo vulgard doesn't track (archived or
-    excluded), land in `deployments.unattributed_repo` with a note saying why.
+    excluded), land in `deployments.unattributed_repo` with a note saying why. `vulnerable` repos
+    have open critical alerts, which makes their personal deployments eligible for automatic ops.
     """
     cfg = config.deployments
     home = cfg.unattributed_repo or ""
-    reports: dict[str, StaleReport] = {}
-
-    def report(repo: str) -> StaleReport:
-        if repo not in reports:
-            reports[repo] = StaleReport(repo, [], [])
-        return reports[repo]
-
+    placed: dict[str, list[Deployment]] = {}
+    notes: dict[str, dict[str, str]] = {}
     for d in deployments:
         if d.repo in tracked:
-            r = report(d.repo)
+            placed.setdefault(d.repo or "", []).append(d)
         else:
-            r = report(home)
-            r.notes[d.key] = (
-                f"attributed to `{d.repo}`, which vulgard doesn't track"
-                if d.repo
-                else "no repo found: tag the stack with `vulgard:repo` or add it to "
-                "`deployments.attribution`"
-            )
-        r.deployments.append(d)
+            placed.setdefault(home, []).append(d)
+            notes.setdefault(home, {})[d.key] = _why_unattributed(d)
     for a in activity:
         if a.repo in tracked:
-            report(a.repo)
+            placed.setdefault(a.repo, [])
+    by_repo = {a.repo: a for a in activity}
 
-    by_repo_activity = {a.repo: a for a in activity}
-    for repo, r in reports.items():
-        dec = decide(repo, r.deployments)
-        r.active, r.rejected, r.cancels = dec.active, dec.rejected, dec.cancels
-        by_key = {d.key: d for d in r.deployments}
-        for d in r.deployments:
-            days = (now - d.last_deployed).days
-            if days < cfg.stale_days:
+    reports: dict[str, StaleReport] = {}
+    for repo, found in placed.items():
+        if not repo:
+            continue
+        decisions = decide(repo, found)
+        findings: list[DeploymentFinding] = []
+        kept: list[tuple[DeploymentFinding, Issued[Keep]]] = []
+        for d in found:
+            finding = _deployment_finding(config, d, now)
+            if finding is None:
                 continue
-            sev = cfg.severity[d.tier]
-            subject = StaleDeployment(d, days)
-            f = _finding(config, d.key, subject, sev, d.last_deployed, cfg.stale_days, now)
-            keep = dec.keeps.get(d.key)
+            keep = decisions.keeps.get(d.key)
             if keep:
-                r.kept.append((f, keep))
+                kept.append((finding, keep))
             else:
-                r.findings.append(f)
-        for key, req in dec.requests.items():
-            d = by_key.get(key)
-            if d is not None and not is_satisfied(req, d):
-                r.requests.append((req, d))
-        a = by_repo_activity.get(repo)
-        idle_days = cfg.repo_inactive_days
-        if a is not None:
-            days_idle = (now - a.last_commit).days if a.last_commit else None
-            if days_idle is None or days_idle >= idle_days:
-                since = a.last_commit or a.created_at or now - timedelta(days=idle_days)
-                if not r.active:
-                    subject = InactiveRepo(a.last_commit, days_idle)
-                    sev = cfg.repo_severity
-                    finding = _finding(config, REPO_KEY, subject, sev, since, idle_days, now)
-                    r.findings.append(finding)
-        rank = {s: i for i, s in enumerate(SEVERITIES)}
-        r.findings.sort(key=lambda f: (f.deadline_days, rank[f.severity]))
-    return {repo: r for repo, r in reports.items() if repo}
+                findings.append(finding)
+        repo_finding = None if decisions.active else _repo_finding(config, by_repo.get(repo), now)
+        reports[repo] = StaleReport(
+            repo=repo,
+            deployments=found,
+            notes=notes.get(repo, {}),
+            decisions=decisions,
+            deployment_findings=findings,
+            kept=kept,
+            repo_finding=repo_finding,
+            requests=pending_requests(decisions, found),
+            lifecycle=reconcile(found, decisions, notices_of(repo), cfg, repo in vulnerable, now),
+        )
+    return reports
 
 
-def run(
-    gh: Any,
-    linear: LinearClient | None,
-    config: Config,
-    repos: list[dict[str, Any]],
-    scanners: list[Scanner],
-    owners_of: Callable[[str], list[str]],
-    apply: bool,
-    now: datetime,
-    scoped: bool = False,
-    vulnerable: frozenset[str] = frozenset(),
-) -> tuple[dict[str, StaleReport], list[RepoRun]]:
-    """Discover, fold baselines from each tracking issue's comments, plan, and track.
+@dataclass(frozen=True)
+class Survey:
+    """What discovery found, before any issue is read or written."""
 
-    `scoped` (from --repo) keeps only deployments of `repos`, so the unattributed repo's issue
-    isn't rewritten from a partial estate. `vulnerable` repos have open critical alerts, which
-    makes their personal deployments eligible for automatic ops.
-    """
-    cfg, topic = config.deployments, spec(config)
-    tracked = {r["name"] for r in repos}
-    deployments = discover(scanners, build_index(gh, config, repos), cfg)
-    home = {cfg.unattributed_repo} if cfg.unattributed_repo else set()
+    deployments: list[Deployment]
+    activity: list[RepoActivity]
+
+
+def survey(
+    gh: Any, config: Config, repos: list[dict[str, Any]], scanners: list[Scanner], scoped: bool
+) -> Survey:
+    """Scan every control plane and read repo activity. `scoped` (from --repo) keeps only the
+    deployments of `repos`, so a partial run never rewrites the unattributed repo's issue."""
+    deployments = discover(scanners, build_index(gh, config, repos), config.deployments)
     if scoped:
+        tracked = {r["name"] for r in repos}
         deployments = [d for d in deployments if d.repo in tracked]
-        home &= tracked
-    activity = repo_activity(gh, config, repos)
-    issues = load_issues(gh, config, topic, sorted(tracked | home))
-
-    @cache
-    def may_command(repo: str, user: str) -> bool:
-        return gh.can_write(config.org, repo, user)
-
-    def memory(repo: str) -> StaleMemory:
-        issue = issues.get(repo)
-        return TrackingState.from_body(issue.body if issue else None, StaleMemory).memory
-
-    def decide(repo: str, found: list[Deployment]) -> Decisions:
-        issue = issues.get(repo)
-        if issue is None:
-            return Decisions()
-        allowed = partial(may_command, repo)
-        seen = frozenset(memory(repo).seen)
-        return fold(issue.comments, found, allowed, now, cfg.max_keep_days, seen)
-
-    reports = evaluate(config, deployments, activity, decide, tracked, now)
-    for repo, r in reports.items():
-        kept = {f.key for f, _ in r.kept}
-        notices = memory(repo).notices
-        hot = repo in vulnerable
-        r.lifecycle = reconcile(
-            r.deployments, r.requests, kept, r.cancels, notices, cfg, hot, now
-        )
-        if r.needs_tracking or issues.get(repo):
-            r.owners = owners_of(repo)
-    plans = [plan_repo(r, config, issues.get(repo), now) for repo, r in sorted(reports.items())]
-    return reports, track(gh, linear, config, plans, issues, apply)
-
-
-def execute_ops(
-    gh: Any,
-    config: Config,
-    reports: Mapping[str, StaleReport],
-    runs: list[RepoRun],
-    executor: Executor,
-    errors: tuple[type[Exception], ...],
-    apply: bool,
-) -> list[Action]:
-    """Run each repo's due ops after its issue was written, and comment on what started or
-    failed. Without `apply`, only says what would run."""
-    actions: list[Action] = []
-    for run in runs:
-        report = reports[run.repo]
-        for op in report.lifecycle.ops:
-            if not apply:
-                verb = "would" if op.runnable else f"can't ({op.step})"
-                actions.append(Action(run.repo, ActionKind.EXECUTE, f"{verb} {describe(op)}"))
-                continue
-            result = execute(op, executor, errors)
-            failed = result.outcome is Outcome.FAILED
-            kind = ActionKind.EXECUTE_ERROR if failed else ActionKind.EXECUTE
-            actions.append(Action(run.repo, kind, f"{result.outcome}: {describe(op)}"))
-            mentions = " ".join(p for p in [op.deployment.person, *report.owners] if p)
-            comment = result_comment(result, mentions)
-            if comment and run.issue_url:
-                number = int(run.issue_url.rstrip("/").rsplit("/", 1)[1])
-                gh.comment_issue(config.org, run.repo, number, comment)
-    return actions
-
-
-# --- rendering
-
-
-def _when(dt: datetime | None, now: datetime, relative: bool) -> str:
-    if dt is None:
-        return "never"
-    if relative:
-        return f"{dt:%Y-%m-%d} ({(now - dt).days}d ago)"
-    return f"{dt:%Y-%m-%d}"
-
-
-def _due(f: StaleFinding, relative: bool) -> str:
-    if not relative:
-        return f"baseline due {f.deadline:%Y-%m-%d}"
-    if f.deadline_days < 0:
-        return f"**baseline {-f.deadline_days}d overdue**"
-    return f"baseline due in {f.deadline_days}d"
-
-
-def commands_for(f: StaleFinding) -> str:
-    match f.subject:
-        case StaleDeployment(deployment=d):
-            verbs = ["redeploy"] + (["delete"] if deletable_by_request(d) else [])
-            cmds = [f"`/vulgard {v} {d.name}`" for v in verbs]
-            cmds.append(f"`/vulgard keep {d.name} until YYYY-MM-DD: why`")
-            return " · ".join(cmds)
-        case InactiveRepo():
-            return "`/vulgard active until YYYY-MM-DD: why`, or archive the repo"
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def finding_line(f: StaleFinding, now: datetime, relative: bool = True) -> str:
-    icon = SEVERITY_ICON[f.severity]
-    match f.subject:
-        case StaleDeployment(deployment=d):
-            who = f" · {d.person}" if d.person else ""
-            busy = " · ⏳ deploy in progress" if d.sighting.in_progress else ""
-            return (
-                f"- {icon} **{d.tier}** `{d.name}` ({d.framework}): last deployed "
-                f"{_when(d.last_deployed, now, relative)} · {_due(f, relative)}{who}{busy}"
-            )
-        case InactiveRepo(last_commit=last):
-            return (
-                f"- {icon} **repo**: no human commits on the default branch since "
-                f"{_when(last, now, relative)} · {_due(f, relative)}"
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def _finding_block(f: StaleFinding, now: datetime, relative: bool = True) -> list[str]:
-    return [finding_line(f, now, relative), f"  {commands_for(f)}"]
-
-
-def _sections(report: StaleReport, now: datetime, relative: bool = True) -> list[str]:
-    lines: list[str] = []
-    overdue = report.overdue
-    pending = [f for f in report.findings if f.status is not SlaStatus.OVERDUE]
-    for title, items in (("🚨 Baseline overdue", overdue), ("⏳ Needs a baseline", pending)):
-        if items:
-            lines += ["", f"### {title} ({len(items)})"]
-            for f in items:
-                lines += _finding_block(f, now, relative)
-    if report.requests:
-        blocked = {o.deployment.key: o.step for o in report.lifecycle.ops if not o.runnable}
-        lines += ["", f"### Requested ({len(report.requests)})"]
-        for req, d in report.requests:
-            verb = "redeploy" if isinstance(req.command, Redeploy) else "delete"
-            why = blocked.get(d.key)
-            status = (
-                f"vulgard can't do this one: {why}. Do it by hand."
-                if why
-                else "This clears once vulgard sees it done."
-            )
-            lines.append(
-                f"- {verb} `{d.name}`, [requested]({req.url}) by @{req.author} on "
-                f"{req.at:%Y-%m-%d}. {status}"
-            )
-    auto = [
-        (o.deployment, o.verb, None)
-        for o in report.lifecycle.ops
-        if o.trigger is not Trigger.REQUEST
-    ] + [(s.deployment, s.notice.verb, s.due) for s in report.lifecycle.scheduled]
-    if auto:
-        lines += ["", f"### Automatic ({len(auto)})"]
-        for d, verb, due in auto:
-            when = f"on **{due:%Y-%m-%d}**" if due else "**now**"
-            lines.append(
-                f"- `{d.name}` ({d.person}) will be **{PAST[verb]}** {when}. Stop it with "
-                f"`/vulgard keep {d.name} until YYYY-MM-DD: why` or `/vulgard cancel {d.name}`."
-            )
-    return lines
-
-
-def render_body(report: StaleReport, config: Config, state: StaleState, now: datetime) -> str:
-    cfg = config.deployments
-    lines = [
-        f"Every deployment needs a deploy at least every **{cfg.stale_days} days**, and every repo "
-        f"a human commit at least every **{cfg.repo_inactive_days} days**. Anything older needs a "
-        f"baseline within **{cfg.baseline_days} days**: bring it up to date, delete it, or record "
-        "why it stays as it is by commenting one of the commands below on this issue.",
-    ]
-    if report.owners:
-        lines += ["", f"Owners: {' '.join(report.owners)}"]
-    if state.linear:
-        lines += ["", f"Tracked in Linear: [{state.linear.identifier}]({state.linear.url})"]
-    lines += _sections(report, now)
-    if report.kept:
-        lines += ["", f"### Kept ({len(report.kept)})"]
-        for f, keep in report.kept:
-            assert isinstance(f.subject, StaleDeployment)
-            lines.append(
-                f"- `{f.subject.deployment.name}` kept until **{keep.command.until}** by "
-                f"[@{keep.author}]({keep.url}): {keep.command.reason}"
-            )
-    if report.active:
-        a = report.active
-        lines += [
-            "",
-            f"Marked active until **{a.command.until}** by [@{a.author}]({a.url}): "
-            f"{a.command.reason}",
-        ]
-    if report.rejected:
-        lines += ["", f"### Commands vulgard didn't accept ({len(report.rejected)})"]
-        lines += [f"- [@{r.author}]({r.url}) `{r.line}`: {r.reason}" for r in report.rejected]
-    if report.deployments:
-        lines += [
-            "",
-            "<details><summary>All deployments of this repo</summary>",
-            "",
-            "| Deployment | Framework | Tier | Last deployed | Repo from |",
-            "|---|---|---|---|---|",
-        ]
-        for d in report.deployments:
-            how = report.notes.get(d.key, d.attributed_by)
-            lines.append(
-                f"| `{d.name}` | {d.framework} | {d.tier} | {d.last_deployed:%Y-%m-%d} | {how} |"
-            )
-        lines += ["", "</details>"]
-    lines += [
-        "",
-        "<details><summary>Commands</summary>",
-        "",
-        "- `/vulgard redeploy <name>`: bring it up to date from the default branch",
-        "- `/vulgard delete <name>`: delete it (never production)",
-        "- `/vulgard keep <name> until YYYY-MM-DD: why`: leave it as it is until then",
-        "- `/vulgard active until YYYY-MM-DD: why`: the repo is maintained without commits",
-        "- `/vulgard cancel <name>`: cancel an earlier command",
-        "",
-        "Deploying, deleting, committing or archiving by hand works too: vulgard sees it on its "
-        "next run.",
-        "</details>",
-        "",
-        "---",
-        f"_Updated by vulgard on {now:%Y-%m-%d %H:%M} UTC. This issue closes itself once every "
-        "deployment is baselined. Please don't edit it by hand; changes are overwritten._",
-        state.to_comment(),
-    ]
-    return "\n".join(lines)
-
-
-def render_description(report: StaleReport, config: Config, now: datetime) -> str:
-    n = len(report.findings)
-    return "\n".join(
-        [
-            f"**{report.repo}** has {n} deployment(s) or repo checks that need a baseline.",
-            *_sections(report, now, relative=False),
-            "",
-            "---",
-            "_Synced by vulgard. Record a baseline by commenting a `/vulgard` command on the "
-            "GitHub issue; this issue closes itself once everything is baselined._",
-        ]
-    )
-
-
-def _worst(report: StaleReport) -> str | None:
-    present = {f.severity for f in report.findings}
-    return next((s for s in SEVERITIES if s in present), None)
-
-
-def _digest(report: StaleReport, newly: int) -> str:
-    parts = [f"*{newly} newly stale*"] if newly else []
-    deployments = [f for f in report.findings if isinstance(f.subject, StaleDeployment)]
-    if deployments:
-        parts.append(f"{len(deployments)} deployment(s) need a baseline")
-    if report.overdue:
-        parts.append(f"{len(report.overdue)} overdue")
-    scheduled = report.lifecycle.scheduled
-    if scheduled:
-        parts.append(f"{len(scheduled)} automatic op(s) scheduled")
-    repo = next((f for f in report.findings if isinstance(f.subject, InactiveRepo)), None)
-    if repo is not None:
-        assert isinstance(repo.subject, InactiveRepo)
-        days = repo.subject.days
-        parts.append(f"no commits in {days}d" if days is not None else "no commits")
-    return ", ".join(parts)
-
-
-def plan_repo(
-    report: StaleReport, config: Config, issue: TrackedIssue | None, now: datetime
-) -> RepoPlan[StaleMemory]:
-    """Pure. Mirrors vulns.plan_repo: announce what's new, remind, escalate."""
-    topic = spec(config)
-    prev = TrackingState.from_body(issue.body if issue else None, StaleMemory)
-    op = issue_op(issue, report.needs_tracking)
-    current = {f.key for f in report.findings}
-    resolved = [k for k in prev.memory.flagged if k not in current]
-    cutoff = (now - timedelta(days=BASELINED_DAYS)).date().isoformat()
-    baselined = tuple(
-        sorted(
-            {b for b in prev.memory.baselined if b[1] >= cutoff}
-            | {(k, now.date().isoformat()) for k in resolved}
-        )
-    )
-
-    seen = tuple(sorted(set(prev.memory.seen) | {d.name for d in report.deployments}))
-
-    def render(state: StaleState) -> str:
-        return render_body(report, config, state, now)
-
-    if op in (IssueOp.CLOSE, IssueOp.NONE):
-        memory = StaleMemory(seen=seen, baselined=baselined)
-        state = TrackingState(memory, prev.last_reminder, prev.linear)
-        comments = [CLOSED] if op == IssueOp.CLOSE else []
-        return RepoPlan(topic, report.repo, report.owners, op, state, "baselined", render, comments)
-
-    fresh = op in (IssueOp.CREATE, IssueOp.REOPEN)
-    newly = [f for f in report.findings if f.key not in prev.memory.flagged]
-    newly_overdue = [f for f in report.overdue if f.key not in prev.memory.overdue]
-    escalate = [f for f in report.findings if f.escalate and f.key not in prev.memory.escalated]
-    reminder_due = prev.last_reminder is None or (
-        (now - prev.last_reminder).days >= config.reminder_interval_days
-    )
-    mentions = " ".join([*report.owners, *report.persons])
-    comments: list[str] = []
-    detail = None
-    if op == IssueOp.REOPEN or (not fresh and (newly or newly_overdue)):
-        news = sorted(
-            {f.key: f for f in [*newly, *newly_overdue]}.values(), key=lambda f: f.deadline_days
-        )
-        lines = [line for f in news for line in _finding_block(f, now)]
-        comments.append(
-            f"{mentions} {len(news)} item(s) need a baseline. Comment a command to record one:"
-            "\n\n" + "\n".join(lines)
-        )
-        detail = f"{len(newly)} newly stale, {len(newly_overdue)} newly overdue"
-    elif not fresh and reminder_due and report.findings:
-        comments.append(
-            f"{mentions} Reminder: {len(report.findings)} item(s) still need a baseline "
-            f"({len(report.overdue)} overdue). See the list in the issue description."
-        )
-        detail = "periodic reminder"
-    notices = [s for s in report.lifecycle.scheduled if s.fresh]
-    if notices:
-        persons = sorted({s.deployment.person for s in notices if s.deployment.person})
-        lines = [
-            f"- `{s.deployment.name}` ({s.deployment.person}): **{s.notice.verb}** on "
-            f"{s.due:%Y-%m-%d} ({TRIGGER_WHY[s.notice.trigger]})"
-            for s in notices
-        ]
-        comments.append(
-            f"{' '.join([*persons, *report.owners])} vulgard will act on these personal "
-            "deployments automatically unless someone comments "
-            "`/vulgard keep <name> until YYYY-MM-DD: why` or `/vulgard cancel <name>` first:"
-            "\n\n" + "\n".join(lines)
-        )
-        detail = detail or f"{len(notices)} automatic op(s) announced"
-    escalation = None
-    if escalate:
-        leads = "".join(f"{m} " for m in config.escalation.mentions)
-        text = (
-            f"Escalating: these are more than {config.escalation.after_days_overdue} days past "
-            "their baseline deadline."
-        )
-        comments.append(f"{leads}{text}\n\n" + "\n".join(finding_line(f, now) for f in escalate))
-        worst = ", ".join(
-            f"{f.severity} `{f.name}` {-f.deadline_days}d overdue" for f in escalate[:3]
-        )
-        more = f" (+{len(escalate) - 3} more)" if len(escalate) > 3 else ""
-        escalation = Escalation(
-            detail=f"{len(escalate)} item(s)",
-            linear_md=f"{text}\n\n"
-            + "\n".join(finding_line(f, now, relative=False) for f in escalate),
-            slack_detail=worst + more,
-        )
-
-    state = TrackingState(
-        StaleMemory(
-            seen=seen,
-            flagged=tuple(sorted(current)),
-            overdue=tuple(sorted(f.key for f in report.overdue)),
-            escalated=tuple(
-                sorted(set(prev.memory.escalated) & current | {f.key for f in escalate})
-            ),
-            baselined=baselined,
-            notices=tuple(report.lifecycle.notices),
-        ),
-        last_reminder=now if comments or fresh else prev.last_reminder,
-        linear=prev.linear,
-    )
-    worst = _worst(report)
-    fields: dict[str, Any] = {
-        "title": f"{report.repo}: {topic.title}",
-        "description": render_description(report, config, now),
-        "priority": PRIORITY[worst or "low"],
-    }
-    if report.findings:
-        fields["dueDate"] = min(f.deadline for f in report.findings).date().isoformat()
-    linear = LinearContent(
-        fields=fields,
-        worst_severity=worst,
-        reopened="Reopened by vulgard: deployments in this repo need a baseline again.",
-        news=(
-            ["\n".join(finding_line(f, now, relative=False) for f in newly)]
-            if newly and not fresh
-            else []
-        ),
-    )
-    pinged = fresh or newly or newly_overdue or escalate or detail
-    return RepoPlan(
-        topic,
-        report.repo,
-        report.owners,
-        op,
-        state,
-        f"{len(report.findings)} item(s)",
-        render,
-        comments,
-        comment_detail=detail,
-        linear=linear,
-        escalation=escalation,
-        digest=_digest(report, len(newly)) if pinged else None,
-        dm=tuple(report.persons),
-    )
-
-
-def render_summary(reports: Mapping[str, StaleReport]) -> str:
-    """Markdown for the workflow step summary."""
-    ranked = sorted(
-        (r for r in reports.values() if r.findings),
-        key=lambda r: (-len(r.overdue), -len(r.findings), r.repo),
-    )
-    if not ranked:
-        return "## Stale deployments\n\nEverything is up to date or baselined."
-    lines = [
-        "## Stale deployments",
-        "",
-        "| Repo | Need a baseline | Overdue | Requested | Owners |",
-        "|---|---|---|---|---|",
-    ]
-    lines += [
-        f"| {r.repo} | {len(r.findings)} | {len(r.overdue)} | {len(r.requests)} | "
-        f"{' '.join(r.owners) or '-'} |"
-        for r in ranked
-    ]
-    return "\n".join(lines)
-
-
-# --- leaderboard
-
-
-def leaderboard_sections(
-    reports: Mapping[str, StaleReport],
-    runs: list[RepoRun],
-    team_of: Callable[[list[str]], str],
-    now: datetime,
-) -> list[LeaderboardSection]:
-    """Most baselined this week (medals) and most overdue baselines, by team."""
-    week = (now - timedelta(days=7)).date().isoformat()
-    baselined: Counter[str] = Counter()
-    for run in runs:
-        memory = run.plan.state.memory
-        if isinstance(memory, StaleMemory):
-            baselined[team_of(run.plan.owners)] += sum(1 for _, d in memory.baselined if d >= week)
-    overdue: Counter[str] = Counter()
-    stale: Counter[str] = Counter()
-    for r in reports.values():
-        overdue[team_of(r.owners)] += len(r.overdue)
-        stale[team_of(r.owners)] += len(r.findings)
-    total = sum(stale.values())
-    sections = [
-        LeaderboardSection(
-            f"Stale deployments: {total} need a baseline, {sum(overdue.values())} overdue",
-            [],
-        )
-    ]
-    if +baselined:
-        rows = [f"{team}: {n}" for team, n in (+baselined).most_common()]
-        sections.append(LeaderboardSection("Most baselined this week", rows, medals=True))
-    if +overdue:
-        rows = [f"{team}: {n} overdue" for team, n in (+overdue).most_common()]
-        sections.append(LeaderboardSection("Most overdue baselines", rows))
-    return sections
-
+    return Survey(deployments, repo_activity(gh, config, repos))
