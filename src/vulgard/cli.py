@@ -25,6 +25,7 @@ from .stale import survey
 from .topics import RUNNERS, NagContext, load_kev
 from .vulns import collect
 
+
 def print_rows(header: list[str], rows: list[list[str]]) -> None:
     print(format_table(header, rows))
 
