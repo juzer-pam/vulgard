@@ -232,9 +232,11 @@ the fresh data, and writes the new version. The issue body *is* the database.
 For each repo, vulgard:
 
 1. **Syncs Linear** (`linear.py`). It creates or updates a Linear issue in the owning team,
-   with priority and due date taken from the worst alert. If someone closed the Linear issue
-   while alerts are still open, it reopens it with a comment. It skips the update when
-   nothing changed, by comparing a short hash (the `digest`) of what it would write.
+   with priority and due date taken from the worst alert. It assigns a new issue to the
+   repo's first owner listed in `linear.users`, or to the team's lead from `linear.leads`
+   when no owner is listed. If someone closed the Linear issue while alerts are still open,
+   it reopens it with a comment. It skips the update when nothing changed, by comparing a
+   short hash (the `digest`) of what it would write.
 2. **Writes the GitHub tracking issue** with the final description, which includes the link
    to the Linear issue, then posts any comments.
 3. If the Linear issue is new, **attaches the GitHub issue link** to it.
@@ -365,6 +367,10 @@ run reopens it. Fix the alerts, dismiss them with a reason, or add an exception.
 
 **Why didn't the issue get assigned to my team?** GitHub only lets issues be assigned to
 people, not teams. Teams are mentioned instead.
+
+**Why is my team lead assigned the Linear issue?** None of the repo's owners is listed in
+`linear.users`, so vulgard used the team's entry in `linear.leads`. Reassigning the issue in
+Linear sticks, because vulgard only sets the assignee when it creates the issue.
 
 **Where did the Slack message go?** vulgard looks up the channel by exact repo name, then by
 repo glob (such as `payments-*`), then by each owner, then falls back to

@@ -263,9 +263,8 @@ def _close(client: LinearClient, plan: RepoPlan[Any], apply: bool) -> LinearResu
 def _assignee_id(
     client: LinearClient, config: Config, owners: list[str], team: str
 ) -> str | None:
-    emails = [config.linear.users.get(owner) for owner in owners]
-    emails.append(config.linear.leads.get(team))
-    for email in emails:
+    linear = config.linear
+    for email in [*(linear.users.get(owner) for owner in owners), linear.leads.get(team)]:
         if email:
             user = client.user_id(email)
             if user:

@@ -134,10 +134,12 @@ the demo never goes stale.
      label, and vulgard creates a workspace label if neither exists.
    - `slack.users` maps GitHub handles to Slack user IDs, used for mentions and DMs, or to
      user group IDs (`S…`) for team mentions.
-   - `linear.users` maps GitHub handles to Linear emails, used to assign issues.
-     `linear.leads` maps a Linear team key to its lead's email (for example
-     `{INB: lead@your-org.com}`). A new issue goes to the first owner listed in
-     `linear.users`, otherwise to the lead of the team it lands in.
+   - `linear.users` maps GitHub handles to Linear emails. `linear.leads` maps a Linear team
+     key to its lead's email, for example `{INB: lead@your-org.com}`. vulgard assigns a new
+     Linear issue to the repo's first owner listed in `linear.users`. If none is listed, the
+     issue goes to the lead of the team it lands in. Every key in `linear.leads` must be a team
+     that `linear.teams` or `linear.default_team` routes to, so a typo fails config loading.
+     vulgard sets the assignee only when it creates the issue.
 
 5. **Roll out to repos.** Run with a token that has the permissions above (for example
    `export GITHUB_TOKEN=$(gh auth token)` for an org admin):

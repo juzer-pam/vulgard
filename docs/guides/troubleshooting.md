@@ -21,6 +21,13 @@ every run. Put notes in comments instead.
 `*` line in the repo's `CODEOWNERS` file, then from `default_owners`. Fixing `CODEOWNERS` is
 usually easiest, and you can do it yourself in a PR.
 
+**The Linear issue went to the wrong team or person.** vulgard picks the Linear team from
+`linear.teams` (exact repo name, then repo glob, then owner) and falls back to
+`linear.default_team`. It assigns a new issue to the first owner listed in `linear.users`, or
+to the team's lead in `linear.leads` if no owner is listed. It never changes the team or assignee
+of an existing issue, so move or reassign that one by hand in Linear. An admin changes the
+config so the next new issue lands in the right place.
+
 **The Slack message went to the wrong channel.** vulgard picks the channel by exact repo name,
 then by repo glob (such as `payments-*`), then by owner, and falls back to
 `slack.default_channel`. An admin changes `slack.channels` in the config.

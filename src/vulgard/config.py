@@ -115,6 +115,13 @@ class LinearConfig:
             where = f"linear.teams[{key!r}].severity_labels"
             _check_severities(where, value.get("severity_labels"))
             self.teams[key] = LinearRoute(**value)
+        routed = {r.team for r in self.teams.values()} | {self.default_team}
+        stray = sorted(set(self.leads) - routed)
+        if stray:
+            raise ValueError(
+                f"linear.leads: no repo routes to {', '.join(stray)}; "
+                "use team keys from linear.teams or linear.default_team"
+            )
 
     def target(self, repo: str, owners: list[str]) -> LinearTarget | None:
         default = LinearRoute(self.default_team) if self.default_team else None
