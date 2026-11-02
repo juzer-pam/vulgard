@@ -26,6 +26,7 @@ escalation:
   after_days_overdue: 7
   severities: [critical, high]
   mentions: []            # e.g. ["@your-org/security", "@cto-handle"]
+  weekday: null           # e.g. monday: escalate weekly; null escalates on every run
 
 issue:
   label: vulgard
@@ -44,6 +45,7 @@ slack:
 #   "@octocat": U012ABCDEF
 #   "@your-org/security": S012ABCDEF
   dm_owners: true                 # DM individual owners one summary per run
+  leaderboard_weekday: null       # e.g. monday: post the leaderboard weekly; null = every run
 
 linear:
   api_key_env: LINEAR_API_KEY

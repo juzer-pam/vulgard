@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,21 @@ import yaml
 SEVERITIES = ("critical", "high", "medium", "low")
 
 DEFAULT_SLA_DAYS = {"critical": 7, "high": 30, "medium": 90, "low": 180}
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _weekday(key: str, value: str | None) -> str | None:
+    if value is None:
+        return None
+    day = str(value).lower()
+    if day not in WEEKDAYS:
+        raise ValueError(f"{key} must be a weekday name like monday, not {value!r}")
+    return day
+
+
+def on_weekday(weekday: str | None, now: datetime) -> bool:
+    """Every run when `weekday` is unset, else only on that day (UTC)."""
+    return weekday is None or WEEKDAYS[now.weekday()] == weekday
 
 
 @dataclass
@@ -19,6 +34,13 @@ class EscalationConfig:
     after_days_overdue: int = 7
     severities: list[str] = field(default_factory=lambda: ["critical", "high"])
     mentions: list[str] = field(default_factory=list)
+    weekday: str | None = None  # escalate only on this day; items that come due wait for it
+
+    def __post_init__(self) -> None:
+        self.weekday = _weekday("escalation.weekday", self.weekday)
+
+    def due(self, now: datetime) -> bool:
+        return on_weekday(self.weekday, now)
 
 
 @dataclass
@@ -50,6 +72,13 @@ class SlackConfig:
     channels: dict[str, str] = field(default_factory=dict)
     users: dict[str, str] = field(default_factory=dict)
     dm_owners: bool = True
+    leaderboard_weekday: str | None = None  # post the leaderboard only on this day
+
+    def __post_init__(self) -> None:
+        self.leaderboard_weekday = _weekday("slack.leaderboard_weekday", self.leaderboard_weekday)
+
+    def leaderboard_due(self, now: datetime) -> bool:
+        return on_weekday(self.leaderboard_weekday, now)
 
     def mention(self, handle: str) -> str:
         slack_id = self.users.get(handle)

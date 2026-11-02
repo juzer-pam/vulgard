@@ -42,12 +42,16 @@ class Changes:
     escalate: list[Finding]
 
     @classmethod
-    def of(cls, report: StaleReport, memory: StaleMemory) -> Changes:
+    def of(cls, report: StaleReport, memory: StaleMemory, escalating: bool) -> Changes:
         findings = report.findings
         return cls(
             newly=[f for f in findings if f.key not in memory.flagged],
             newly_overdue=[f for f in report.overdue if f.key not in memory.overdue],
-            escalate=[f for f in findings if f.sla.escalate and f.key not in memory.escalated],
+            escalate=[
+                f
+                for f in findings
+                if escalating and f.sla.escalate and f.key not in memory.escalated
+            ],
         )
 
 
@@ -179,7 +183,7 @@ def plan_repo(
         return RepoPlan(topic, report.repo, report.owners, op, state, "baselined", render, closing)
 
     fresh = op in (IssueOp.CREATE, IssueOp.REOPEN)
-    changes = Changes.of(report, prev.memory)
+    changes = Changes.of(report, prev.memory, config.escalation.due(now))
     mentions = " ".join([*report.owners, *report.persons])
     comments: list[str] = []
     detail = None

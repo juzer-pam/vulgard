@@ -123,14 +123,15 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     if args.linear and linear is None:
         print(f"Skipping Linear: ${config.linear.api_key_env} is not set.", file=sys.stderr)
 
+    now = now_utc()
     ctx = NagContext(
         clients=clients,
         config=config,
         only=args.repo,
         apply=args.apply,
         execute=args.execute,
-        leaderboard=args.slack and not args.no_leaderboard,
-        now=now_utc(),
+        leaderboard=args.slack and not args.no_leaderboard and config.slack.leaderboard_due(now),
+        now=now,
         linear=linear,
     )
     results = [RUNNERS[topic](ctx) for topic in topics]

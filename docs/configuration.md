@@ -59,6 +59,7 @@ whatever their severity.
 | `after_days_overdue` | int | `7` | Days past the deadline before escalating. |
 | `severities` | list of severities | `[critical, high]` | Severities that escalate. |
 | `mentions` | list of handles | `[]` | People or teams mentioned on the issue when it escalates. Escalations also go to `slack.escalation_channel`. |
+| `weekday` | weekday name | none | Escalate only on runs on this day (UTC), e.g. `monday`. Items that come due on other days wait and escalate together. Unset escalates on every run. |
 
 ## `issue`
 
@@ -83,6 +84,7 @@ Optional. Without a token or webhook in the environment, vulgard skips Slack.
 | `channels` | map of repo, glob or handle to channel | `{}` | Team channel per repo. Matching order is described in [Who owns a repo](#who-owns-a-repo). |
 | `users` | map of handle or email to Slack ID | `{}` | A `U…` or `W…` user ID turns a handle into a mention and a DM target. An `S…` user group ID turns a team handle into a group mention. Key a lead's email from `linear.leads` here so `rollout --slack` can DM them. |
 | `dm_owners` | bool | `true` | DM each owner with a `U…` or `W…` ID in `users` one summary per run covering all their repos. |
+| `leaderboard_weekday` | weekday name | none | Post the leaderboard only on runs on this day (UTC), e.g. `monday`. Unset posts it on every `nag --slack` run. |
 
 ## `linear`
 

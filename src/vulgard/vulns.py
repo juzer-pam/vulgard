@@ -210,9 +210,8 @@ def plan_repo(
     fresh = op in (IssueOp.CREATE, IssueOp.REOPEN)
     newly_overdue = [a for a in report.overdue if a.number not in prev.memory.overdue]
     newly_ready = [p for p in report.ready_prs if p.number not in prev.memory.ready_prs]
-    escalate = [
-        a for a in report.escalation_due(config.escalation) if a.number not in prev.memory.escalated
-    ]
+    due = report.escalation_due(config.escalation) if config.escalation.due(now) else []
+    escalate = [a for a in due if a.number not in prev.memory.escalated]
     comments: list[str] = []
     detail = None
     reminder = False

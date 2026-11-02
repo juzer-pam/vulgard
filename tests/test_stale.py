@@ -260,6 +260,15 @@ def test_escalates_once_when_well_overdue():
     assert stale_plan.plan_repo(report, cfg, issue, NOW).escalation is None
 
 
+def test_escalation_waits_for_its_weekday():
+    cfg = config()
+    report = evaluate([dep("api-prod", days=60, tier=Tier.PRODUCTION)], cfg=cfg)["api"]
+    cfg.escalation.weekday = (NOW + timedelta(days=1)).strftime("%A").lower()
+    assert stale_plan.plan_repo(report, cfg, None, NOW).escalation is None
+    cfg.escalation.weekday = NOW.strftime("%A").lower()
+    assert stale_plan.plan_repo(report, cfg, None, NOW).escalation is not None
+
+
 def test_closes_when_baselined_and_remembers_it_for_the_leaderboard():
     cfg = config()
     report = evaluate([dep(days=40)], cfg=cfg)["api"]

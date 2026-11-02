@@ -241,6 +241,25 @@ def test_conflicting_or_draft_prs_are_not_ready(config):
     assert report.ready_prs == []
 
 
+def test_escalation_waits_for_its_weekday(config):
+    config.escalation.weekday = "monday"  # NOW is a Sunday
+    sunday = plan(config, [alert(1, "api", "critical", 20)])
+    assert sunday.escalation is None and "escalate" not in [a.kind for a in sunday.actions()]
+    monday = NOW + timedelta(days=1)
+    p = plan(config, [alert(1, "api", "critical", 20)], issue_after(sunday, config), now=monday)
+    assert p.escalation is not None and p.escalation.detail == "1 alert(s)"
+
+
+def test_weekday_settings_are_parsed_and_validated():
+    raw = {"escalation": {"weekday": "Monday"}, "slack": {"leaderboard_weekday": "friday"}}
+    cfg = parse_config({"org": "acme", **raw})
+    assert cfg.escalation.weekday == "monday" and cfg.escalation.due(NOW + timedelta(days=1))
+    assert not cfg.slack.leaderboard_due(NOW)
+    assert parse_config({"org": "acme"}).slack.leaderboard_due(NOW)  # unset: every run
+    with pytest.raises(ValueError, match="weekday"):
+        parse_config({"org": "acme", "escalation": {"weekday": "mon"}})
+
+
 def test_known_exploited_cve_gets_short_sla_and_escalates_immediately(config):
     exploited = alert(1, "api", "medium", 4)
     exploited["security_advisory"]["cve_id"] = "CVE-2024-0001"
