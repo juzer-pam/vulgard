@@ -20,3 +20,11 @@ jobs:
       - run: >-
           uv run vulgard --config examples/vulgard.yml --fixtures examples/demo-org.json
           nag --slack --linear
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run mypy
+
