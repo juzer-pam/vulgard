@@ -328,7 +328,7 @@ class GitHub:
     def create_pr(
         self, org: str, repo: str, title: str, body: str, head: str, base: str
     ) -> dict[str, Any]:
-        """A retried POST after a 5xx can find the PR it already opened, so a 422 falls back to it."""
+        """A POST retried after a 5xx can hit the PR it already opened, so a 422 returns that."""
         try:
             return self._json(
                 "POST",

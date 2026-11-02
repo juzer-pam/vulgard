@@ -213,11 +213,12 @@ def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> i
             open_prs.append((plan.repo, url))
         except GitHubError as e:
             report("failed", f"{plan.repo}: failed: {e}", error=True)
-    if args.slack and clients.slack is None:
+    slack = clients.slack
+    if args.slack and slack is None:
         print(f"Skipping team lead DMs: ${config.slack.token_env} is not set.", file=sys.stderr)
-    elif args.slack:
+    elif args.slack and slack is not None:
         prs = [RolloutPR(repo, resolve_owners(gh, config, repo), url) for repo, url in open_prs]
-        for a in notify_leads(clients.slack, config, prs, args.apply):
+        for a in notify_leads(slack, config, prs, args.apply):
             report(a.kind, f"{a.repo or 'slack'}: {a.kind} ({a.detail})", a.kind.is_error)
     if args.redact:
         for outcome, n in sorted(tally.items()):
