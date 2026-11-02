@@ -27,13 +27,69 @@ Most orgs should stop at stage 3 for a while.
 ## Step 1: create the AWS roles
 
 vulgard reaches AWS through **GitHub OIDC**. AWS trusts tokens that GitHub Actions issues, so no
-AWS keys are stored in GitHub. If your account has never used GitHub OIDC, first add the identity
-provider: in the IAM console, open *Identity providers → Add provider → OpenID Connect*, with
-provider URL `https://token.actions.githubusercontent.com` and audience `sts.amazonaws.com`.
+AWS keys are stored in GitHub. vulgard needs two IAM roles:
 
-You need two roles. Replace `111122223333` with your account ID and `acme` with your org.
+- **`VulgardLifecycle`** is the role vulgard runs as. Only workflows on your fork's `main`
+  branch may assume it.
+- **`VulgardStackDelete`** is the role CloudFormation uses when vulgard asks it to delete a
+  stack. Because CloudFormation does the deleting, vulgard's own role never needs permission
+  to delete Lambdas, tables or IAM roles.
 
-### `VulgardStackDelete`: the role CloudFormation deletes with
+### With the CDK app in this repo (recommended)
+
+`infra/` is a small CDK app that creates both roles, plus the GitHub OIDC provider if your
+account doesn't have one yet. You need Node.js 22 or later and AWS credentials for the account,
+with permission to create IAM roles. The app has no assets, so you don't need `cdk bootstrap`.
+
+```bash
+cd infra
+npm ci
+npx cdk diff -c githubOrg=acme      # see what it will create
+npx cdk deploy -c githubOrg=acme    # create it
+```
+
+Replace `acme` with the org that owns your fork. When it finishes, it prints two outputs:
+
+```text
+VulgardRoles.LifecycleRoleArn = arn:aws:iam::111122223333:role/VulgardLifecycle
+VulgardRoles.StackDeleteRoleArn = arn:aws:iam::111122223333:role/VulgardStackDelete
+```
+
+You'll use both in the steps below. This first deploy is **read-only**: vulgard can scan, but it
+can't redeploy or delete anything. Step 7 turns on the write permissions.
+
+Options, each passed as `-c name=value`:
+
+| Option | Default | When to change it |
+|---|---|---|
+| `githubOrg` | required | Always. The org that owns the vulgard fork. |
+| `vulgardRepo` | `vulgard` | You named the fork something else. |
+| `branch` | `main` | The fork's default branch isn't `main`. |
+| `writes` | `false` | Set `true` at step 7, to let vulgard redeploy and delete. |
+| `oidcProviderArn` | (create one) | The account already has a GitHub OIDC provider. Deploying fails with "already exists" if you don't pass it. Find it under *IAM → Identity providers*. |
+| `sstStateBucket` | `sst-state-*` | SST's state bucket has another name. It's the `state` value in the SSM parameter `/sst/bootstrap`. |
+| `deletePolicyArns` | `AdministratorAccess` | You want `VulgardStackDelete` narrower. A comma-separated list of managed policy ARNs. |
+
+Run the same `deploy` command with the same options again whenever you change one. The stack has
+termination protection on, so it can't be deleted by accident, and vulgard never lists it as a
+stale deployment.
+
+`VulgardStackDelete` gets `AdministratorAccess` by default, because deleting a stack means
+deleting whatever is in it. Only CloudFormation in this account can assume the role, and
+`VulgardLifecycle` can only pass it to CloudFormation for `DeleteStack`. If that's still too
+broad for you, pass narrower policies with `deletePolicyArns`, and widen them whenever a delete
+fails with an access error.
+
+### Without CDK
+
+<details><summary>The same roles, by hand in the IAM console</summary>
+
+If your account has never used GitHub OIDC, first add the identity provider: in the IAM console,
+open *Identity providers → Add provider → OpenID Connect*, with provider URL
+`https://token.actions.githubusercontent.com` and audience `sts.amazonaws.com`. Then create the
+two roles below. Replace `111122223333` with your account ID and `acme` with your org.
+
+#### `VulgardStackDelete`: the role CloudFormation deletes with
 
 When vulgard deletes a CloudFormation stack, it asks CloudFormation to do the deleting with this
 role. So the role vulgard itself runs as never needs permission to delete Lambdas, tables or IAM
@@ -47,19 +103,18 @@ Trust policy (who may use the role):
   "Statement": [{
     "Effect": "Allow",
     "Principal": {"Service": "cloudformation.amazonaws.com"},
-    "Action": "sts:AssumeRole"
+    "Action": "sts:AssumeRole",
+    "Condition": {"StringEquals": {"aws:SourceAccount": "111122223333"}}
   }]
 }
 ```
 
-Permissions: whatever it takes to delete the resources in your stacks. Many teams attach
-`AdministratorAccess`, because only CloudFormation can use the role, and only for stacks vulgard
-asks it to delete. If that's too broad for you, start narrower and widen the policy whenever a
-delete fails with an access error.
+Permissions: whatever it takes to delete the resources in your stacks, such as
+`AdministratorAccess`. See the explanation above the table of CDK options.
 
-### `VulgardLifecycle`: the role vulgard runs as
+#### `VulgardLifecycle`: the role vulgard runs as
 
-Trust policy. Only workflows in your vulgard fork may use it:
+Trust policy. Only workflows on your fork's `main` branch may use it:
 
 ```json
 {
@@ -69,8 +124,10 @@ Trust policy. Only workflows in your vulgard fork may use it:
     "Principal": {"Federated": "arn:aws:iam::111122223333:oidc-provider/token.actions.githubusercontent.com"},
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {
-      "StringEquals": {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com"},
-      "StringLike": {"token.actions.githubusercontent.com:sub": "repo:acme/vulgard:*"}
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+        "token.actions.githubusercontent.com:sub": "repo:acme/vulgard:ref:refs/heads/main"
+      }
     }
   }]
 }
@@ -114,7 +171,8 @@ holds the writes, used from stage 3 on. You can add it later.
       "Sid": "PassOnlyTheDeleteRole",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::111122223333:role/VulgardStackDelete"
+      "Resource": "arn:aws:iam::111122223333:role/VulgardStackDelete",
+      "Condition": {"StringEquals": {"iam:PassedToService": "cloudformation.amazonaws.com"}}
     },
     {
       "Sid": "EmptyServerlessBuckets",
@@ -131,7 +189,9 @@ holds the writes, used from stage 3 on. You can add it later.
 
 The read statement uses `"Resource": "*"` to keep it short. You can scope it down: `ssm` only
 reads `/sst/bootstrap`, and `s3:ListBucket` and `s3:GetObject` only touch SST's state bucket,
-which that parameter names.
+which that parameter names. The CDK app scopes them this way.
+
+</details>
 
 ### The deploy role your repos already use
 
@@ -250,6 +310,16 @@ Amplify and Vercel don't need any of this, because vulgard uses their APIs direc
 
 ## Step 7: carry out requests
 
+First give `VulgardLifecycle` its write permissions:
+
+```bash
+cd infra
+npx cdk diff -c githubOrg=acme -c writes=true     # adds DeleteStack, PassRole, Amplify writes
+npx cdk deploy -c githubOrg=acme -c writes=true
+```
+
+If you made the roles by hand, add the write statements from the policy above instead.
+
 Try it once by hand first. Wait until a request is listed under *Requested* on some issue,
 ideally a harmless delete of an old dev stack. Then open the fork's *Actions* tab, choose
 **nag**, click **Run workflow**, and tick both *apply* and *execute*. Only repo admins can run
@@ -278,6 +348,7 @@ owner, and nothing happens until 7 days later.
 
 ## Rolling back
 
-Every stage can be undone in config. Set `VULGARD_EXECUTE` back to `false` to stop all ops.
+Every stage can be undone in config. Set `VULGARD_EXECUTE` back to `false` to stop all ops, and
+redeploy the roles without `-c writes=true` to take the permissions away too.
 Empty `auto.repos` to stop automatic ones. Set `report_only: true` to stop issues and pings.
 Open issues stay open but stop being updated. Set `enabled: false` to turn the whole topic off.

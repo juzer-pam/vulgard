@@ -30,7 +30,7 @@ SST_BOOTSTRAP = "/sst/bootstrap"
 SST_STATE_RE = re.compile(r"^app/(?P<app>[^/]+)/(?P<stage>[^/]+)\.json$")
 SST_LOCK_RE = re.compile(r"^lock/(?P<app>[^/]+)/(?P<stage>[^/]+)\.json$")
 AMPLIFY_SANDBOX_RE = re.compile(r"^amplify-(?P<app>.+)-(?P<user>[^-]+)-sandbox-[0-9a-f]+$")
-SKIP_PREFIXES = ("CDKToolkit", "SSTBootstrap", "StackSet-", "aws-sam-cli-managed")
+SKIP_PREFIXES = ("CDKToolkit", "SSTBootstrap", "StackSet-", "aws-sam-cli-managed", "VulgardRoles")
 AMPLIFY_RUNNING = ("PENDING", "PROVISIONING", "RUNNING", "CANCELLING")
 AMPLIFY_FAILED = ("FAILED", "CANCELLED")
 

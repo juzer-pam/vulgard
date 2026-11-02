@@ -48,7 +48,9 @@ this repo (acme/vulgard)
 ├── .github/workflows/nag.yml             scheduled: vulgard nag --apply --slack --linear
 ├── .github/workflows/guard.yml           reusable PR check (GitHub or OSV engine)
 ├── .github/workflows/automerge.yml       reusable auto-merge for Dependabot PRs
-└── .github/workflows/guard-required.yml  for `enforce --mode workflow`
+├── .github/workflows/guard-required.yml  for `enforce --mode workflow`
+├── .github/workflows/lifecycle.yml       reusable redeploy and remove, for stale deployments
+└── infra/                                CDK app for the AWS roles stale deployments use
 
 every other repo (installed by `vulgard rollout`)
 ├── .github/dependabot.yml          generated from detected ecosystems
@@ -280,7 +282,11 @@ commits to. This section is the reference. For an explanation from scratch, read
 
 ### AWS roles for stale deployments
 
-The `nag` job assumes `VULGARD_AWS_ROLE` (repo variable) through GitHub OIDC.
+The `nag` job assumes `VULGARD_AWS_ROLE` (repo variable) through GitHub OIDC. The CDK app in
+`infra/` creates both roles below: `cd infra && npm ci && npx cdk deploy -c githubOrg=<org>`. It
+starts read-only, and `-c writes=true` adds the write permissions. See
+[Set up stale deployments](docs/guides/set-up-stale-deployments.md#step-1-create-the-aws-roles)
+for the options.
 
 - `VulgardLifecycle`, trusted by the vulgard repo's workflows:
   - Reads: `cloudformation:DescribeStacks`, `DescribeStackEvents`; `ssm:GetParameter` on
@@ -322,6 +328,7 @@ CI (`.github/workflows/ci.yml`) runs on every PR in two jobs:
 
 - `test` runs `ruff check`, `pytest`, and dry runs of `report` and `nag` against the demo org.
 - `types` runs `mypy`.
+- `infra` type-checks and synthesizes the CDK app in `infra/`.
 
 The same commands work locally:
 

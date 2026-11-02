@@ -102,6 +102,8 @@ def test_manifest_identity_parsers():
 def test_cloudformation_parser_skips_what_isnt_a_deployment():
     base = {"StackId": "id", "StackStatus": "UPDATE_COMPLETE", "CreationTime": NOW}
     assert sight_cfn_stack({**base, "StackName": "CDKToolkit"}, "1", "r") is None
+    cdk = {"Parameters": [{"ParameterKey": "BootstrapVersion", "ParameterValue": "/cdk"}]}
+    assert sight_cfn_stack({**base, **cdk, "StackName": "VulgardRoles"}, "1", "r") is None
     assert sight_cfn_stack({**base, "StackName": "x", "ParentId": "p"}, "1", "r") is None
     assert sight_cfn_stack({**base, "StackName": "hand-made"}, "1", "r") is None
     assert sight_cfn_stack({**base, "StackName": "amplify-d1-main-branch-abc"}, "1", "r") is None

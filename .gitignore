@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+infra/node_modules/
+infra/cdk.out/
 
 # Org config pulled from the VULGARD_CONFIG variable for local runs
 org.yml
