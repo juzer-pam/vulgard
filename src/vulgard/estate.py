@@ -290,9 +290,9 @@ def _attribute(
             return repo_name(s.tags[tag]), Attribution.TAG
     if s.repo_hint:
         return repo_name(s.repo_hint), Attribution.PLATFORM
-    repo = index.by_identity.get((s.framework, s.app))
-    if repo:
-        return repo, Attribution.MANIFEST
+    owner = index.by_identity.get((s.framework, s.app))
+    if owner:
+        return owner, Attribution.MANIFEST
     return None, Attribution.NONE
 
 

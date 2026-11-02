@@ -87,7 +87,7 @@ class GitHub:
         """Fetch every page; with `until`, stop at the first item it matches (exclusive)."""
         items: list[Any] = []
         next_url: str | None = url
-        next_params = {"per_page": 100, **(params or {})}
+        next_params: dict[str, Any] | None = {"per_page": 100, **(params or {})}
         while next_url:
             resp = self._request("GET", next_url, params=next_params)
             data = resp.json()

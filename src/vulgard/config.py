@@ -314,7 +314,7 @@ def team_of_owners(owners: list[str]) -> str:
     return next((o for o in owners if "/" in o), owners[0] if owners else "unowned")
 
 
-def _section(raw: dict[str, Any], key: str, cls: type) -> Any:
+def _section(raw: dict[str, Any], key: str, cls: Any) -> Any:
     data = raw.get(key) or {}
     known = {f for f in cls.__dataclass_fields__}
     unknown = set(data) - known

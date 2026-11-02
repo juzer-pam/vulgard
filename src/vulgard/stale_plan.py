@@ -175,8 +175,8 @@ def plan_repo(
     if op in (IssueOp.CLOSE, IssueOp.NONE):
         memory = StaleMemory(seen=seen, baselined=baselined)
         state = TrackingState(memory, prev.last_reminder, prev.linear)
-        comments = [CLOSED] if op == IssueOp.CLOSE else []
-        return RepoPlan(topic, report.repo, report.owners, op, state, "baselined", render, comments)
+        closing = [CLOSED] if op == IssueOp.CLOSE else []
+        return RepoPlan(topic, report.repo, report.owners, op, state, "baselined", render, closing)
 
     fresh = op in (IssueOp.CREATE, IssueOp.REOPEN)
     changes = Changes.of(report, prev.memory)

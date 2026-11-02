@@ -192,9 +192,9 @@ def plan_repo(
         return render_issue_body(report, config, state, now)
 
     if op in (IssueOp.CLOSE, IssueOp.NONE):
-        comments = [RESOLVED] if op == IssueOp.CLOSE else []
+        closing = [RESOLVED] if op == IssueOp.CLOSE else []
         return RepoPlan(
-            topic, report.repo, report.owners, op, prev, "all alerts resolved", render, comments
+            topic, report.repo, report.owners, op, prev, "all alerts resolved", render, closing
         )
 
     fresh = op in (IssueOp.CREATE, IssueOp.REOPEN)
