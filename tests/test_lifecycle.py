@@ -80,6 +80,9 @@ def dep(
     return Deployment(s, repo, Attribution.MANIFEST, tier, person)
 
 
+PLAIN = parse_config({"org": "acme"}).deployments  # no people, so nothing is personal
+
+
 def bot_comment(body, days_ago, id=1, author="vulgard[bot]"):
     at = NOW - timedelta(days=days_ago)
     return IssueComment(id, author, body, at, f"u{id}")
@@ -295,9 +298,9 @@ def test_execute_is_idempotent():
         find=lambda o: None,
         delete=lambda proof, rid: f"https://example.test/{rid}",
     )
-    assert execute(op, executor, CFG).outcome is Outcome.STARTED
+    assert execute(op, executor, PLAIN).outcome is Outcome.STARTED
     executor.find = lambda o: "https://example.test/existing"
-    result = execute(op, executor, CFG)
+    result = execute(op, executor, PLAIN)
     assert result.outcome is Outcome.RUNNING and result.detail == "https://example.test/existing"
 
 
