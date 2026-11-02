@@ -89,6 +89,7 @@ class LinearConfig:
     # repo name/glob or owner handle -> team key, or a mapping with team/labels/project/state
     teams: dict[str, Any] = field(default_factory=dict)
     users: dict[str, str] = field(default_factory=dict)
+    leads: dict[str, str] = field(default_factory=dict)  # team key -> assignee if no owner maps
     labels: list[str] = field(default_factory=lambda: ["vulgard"])
     project: str | None = None  # project name for new issues
     state: str | None = None  # workflow state name for new and reopened issues, e.g. "Triage"

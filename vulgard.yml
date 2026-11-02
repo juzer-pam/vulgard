@@ -61,6 +61,7 @@ linear:
 #     project: Security debt
 #     state: Triage
   users: {}                       # GitHub handle -> Linear user email (issue assignee)
+  leads: {}                       # team key -> lead's Linear email; assignee when no owner maps
 
 kev:
   enabled: true                   # CISA Known Exploited Vulnerabilities catalog

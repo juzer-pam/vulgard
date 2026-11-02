@@ -260,9 +260,12 @@ def _close(client: LinearClient, plan: RepoPlan[Any], apply: bool) -> LinearResu
     return LinearResult(ref, [Action(plan.repo, ActionKind.LINEAR_CLOSE, ref.identifier)])
 
 
-def _assignee_id(client: LinearClient, config: Config, owners: list[str]) -> str | None:
-    for owner in owners:
-        email = config.linear.users.get(owner)
+def _assignee_id(
+    client: LinearClient, config: Config, owners: list[str], team: str
+) -> str | None:
+    emails = [config.linear.users.get(owner) for owner in owners]
+    emails.append(config.linear.leads.get(team))
+    for email in emails:
         if email:
             user = client.user_id(email)
             if user:
@@ -300,7 +303,7 @@ def _create(
         payload["projectId"] = client.project_id(target.project)
     if target.state:
         payload["stateId"] = state_named(team, target.state)
-    assignee = _assignee_id(client, config, plan.owners)
+    assignee = _assignee_id(client, config, plan.owners, target.team)
     if assignee:
         payload["assigneeId"] = assignee
     created = client.create_issue(payload)

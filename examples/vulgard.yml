@@ -33,6 +33,8 @@ linear:
       severity_labels: {critical: Critical, high: High, medium: Medium, low: Low}
   users:
     "@jlee": jlee@acme.com
+  leads:
+    SEC: sam@acme.com
 exceptions:
   - repo: web-storefront
     package: nanoid

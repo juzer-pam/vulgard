@@ -324,7 +324,10 @@ def test_linear_issue_lifecycle():
     assert pipeline["labelIds"] == ["label:vulgard"]
     assert "projectId" not in pipeline and "stateId" not in pipeline
     assert pipeline["priority"] == 2 and "dueDate" in pipeline
+    # Assignee: a mapped owner first, then the team's lead; PAY has neither.
     assert created["web-storefront"][1]["assigneeId"] == "user:jlee@acme.com"
+    assert pipeline["assigneeId"] == "user:sam@acme.com"
+    assert "assigneeId" not in payments
     # The Linear link is persisted in the GitHub issue so later runs find it.
     ref = vuln_state(gh.data["issues"]["payments-api"]["body"]).linear
     assert ref.identifier == created["payments-api"][0]
