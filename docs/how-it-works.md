@@ -4,6 +4,15 @@ This guide explains vulgard from the ground up. It assumes you know Git, GitHub 
 and a little Python, and nothing else. If you only want setup steps, the
 [README](../README.md) has them.
 
+vulgard also tracks deployments nobody has updated in a while. That part has its own guide,
+[How stale deployments work](stale-deployments.md), which builds on this one.
+
+If you're here because vulgard pinged you, these short guides tell you what to do:
+
+- [Fix the alerts on a vulgard tracking issue](guides/fix-vulnerability-alerts.md)
+- [Respond to a stale-deployments issue](guides/respond-to-stale-deployments.md)
+- [Troubleshooting](guides/troubleshooting.md)
+
 ## The problem
 
 Almost every project depends on open-source packages, and those packages sometimes have
@@ -74,13 +83,18 @@ vulgard is a Python command-line tool. Every command reads `vulgard.yml` for set
 
 | Command | What it does | How often |
 |---|---|---|
-| `vulgard report` | Prints a table of open alerts and deadlines per repo. Changes nothing. | Whenever you're curious |
-| `vulgard rollout` | Opens a PR in each repo adding the Dependabot config and the check workflow. | Once, then again for new repos |
+| `vulgard report` | Prints a table of open alerts and deadlines per repo. Changes nothing. `--topic stale` lists stale deployments instead. | Whenever you're curious |
+| `vulgard rollout` | Opens a PR in each repo adding the Dependabot config and the check workflow. `--lifecycle` adds the stale-deployments workflow instead. | Once, then again for new repos |
 | `vulgard enforce` | Creates the org ruleset that makes the check required. | After rollout PRs merge |
 | `vulgard nag` | Updates tracking issues, pings owners, escalates, and posts to Slack and Linear. | Weekdays at 15:00 UTC, from GitHub Actions |
 
 `rollout`, `enforce`, and `nag` are dry runs unless you add `--apply`. Always look at the dry
 run first.
+
+`nag` handles one or more **topics**: vulnerabilities, and, when `deployments.enabled` is on,
+stale deployments. Each topic has its own tracking issue per repo, and they all share the same
+machinery for issues, reminders, escalation, Slack and Linear. This guide follows the
+vulnerabilities topic.
 
 ## Rollout: getting every repo set up
 
@@ -168,6 +182,7 @@ decides, per repo, what to do with it:
 | No open alerts or stale PRs, and no tracking issue | Nothing |
 | No open alerts or stale PRs, but a tracking issue is open | Comment "all resolved, thanks" and close it |
 | Open alerts, no tracking issue yet | Create one, assigned to the owners and mentioning them |
+| Open alerts, and the last tracking issue was closed | Reopen it, so its history stays in one place |
 | Open alerts and an existing tracking issue | Rewrite its description with the current list |
 
 Rewriting a description doesn't notify anyone. **Comments** do, so vulgard is careful about
@@ -185,7 +200,7 @@ matters: a bot that pings every day gets muted, and then it's useless.
 lead. An alert escalates once, when it's critical or high and at least 7 days overdue. A KEV
 alert escalates as soon as it's overdue at all.
 
-This step is `plan_repo` in `nag.py`. Its output is a `RepoPlan` (in `plan.py`) that lists
+This step is `plan_repo` in `vulns.py`. Its output is a `RepoPlan` (in `plan.py`) that lists
 the issue operation, the comments to post, and which alerts and PRs are new.
 
 ### Step 4: remember what was already said
@@ -279,7 +294,7 @@ There are two honest ways to say so:
       expires: 2027-03-31
   ```
 
-Closing the tracking issue by hand doesn't help. vulgard opens a new one on the next run.
+Closing the tracking issue by hand doesn't help. vulgard reopens it on the next run.
 
 ## Running it on your laptop
 
@@ -301,34 +316,43 @@ demo always shows a mix of overdue and fresh alerts.
 
 The code is in `src/vulgard/`. Read it in this order, which follows a `nag` run:
 
-1. **`cli.py`** parses the command line, builds the clients, and calls `collect()` to fetch
-   alerts and PRs.
-2. **`github.py`** is a thin wrapper around GitHub's REST and GraphQL APIs.
-3. **`policy.py`** turns raw alerts and PRs into `Alert`, `DependabotPR`, and `RepoReport`
+1. **`cli.py`** parses the command line, builds the clients, and runs each topic.
+2. **`topics.py`** has one runner per topic. `run_vulns` is the one this guide follows.
+3. **`vulns.py`** holds the vulnerabilities topic. `collect()` fetches alerts and PRs through
+   **`github.py`**, a thin wrapper around GitHub's REST and GraphQL APIs. `plan_repo()` decides
+   what to do for one repo.
+4. **`policy.py`** turns raw alerts and PRs into `Alert`, `DependabotPR`, and `RepoReport`
    objects with deadlines, statuses, and ready or stale flags. Start with `evaluate()`.
-4. **`nag.py`** has `plan_repo()`, which decides what to do for one repo, and `_run_repo()`,
-   which does it.
-5. **`plan.py`** defines the decision types: `RepoPlan`, the issue operation (`IssueOp`), and
-   the hidden state (`TrackingState`).
-6. **`render.py`** turns reports and plans into the markdown you see in issues and comments.
-7. **`linear.py`** and **`slack.py`** hold the integrations.
-8. **`kev.py`** downloads the CISA list. **`rollout.py`** and **`enforce.py`** implement the
-   other two commands. **`config.py`** loads `vulgard.yml` and rejects unknown keys, so a
-   typo fails loudly instead of being ignored.
+5. **`plan.py`** defines the decision types shared by every topic: `RepoPlan`, the issue
+   operation (`IssueOp`), and the hidden state (`TrackingState`).
+6. **`nag.py`** is the engine. `track()` carries out the plans: it writes tracking issues and
+   comments and syncs Linear, for every topic.
+7. **`render.py`** turns reports and plans into the markdown you see in issues and comments.
+8. **`linear.py`** and **`slack.py`** hold the integrations.
+9. **`kev.py`** downloads the CISA list. **`repos.py`** picks which repos to look at and finds
+   their owners. **`rollout.py`** and **`enforce.py`** implement the other two commands.
+   **`config.py`** loads `vulgard.yml` and rejects unknown keys, so a typo fails loudly instead
+   of being ignored.
+
+The stale-deployments modules are covered in
+[How stale deployments work](stale-deployments.md#reading-the-code).
 
 A pattern to notice: deciding and doing are kept apart. `policy.py` and `plan_repo()` only
-compute. They never call an API. The network calls happen in `_run_repo()`, `linear.py`, and
+compute. They never call an API. The network calls happen in `nag.track()`, `linear.py`, and
 `slack.py`. That's why most tests in `tests/test_vulgard.py` can check behavior by building a
 plan from fake data and looking at it, with no mocks.
 
 ## Making a change
 
-1. Change the code and add or update a test in `tests/test_vulgard.py`. Most tests build a
-   report with the `alert()` and `pr()` helpers, call `plan_repo()`, and check the result.
+1. Change the code and add or update a test. Vulnerability tests are in
+   `tests/test_vulgard.py`. Most of them build a report with the `alert()` and `pr()` helpers,
+   call `plan_repo()`, and check the result. Stale-deployment tests are in `tests/test_stale.py`,
+   `tests/test_estate.py`, and `tests/test_lifecycle.py`.
 2. If your change affects what vulgard writes, look at the demo output:
    `$V nag --slack --linear`.
-3. Push and open a PR. CI runs `ruff check` (lint) and `pytest`, plus dry runs of `report`
-   and `nag` against the demo org.
+3. Push and open a PR. CI runs two jobs. `test` runs `ruff check` (lint), `pytest`, and dry
+   runs of `report` and `nag` against the demo org. `types` runs `mypy`, which checks the type
+   annotations. Read a failing job's log in the PR's *Checks* tab.
 
 ## Common questions
 
@@ -336,9 +360,8 @@ plan from fake data and looking at it, with no mocks.
 when an alert newly goes overdue, a PR newly becomes ready, something escalates, or a week has
 passed. Run `vulgard nag` without `--apply` to see what it would do.
 
-**Why is there a new tracking issue after I closed the old one?** Alerts are still open, so
-the next run opens a fresh issue. Fix the alerts, dismiss them with a reason, or add an
-exception.
+**Why did the tracking issue reopen after I closed it?** Alerts are still open, so the next
+run reopens it. Fix the alerts, dismiss them with a reason, or add an exception.
 
 **Why didn't the issue get assigned to my team?** GitHub only lets issues be assigned to
 people, not teams. Teams are mentioned instead.

@@ -15,9 +15,31 @@ Turning on Dependabot isn't enough if nobody merges its PRs. vulgard covers the 
 
 Everything that writes to GitHub runs as a **dry run by default**. Add `--apply` to make changes.
 
-New to this project, or to Dependabot? Start with **[How vulgard works](docs/how-it-works.md)**.
-It explains the terms, follows one alert from opening to closing, and walks through the code.
-This README is the setup and reference guide.
+## Documentation
+
+This README is the setup and reference guide. The rest of the docs are written for someone new
+to the project.
+
+**To understand how it works:**
+
+- [How vulgard works](docs/how-it-works.md) explains the terms, follows one alert from opening
+  to closing, and walks through the code. Start here if you're new to the project or to
+  Dependabot.
+- [How stale deployments work](docs/stale-deployments.md) does the same for deployments nobody
+  has updated in a while.
+- [The stale-deployments design doc](docs/design/stale-deployments.md) explains why it's
+  built the way it is.
+
+**If vulgard pinged you:**
+
+- [Fix the alerts on a vulgard tracking issue](docs/guides/fix-vulnerability-alerts.md)
+- [Respond to a stale-deployments issue](docs/guides/respond-to-stale-deployments.md)
+- [Use your own deploy workflow](docs/guides/use-your-own-deploy-workflow.md), if vulgard's
+  generic one can't deploy your repo
+- [Troubleshooting](docs/guides/troubleshooting.md)
+
+**If you run vulgard:** follow [Rolling it out](#rolling-it-out-to-a-real-org) below, then
+[Set up stale deployments](docs/guides/set-up-stale-deployments.md).
 
 ## How it fits together
 
@@ -191,7 +213,10 @@ exceptions:
 
 With `deployments.enabled`, `nag` also tracks deployments in AWS (Serverless Framework v3 and
 CDK stacks in CloudFormation, SST v3/v4 state, Amplify branches) and Vercel, and repos nobody
-commits to. [The design doc](docs/design/stale-deployments.md) has the rationale.
+commits to. This section is the reference. For an explanation from scratch, read
+[How stale deployments work](docs/stale-deployments.md). To turn it on step by step, follow
+[Set up stale deployments](docs/guides/set-up-stale-deployments.md).
+[The design doc](docs/design/stale-deployments.md) has the rationale.
 
 - A deployment not deployed in `stale_days` (30), or a repo with no human commits in
   `repo_inactive_days` (90), needs a baseline within `baseline_days` (14). The clocks come from
@@ -229,8 +254,9 @@ commits to. [The design doc](docs/design/stale-deployments.md) has the rationale
   Serverless, SST or CDK app. Repos with their own deploy workflow can list it in
   `deployments.workflows` instead; vulgard dispatches it with `action`, `framework`, `app`,
   `stage`, `stack` and `request_id` inputs, and finds the run by the request id in its run name.
-- Automatic ops apply only to personal deployments (`deployments.people`, or Amplify
-  sandboxes) in repos listed in `deployments.auto.repos`. A personal deployment that hasn't
+- Automatic ops apply only to personal deployments in repos listed in `deployments.auto.repos`.
+  A deployment is personal when its stage, or an Amplify sandbox's user, is listed in
+  `deployments.people`. A personal deployment that hasn't
   deployed in `auto.personal_stale_days` (90), or whose repo has open critical alerts, gets a
   notice on the issue mentioning its owner. After `auto.notice_days` (7), the next
   `--execute` run redeploys it, or deletes it with `auto.delete: true`.
@@ -245,8 +271,10 @@ commits to. [The design doc](docs/design/stale-deployments.md) has the rationale
 - Deployments with no known repo land in `unattributed_repo`. Tag stacks with `vulgard:repo`,
   or map them in `deployments.attribution`.
 - `vulgard report --topic stale` lists every stale deployment and inactive repo and writes
-  nothing. To trial the topic org-wide, set `deployments.report_only: true`. `nag` then writes
-  the findings to the workflow summary and opens no issues, Linear issues or Slack messages.
+  nothing. To trial the topic org-wide, set `deployments.report_only: true`. `nag` then opens no
+  issues, Linear issues or Slack messages. Run without `--redact`, it writes the findings to the
+  workflow summary. The scheduled job redacts its output, so it only logs how many repos would
+  get an issue. Use `report --topic stale` for the list.
 
 ### AWS roles for stale deployments
 
@@ -254,8 +282,8 @@ The `nag` job assumes `VULGARD_AWS_ROLE` (repo variable) through GitHub OIDC.
 
 - `VulgardLifecycle`, trusted by the vulgard repo's workflows:
   - Reads: `cloudformation:DescribeStacks`, `DescribeStackEvents`; `ssm:GetParameter` on
-    `/sst/bootstrap`; `s3:ListBucket` on the SST state bucket; `amplify:ListApps`,
-    `ListBranches`, `ListJobs`, `GetApp`, `GetBranch`.
+    `/sst/bootstrap`; `s3:ListBucket` and `s3:GetObject` on the SST state bucket;
+    `amplify:ListApps`, `ListBranches`, `ListJobs`, `GetApp`, `GetBranch`.
   - Writes: `cloudformation:DeleteStack`; `iam:PassRole` on `VulgardStackDelete` only;
     `s3:ListBucketVersions`, `s3:DeleteObject` and `s3:DeleteObjectVersion` on
     `arn:aws:s3:::*-serverlessdeploymentbucket-*`; `amplify:StartJob`, `amplify:DeleteBranch`.
@@ -288,17 +316,42 @@ production word (`prod`, `prd`, `production`, `live`, in any case) in its name.
 
 ## Development
 
+CI (`.github/workflows/ci.yml`) runs on every PR in two jobs:
+
+- `test` runs `ruff check`, `pytest`, and dry runs of `report` and `nag` against the demo org.
+- `types` runs `mypy`.
+
+The same commands work locally:
+
 ```bash
+uv run ruff check .
 uv run pytest
-uv run ruff check . && uv run ruff format --check .
+uv run mypy
 ```
 
-For a suggested reading order, see [Reading the code](docs/how-it-works.md#reading-the-code).
-Code lives in `src/vulgard/`: `policy.py` (SLA evaluation, exceptions, escalation rules,
-weekly fixed and dismissed summary), `plan.py` (per-repo decisions and the state stored in the
-tracking issue), `render.py` (issue, comment, and summary markdown), `nag.py` (tracking issues
-and comments), `linear.py` (Linear client and sync), `slack.py` (routed messages, DMs, leaderboard),
-`kev.py` (CISA KEV feed), `clients.py` (live API clients), `rollout.py`
-(Dependabot config and workflow generation), `enforce.py` (org rulesets), `github.py` (REST
-client), and `fixtures.py` (offline fakes for GitHub, Linear, and Slack used by the demo and
-tests).
+For a suggested reading order, see [Reading the code](docs/how-it-works.md#reading-the-code)
+and, for the stale path, [its counterpart](docs/stale-deployments.md#reading-the-code). Code
+lives in `src/vulgard/`.
+
+| Module | What it holds |
+|---|---|
+| `cli.py` | Command-line parsing and the four commands |
+| `topics.py` | One `nag` runner per topic: `run_vulns` and `run_stale` |
+| `plan.py` | Plan types shared by every topic, and the state stored in tracking issues |
+| `nag.py` | The engine: writes tracking issues and comments, and syncs Linear, for every topic |
+| `vulns.py` | Vulnerabilities topic: collecting alerts, `plan_repo`, the leaderboard |
+| `policy.py` | SLA evaluation, exceptions, escalation rules, the weekly fixed and dismissed summary |
+| `render.py` | Issue, comment, and summary markdown for vulnerabilities |
+| `stale.py`, `stale_plan.py`, `stale_render.py` | Stale topic: findings and SLAs, the per-repo plan, and its markdown |
+| `estate.py` | Deployment types, `classify` (repo, tier, person), and `discover` |
+| `aws.py`, `vercel.py` | Deployment scanners and native operations |
+| `baseline.py` | Parsing `/vulgard` commands and folding a comment thread into decisions |
+| `lifecycle.py` | Which redeploys and deletes to run, notices, and the safety checks |
+| `execute.py`, `executor.py` | Running one op idempotently, and the live GitHub, AWS and Vercel executor |
+| `repos.py` | Repo selection, owners, the framework index, and commit activity |
+| `linear.py`, `slack.py` | Linear sync; Slack routing, DMs, and the leaderboard |
+| `kev.py` | The CISA KEV feed |
+| `rollout.py`, `enforce.py` | Generated Dependabot config and workflows; org rulesets |
+| `github.py`, `clients.py` | The GitHub REST and GraphQL client; building the live clients |
+| `config.py` | Loading `vulgard.yml`, rejecting unknown keys |
+| `fixtures.py` | Offline fakes for GitHub, Linear and Slack, plus a fake deployment scanner and executor, used by the demo and tests |

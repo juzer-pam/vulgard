@@ -222,6 +222,11 @@ Rejected from candidate A:
   that, at the cost of one more setting.
 - A failed op is retried on every run and comments on the issue each time. Nothing throttles
   the repeats yet.
+- A workflow run that carries the request id counts as started whatever its conclusion, so a
+  failed lifecycle run is never retried and its request stays pending. Posting the command again
+  gives it a new request id.
+- A redeploy that changes nothing (CDK's "no changes", or Serverless skipping an unchanged
+  service) doesn't move the stack's update time, so the request never reads as done.
 
 ## Implementation slices
 
