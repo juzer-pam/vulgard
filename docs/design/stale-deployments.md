@@ -220,13 +220,14 @@ Rejected from candidate A:
 - The notice marker is trusted when its comment's author ends in `[bot]`. Another GitHub App
   with write access to the repo could post one. Pinning the vulgard App's login would close
   that, at the cost of one more setting.
-- A failed op is retried on every run and comments on the issue each time. Nothing throttles
-  the repeats yet.
-- A workflow run that carries the request id counts as started whatever its conclusion, so a
-  failed lifecycle run is never retried and its request stays pending. Posting the command again
-  gives it a new request id.
-- A redeploy that changes nothing (CDK's "no changes", or Serverless skipping an unchanged
-  service) doesn't move the stack's update time, so the request never reads as done.
+- An op that can't be started (a dispatch error, missing permissions) is retried on every run
+  and comments on the issue each time. Nothing throttles the repeats yet. An op that ran and
+  ended is reported once: vulgard's comment carries a hidden `vulgard-op` marker, and later
+  runs read it back. A failed op is then blocked until someone posts a new command, and a
+  successful redeploy counts as a deploy, because CloudFormation leaves an unchanged stack's
+  update time alone.
+- A custom deploy workflow that reports success without deploying makes vulgard treat the
+  stack as freshly deployed.
 
 ## Implementation slices
 

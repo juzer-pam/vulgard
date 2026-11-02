@@ -15,27 +15,33 @@ from vulgard.estate import (
     Attribution,
     CfnStack,
     Deployment,
+    Found,
     Framework,
     OpFailed,
+    RunState,
     Sighting,
     SstStage,
     Tier,
     VercelProject,
 )
-from vulgard.execute import Outcome, execute
-from vulgard.executor import LiveExecutor, workflow_inputs
+from vulgard.execute import Outcome, execute, result_comment
+from vulgard.executor import LiveExecutor, run_state, workflow_inputs
 from vulgard.fixtures import FixtureGitHub, fixture_clients
 from vulgard.github import GitHubError
 from vulgard.lifecycle import (
     NO_REPO,
+    RUN_FAILED,
     RUNNING_NOW,
     SANDBOX,
+    Finished,
     Notice,
     Op,
     SafeDelete,
     Trigger,
     Verb,
     check_delete,
+    confirmed,
+    finished_from,
     notice_marker,
     notices_from,
     plan_op,
@@ -299,9 +305,65 @@ def test_execute_is_idempotent():
         delete=lambda proof, rid: f"https://example.test/{rid}",
     )
     assert execute(op, executor, PLAIN).outcome is Outcome.STARTED
-    executor.find = lambda o: "https://example.test/existing"
+    executor.find = lambda o: Found("https://example.test/existing")
     result = execute(op, executor, PLAIN)
     assert result.outcome is Outcome.RUNNING and result.detail == "https://example.test/existing"
+    assert result_comment(result, "@jlee") is None
+
+
+def test_an_op_that_ended_is_reported_once_with_a_marker_the_next_run_reads_back():
+    d, op = shared_delete()
+    ended = SimpleNamespace(find=lambda o: Found("u", RunState.FAILED, "DELETE_FAILED: busy"))
+    result = execute(op, ended, PLAIN)
+    assert result.outcome is Outcome.RUN_FAILED
+    failed_comment = result_comment(result, "@jlee")
+    assert failed_comment and "DELETE_FAILED: busy" in failed_comment
+    ok = execute(op, SimpleNamespace(find=lambda o: Found("u", RunState.SUCCEEDED)), PLAIN)
+    ok_comment = result_comment(ok, "@jlee")
+    assert ok.outcome is Outcome.SUCCEEDED and ok_comment and ok_comment.startswith("Finished")
+    comments = (
+        bot_comment(failed_comment, 1, id=1),
+        bot_comment(failed_comment, 1, id=2, author="jlee"),
+    )
+    (finished,) = finished_from(comments)
+    assert finished == Finished(d.key, Verb.DELETE, op.request_id, False, NOW - timedelta(days=1))
+    assert not finished_from((bot_comment("<!-- vulgard-op {not json} -->", 1),))
+
+
+def test_reconcile_blocks_a_failed_op_and_drops_a_finished_one():
+    d = dep(tier=Tier.SHARED)
+    req = Issued(Delete(d.key), 7, "jlee", NOW - timedelta(days=2), "u")
+    decisions = Decisions(requests={d.key: req})
+    (op,) = reconcile([d], decisions, [], PLAIN, False, NOW).ops
+    failed = Finished(d.key, Verb.DELETE, op.request_id, False, NOW)
+    (blocked,) = reconcile([d], decisions, [], PLAIN, False, NOW, [failed]).ops
+    assert blocked.blocked == RUN_FAILED and blocked.delete is None
+    done = replace(failed, succeeded=True)
+    assert not reconcile([d], decisions, [], PLAIN, False, NOW, [done]).ops
+    other = replace(failed, request_id="vg-other")
+    assert reconcile([d], decisions, [], PLAIN, False, NOW, [other]).ops[0].runnable
+
+
+def test_a_successful_redeploy_counts_as_a_deploy_even_when_it_changed_nothing():
+    d = dep(days=40)
+    at = NOW - timedelta(days=1)
+    (bumped,) = confirmed([d], [Finished(d.key, Verb.REDEPLOY, "vg-1", True, at)])
+    assert bumped.last_deployed == at
+    for f in (
+        Finished(d.key, Verb.REDEPLOY, "vg-1", False, at),
+        Finished(d.key, Verb.DELETE, "vg-1", True, at),
+        Finished("cfn:other", Verb.REDEPLOY, "vg-1", True, at),
+        Finished(d.key, Verb.REDEPLOY, "vg-1", True, NOW - timedelta(days=50)),
+    ):
+        assert confirmed([d], [f]) == [d]
+
+
+def test_workflow_runs_only_succeed_on_success():
+    assert run_state({"status": "in_progress"}) == (RunState.RUNNING, "")
+    assert run_state({"status": "completed", "conclusion": "success"})[0] is RunState.SUCCEEDED
+    for conclusion in ("failure", "cancelled", "skipped", None):
+        state, why = run_state({"status": "completed", "conclusion": conclusion})
+        assert state is RunState.FAILED and why
 
 
 def test_a_target_that_is_already_gone_is_skipped_not_reported_as_running():
@@ -465,6 +527,15 @@ def test_requests_run_once_and_a_forged_notice_changes_nothing():
     day(9)
     started = [(v.value, d.name) for v, d, _ in executor.started]
     assert started == [("delete", "storefront-experiments"), ("redeploy", "payments-api-jlee")]
+
+    rid = executor.started[0][2]
+    gh.data["ops"][rid] = {"url": "https://example.test/run", "state": "failed", "why": "boom"}
+    day(10)
+    day(11)
+    storefront_thread = gh.data["comments"][f"web-storefront#{storefront}"]
+    reported = [c for c in storefront_thread if "Couldn't delete" in c["body"]]
+    assert len(reported) == 1 and "boom" in reported[0]["body"]
+    assert len(executor.started) == 2
 
 
 def test_nag_execute_dry_run_lists_due_ops(capsys):

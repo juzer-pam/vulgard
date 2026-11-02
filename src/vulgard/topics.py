@@ -22,7 +22,7 @@ from .config import Config
 from .estate import Deployment, ScanError
 from .execute import Outcome, execute, result_comment
 from .github import GitHubError
-from .lifecycle import Notice, describe, notices_from
+from .lifecycle import Finished, Notice, describe, finished_from, notices_from
 from .linear import LinearClient
 from .nag import load_issues, track
 from .plan import Action, ActionKind, RepoRun, Topic, TrackingState
@@ -125,8 +125,20 @@ def _stale_pass(ctx: NagContext) -> tuple[dict[str, StaleReport], list[RepoRun]]
         issue = issues.get(repo)
         return notices_from(issue.comments) if issue else []
 
+    def finished_of(repo: str) -> list[Finished]:
+        issue = issues.get(repo)
+        return finished_from(issue.comments) if issue else []
+
     reports = evaluate(
-        config, found.deployments, found.activity, tracked, ctx.now, decide, notices_of, vulnerable
+        config,
+        found.deployments,
+        found.activity,
+        tracked,
+        ctx.now,
+        decide,
+        notices_of,
+        vulnerable,
+        finished_of,
     )
     reports = {
         repo: replace(r, owners=resolve_owners(gh, config, repo))
@@ -156,7 +168,7 @@ def _execute_ops(
                 actions.append(Action(run.repo, ActionKind.EXECUTE, f"{what} {describe(op)}"))
                 continue
             result = execute(op, executor, config.deployments)
-            failed = result.outcome is Outcome.FAILED
+            failed = result.outcome in (Outcome.FAILED, Outcome.RUN_FAILED)
             kind = ActionKind.EXECUTE_ERROR if failed else ActionKind.EXECUTE
             actions.append(Action(run.repo, kind, f"{result.outcome}: {describe(op)}"))
             mentions = " ".join(p for p in [op.deployment.person, *report.owners] if p)

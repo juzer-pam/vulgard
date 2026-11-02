@@ -26,7 +26,7 @@ from typing import Any, Self
 from .baseline import Active, Decisions, Issued, Keep, Rejection, Request, pending_requests
 from .config import SEVERITIES, Config
 from .estate import Deployment, Scanner, discover
-from .lifecycle import Lifecycle, Notice, reconcile
+from .lifecycle import Finished, Lifecycle, Notice, confirmed, reconcile
 from .plan import Topic, TopicSpec
 from .policy import SlaStatus
 from .repos import RepoActivity, build_index, repo_activity
@@ -228,6 +228,10 @@ def _no_notices(repo: str) -> list[Notice]:
     return []
 
 
+def _nothing_finished(repo: str) -> list[Finished]:
+    return []
+
+
 def evaluate(
     config: Config,
     deployments: list[Deployment],
@@ -237,9 +241,11 @@ def evaluate(
     decide: Callable[[str, list[Deployment]], Decisions] = _no_decisions,
     notices_of: Callable[[str], list[Notice]] = _no_notices,
     vulnerable: frozenset[str] = frozenset(),
+    finished_of: Callable[[str], list[Finished]] = _nothing_finished,
 ) -> dict[str, StaleReport]:
-    """Pure given `decide` (repo, its deployments -> baselines) and `notices_of` (repo -> the
-    notices vulgard posted). Groups deployments by repo and builds each repo's report.
+    """Pure given `decide` (repo, its deployments -> baselines), `notices_of` (repo -> the
+    notices vulgard posted) and `finished_of` (repo -> the ops vulgard reported as ended).
+    Groups deployments by repo and builds each repo's report.
 
     Deployments without a repo, or attributed to a repo vulgard doesn't track (archived or
     excluded), land in `deployments.unattributed_repo` with a note saying why. `vulnerable` repos
@@ -261,9 +267,11 @@ def evaluate(
     by_repo = {a.repo: a for a in activity}
 
     reports: dict[str, StaleReport] = {}
-    for repo, found in placed.items():
+    for repo, sighted in placed.items():
         if not repo:
             continue
+        finished = finished_of(repo)
+        found = confirmed(sighted, finished)
         decisions = decide(repo, found)
         findings: list[DeploymentFinding] = []
         kept: list[tuple[DeploymentFinding, Issued[Keep]]] = []
@@ -286,7 +294,9 @@ def evaluate(
             kept=kept,
             repo_finding=repo_finding,
             requests=pending_requests(decisions, found),
-            lifecycle=reconcile(found, decisions, notices_of(repo), cfg, repo in vulnerable, now),
+            lifecycle=reconcile(
+                found, decisions, notices_of(repo), cfg, repo in vulnerable, now, finished
+            ),
         )
     return reports
 

@@ -10,7 +10,7 @@ from typing import Any, assert_never
 
 from .baseline import Redeploy
 from .config import Config, DeploymentsConfig, team_of_owners
-from .lifecycle import PAST, RUNNING_NOW, Op, Trigger
+from .lifecycle import PAST, RUN_FAILED, RUNNING_NOW, Op, Trigger
 from .plan import RepoRun, TrackingState
 from .policy import SlaStatus
 from .render import SEVERITY_ICON, format_table
@@ -87,6 +87,11 @@ def _request_status(blocked: str | None) -> str:
         return "This clears once vulgard sees it done."
     if blocked == RUNNING_NOW:
         return "In progress. vulgard checks again on the next run."
+    if blocked == RUN_FAILED:
+        return (
+            "Its run failed (see vulgard's comment). Fix the cause, then do it by hand or post "
+            "the command again."
+        )
     return f"vulgard can't do this one: {blocked}. Do it by hand."
 
 

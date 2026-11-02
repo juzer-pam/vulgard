@@ -19,8 +19,10 @@ from .estate import (
     AmplifyBranch,
     CfnStack,
     Deployment,
+    Found,
     NativeRef,
     OpFailed,
+    RunState,
     Sighting,
     SstStage,
     VercelProject,
@@ -41,6 +43,17 @@ def _translated[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
             raise OpFailed(str(e)) from e
 
     return wrapper
+
+
+def run_state(run: dict[str, Any]) -> tuple[RunState, str]:
+    """A GitHub Actions run's state. Only `success` counts: a skipped or cancelled run deployed
+    nothing."""
+    if run.get("status") != "completed":
+        return RunState.RUNNING, ""
+    conclusion = run.get("conclusion") or "unknown"
+    if conclusion == "success":
+        return RunState.SUCCEEDED, ""
+    return RunState.FAILED, f"the workflow run ended with `{conclusion}`"
 
 
 def workflow_inputs(d: Deployment, verb: Verb, request_id: str) -> dict[str, str]:
@@ -73,9 +86,12 @@ class LiveExecutor:
             raise OpFailed(NO_REPO)
         return d.repo, self._config.deployments.workflow_for(d.repo)
 
-    def _find_run(self, d: Deployment, request_id: str) -> str | None:
+    def _find_run(self, d: Deployment, request_id: str) -> Found | None:
         repo, workflow = self._workflow(d)
-        return self._gh.find_workflow_run(self._config.org, repo, workflow, request_id)
+        run = self._gh.find_workflow_run(self._config.org, repo, workflow, request_id)
+        if run is None:
+            return None
+        return Found(run["html_url"], *run_state(run))
 
     def _dispatch(self, d: Deployment, verb: Verb, request_id: str) -> str:
         org = self._config.org
@@ -102,7 +118,7 @@ class LiveExecutor:
                 assert_never(unreachable)
 
     @_translated
-    def find(self, op: Op) -> str | None:
+    def find(self, op: Op) -> Found | None:
         d, rid = op.deployment, op.request_id
         redeploying = op.verb is Verb.REDEPLOY
         match d.sighting.native:

@@ -19,7 +19,10 @@ against the live target right before the delete.
 
 Each op has a deterministic `request_id`. Every API receives it as an idempotency key: the
 workflow run name, the CloudFormation `ClientRequestToken`, the Amplify `jobReason` and the
-Vercel `meta`. `execute` looks for an existing op with that id before it starts one.
+Vercel `meta`. `execute` looks for an existing op with that id before it starts one. When it
+finds one that ended, vulgard says so once, in a comment with a hidden `vulgard-op` marker.
+Later runs read the marker back: a successful redeploy counts as a deploy, and a failed op is
+blocked until someone posts a new command.
 """
 
 from __future__ import annotations
@@ -27,10 +30,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from enum import StrEnum
-from typing import assert_never
+from typing import Any, assert_never
 
 from .baseline import Decisions, Delete, Issued, Redeploy, Request, pending_requests
 from .config import DeploymentsConfig, Tier
@@ -50,7 +54,9 @@ from .plan import IssueComment
 RUNNING_NOW = "a deploy or delete is running right now"
 NO_REPO = "no repo to run it from; attribute the deployment first"
 SANDBOX = "Amplify sandboxes run from a laptop (`npx ampx sandbox`); delete it instead"
+RUN_FAILED = "its run failed (see vulgard's comment)"
 NOTICE_RE = re.compile(r"<!-- vulgard-notice (\{.*?\}) -->")
+FINISHED_RE = re.compile(r"<!-- vulgard-op (\{.*?\}) -->")
 
 
 class Verb(StrEnum):
@@ -203,20 +209,93 @@ def notice_marker(key: str, verb: Verb) -> str:
     return f"<!-- vulgard-notice {json.dumps({'key': key, 'verb': verb.value}, sort_keys=True)} -->"
 
 
-def notices_from(comments: tuple[IssueComment, ...]) -> list[Notice]:
-    """Notices in comments by a `[bot]` author. A person can't post one, so a person can't
-    backdate one either."""
-    found: list[Notice] = []
+def _markers(
+    comments: tuple[IssueComment, ...], pattern: re.Pattern[str]
+) -> list[tuple[dict[str, Any], datetime]]:
+    """JSON markers in comments by a `[bot]` author, with the comment's posting time. A person
+    can't post one, so a person can't forge or backdate one."""
+    found: list[tuple[dict[str, Any], datetime]] = []
     for c in comments:
         if not c.author.endswith("[bot]"):
             continue
-        for m in NOTICE_RE.finditer(c.body):
+        for m in pattern.finditer(c.body):
             try:
                 raw = json.loads(m[1])
-                found.append(Notice(raw["key"], Verb(raw["verb"]), c.created_at))
-            except (ValueError, KeyError):
+            except ValueError:
                 continue
+            if isinstance(raw, dict):
+                found.append((raw, c.created_at))
     return found
+
+
+def notices_from(comments: tuple[IssueComment, ...]) -> list[Notice]:
+    found: list[Notice] = []
+    for raw, at in _markers(comments, NOTICE_RE):
+        try:
+            found.append(Notice(raw["key"], Verb(raw["verb"]), at))
+        except (ValueError, KeyError):
+            continue
+    return found
+
+
+# --- ops that ended
+
+
+@dataclass(frozen=True)
+class Finished:
+    """vulgard's record, in its own comment, that an op ran to the end."""
+
+    key: str
+    verb: Verb
+    request_id: str
+    succeeded: bool
+    at: datetime  # when the bot's comment was posted
+
+
+def finish_marker(op: Op, succeeded: bool) -> str:
+    """Hidden line in the comment that reports how an op ended, so it's reported once."""
+    raw = {
+        "key": op.deployment.key,
+        "verb": op.verb.value,
+        "request_id": op.request_id,
+        "succeeded": succeeded,
+    }
+    return f"<!-- vulgard-op {json.dumps(raw, sort_keys=True)} -->"
+
+
+def finished_from(comments: tuple[IssueComment, ...]) -> list[Finished]:
+    found: list[Finished] = []
+    for raw, at in _markers(comments, FINISHED_RE):
+        try:
+            verb, succeeded = Verb(raw["verb"]), raw["succeeded"] is True
+            found.append(Finished(raw["key"], verb, raw["request_id"], succeeded, at))
+        except (ValueError, KeyError):
+            continue
+    return found
+
+
+def confirmed(deployments: list[Deployment], finished: list[Finished]) -> list[Deployment]:
+    """Pure. A successful redeploy counts as a deploy, even one that changed nothing and so left
+    the stack's own timestamp where it was (CloudFormation skips empty updates)."""
+    latest: dict[str, datetime] = {}
+    for f in finished:
+        if f.succeeded and f.verb is Verb.REDEPLOY:
+            latest[f.key] = max(f.at, latest.get(f.key, f.at))
+    out: list[Deployment] = []
+    for d in deployments:
+        at = latest.get(d.key)
+        if at is not None and at > d.last_deployed:
+            d = replace(d, sighting=replace(d.sighting, last_deployed=at))
+        out.append(d)
+    return out
+
+
+def _settled(op: Op, finished: Mapping[str, Finished]) -> Op | None:
+    """None once the op succeeded. A failed one is blocked, so it isn't reported every run."""
+    f = finished.get(op.request_id)
+    if f is None:
+        return op
+    return None if f.succeeded else replace(op, blocked=RUN_FAILED, delete=None)
 
 
 @dataclass(frozen=True)
@@ -267,10 +346,11 @@ def reconcile(
     cfg: DeploymentsConfig,
     vulnerable: bool,
     now: datetime,
+    finished: list[Finished] | None = None,
 ) -> Lifecycle:
     """Pure. Requests become ops. A qualifying personal deployment gets a notice, then an op
     once the notice period has passed. A keep, or a cancel newer than the last deploy, stops
-    it, whichever trigger qualified it."""
+    it, whichever trigger qualified it. Ops that already ended (`finished`) don't run again."""
     ops = [requested_op(req, d) for req, d in pending_requests(decisions, deployments)]
     requested = {op.deployment.key for op in ops}
     verb = Verb.DELETE if cfg.auto.delete else Verb.REDEPLOY
@@ -289,7 +369,9 @@ def reconcile(
             ops.append(plan_op(d, verb, trigger, rid))
         else:
             scheduled.append(Scheduled(d, verb, trigger, due, fresh=posted is None))
-    return Lifecycle(tuple(scheduled), tuple(ops))
+    ended = {f.request_id: f for f in finished or []}
+    live = [s for op in ops if (s := _settled(op, ended)) is not None]
+    return Lifecycle(tuple(scheduled), tuple(live))
 
 
 def describe(op: Op) -> str:

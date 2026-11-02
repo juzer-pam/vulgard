@@ -10,7 +10,7 @@ from typing import Any
 from .aws import sight_amplify_branch, sight_cfn_stack, sight_sst_objects
 from .clients import Clients
 from .config import IssueConfig
-from .estate import Deployment, NativeRef, Sighting
+from .estate import Deployment, Found, NativeRef, RunState, Sighting
 from .lifecycle import Op, SafeDelete, Verb
 from .policy import now_utc
 from .vercel import sight_vercel_project
@@ -281,8 +281,8 @@ class FakeSlack:
 
 class FixtureExecutor:
     """Records the ops it is asked to start. `data["ops"]` maps the request ids of ops that
-    already exist to a link, and `observe` re-reads targets from the same estate the scanner
-    replays."""
+    already exist to a link, or to `{"url", "state", "why"}` for one that ended. `observe`
+    re-reads targets from the same estate the scanner replays."""
 
     def __init__(self, data: dict[str, Any]):
         self.data = data
@@ -291,8 +291,13 @@ class FixtureExecutor:
     def observe(self, native: NativeRef) -> Sighting | None:
         return next((s for s in FixtureScanner(self.data).scan() if s.native == native), None)
 
-    def find(self, op: Op) -> str | None:
-        return self.data.get("ops", {}).get(op.request_id)
+    def find(self, op: Op) -> Found | None:
+        existing = self.data.get("ops", {}).get(op.request_id)
+        if existing is None:
+            return None
+        if isinstance(existing, str):
+            return Found(existing)
+        return Found(existing["url"], RunState(existing["state"]), existing.get("why", ""))
 
     def redeploy(self, d: Deployment, request_id: str) -> str:
         return self._start(Verb.REDEPLOY, d, request_id)

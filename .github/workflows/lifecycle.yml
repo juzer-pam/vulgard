@@ -105,7 +105,7 @@ jobs:
       - name: ${{ inputs.action }} ${{ inputs.framework }} ${{ inputs.stage || inputs.stack }}
         run: |
           case "$FRAMEWORK:$ACTION" in
-            serverless:redeploy) npx serverless deploy --stage "$STAGE" ;;
+            serverless:redeploy) npx serverless deploy --stage "$STAGE" --force ;;
             sst:redeploy)        npx sst deploy --stage "$STAGE" ;;
             sst:delete)          npx sst remove --stage "$STAGE" ;;
             cdk:redeploy)        npx cdk deploy "$STACK" --require-approval never ;;

@@ -24,7 +24,22 @@ from .config import DeploymentsConfig, Tier
 
 
 class OpFailed(RuntimeError):
-    """A redeploy or delete that the control plane reports as failed, or couldn't be started."""
+    """A redeploy or delete that couldn't be started, or whose state couldn't be read."""
+
+
+class RunState(StrEnum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class Found:
+    """An op that already exists, found by its request id, and how far it got."""
+
+    url: str
+    state: RunState = RunState.RUNNING
+    why: str = ""  # what the control plane says went wrong, when FAILED
 
 
 class ScanError(RuntimeError):

@@ -12,8 +12,8 @@ from enum import StrEnum
 from typing import Protocol, assert_never
 
 from .config import DeploymentsConfig
-from .estate import Deployment, NativeRef, OpFailed, Sighting
-from .lifecycle import Op, SafeDelete, describe, recheck
+from .estate import Deployment, Found, NativeRef, OpFailed, RunState, Sighting
+from .lifecycle import Op, SafeDelete, describe, finish_marker, recheck
 
 
 class Executor(Protocol):
@@ -21,8 +21,8 @@ class Executor(Protocol):
         """A fresh read of the target, or None when it no longer exists."""
         ...
 
-    def find(self, op: Op) -> str | None:
-        """A link to an existing run of this op, found by its request id."""
+    def find(self, op: Op) -> Found | None:
+        """An existing run of this op, found by its request id."""
         ...
 
     def redeploy(self, d: Deployment, request_id: str) -> str: ...
@@ -33,7 +33,9 @@ class Executor(Protocol):
 class Outcome(StrEnum):
     STARTED = "started"
     RUNNING = "running"  # an op with this request id already exists
-    FAILED = "failed"
+    SUCCEEDED = "succeeded"  # it exists and finished
+    RUN_FAILED = "run failed"  # it exists and ended badly; reported once, not retried
+    FAILED = "failed"  # couldn't start it or read its state; tried again next run
     SKIPPED = "skipped"
 
 
@@ -53,7 +55,7 @@ def execute(op: Op, executor: Executor, cfg: DeploymentsConfig) -> Result:
     try:
         existing = executor.find(op)
         if existing:
-            return Result(op, Outcome.RUNNING, existing, existing)
+            return _existing(op, existing)
         if op.delete is not None:
             native = op.delete.deployment.sighting.native
             why = recheck(op.delete, executor.observe(native), cfg, op.automatic)
@@ -67,11 +69,33 @@ def execute(op: Op, executor: Executor, cfg: DeploymentsConfig) -> Result:
     return Result(op, Outcome.STARTED, url, url)
 
 
+def _existing(op: Op, found: Found) -> Result:
+    match found.state:
+        case RunState.RUNNING:
+            return Result(op, Outcome.RUNNING, found.url, found.url)
+        case RunState.SUCCEEDED:
+            return Result(op, Outcome.SUCCEEDED, found.url, found.url)
+        case RunState.FAILED:
+            return Result(op, Outcome.RUN_FAILED, found.why, found.url)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def result_comment(r: Result, mentions: str) -> str | None:
-    """The tracking-issue comment for a result, or None when there's nothing new to say."""
+    """The tracking-issue comment for a result, or None when there's nothing new to say. Ended
+    ops carry a marker, so the next run knows they were reported."""
     match r.outcome:
         case Outcome.STARTED:
             return f"{mentions} Started {describe(r.op)}. [Progress]({r.url})".strip()
+        case Outcome.SUCCEEDED:
+            return f"Finished {describe(r.op)}. [Details]({r.url})\n\n{finish_marker(r.op, True)}"
+        case Outcome.RUN_FAILED:
+            text = (
+                f"{mentions} Couldn't {describe(r.op)}: {r.detail}. [Details]({r.url}). "
+                "vulgard won't try this one again. Fix the cause, then do it by hand or post "
+                "the command again."
+            )
+            return f"{text.strip()}\n\n{finish_marker(r.op, False)}"
         case Outcome.FAILED:
             return f"{mentions} Couldn't {describe(r.op)}: {r.detail}".strip()
         case Outcome.RUNNING | Outcome.SKIPPED:

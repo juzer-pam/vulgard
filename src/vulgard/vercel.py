@@ -7,11 +7,12 @@ from typing import Any
 
 import httpx
 
-from .estate import Framework, ScanError, Sighting, VercelProject
+from .estate import Found, Framework, RunState, ScanError, Sighting, VercelProject
 from .policy import parse_time
 
 API_URL = "https://api.vercel.com"
 BUILDING = ("BUILDING", "INITIALIZING", "QUEUED")
+FAILED = ("ERROR", "CANCELED")
 
 
 class VercelError(RuntimeError):
@@ -89,11 +90,16 @@ class Vercel:
     def project_url(self, project: dict[str, Any]) -> str:
         return f"https://vercel.com/{self._team_id}/{project['name']}"
 
-    def find_redeploy(self, project_id: str, request_id: str) -> str | None:
+    def find_redeploy(self, project_id: str, request_id: str) -> Found | None:
         data = self._get("/v6/deployments", {"projectId": project_id, "limit": 20})
         for d in data.get("deployments", []):
             if (d.get("meta") or {}).get("vulgardRequest") == request_id:
-                return f"https://{d['url']}"
+                url, state = f"https://{d['url']}", d.get("readyState") or d.get("state")
+                if state == "READY":
+                    return Found(url, RunState.SUCCEEDED)
+                if state in FAILED:
+                    return Found(url, RunState.FAILED, f"the Vercel deployment ended `{state}`")
+                return Found(url)
         return None
 
     def redeploy(self, project_id: str, request_id: str) -> str:

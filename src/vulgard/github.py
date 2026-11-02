@@ -196,8 +196,10 @@ class GitHub:
         issues = [i for i in issues if "pull_request" not in i]
         return next((i for i in issues if i["state"] == "open"), issues[0] if issues else None)
 
-    def find_workflow_run(self, org: str, repo: str, workflow: str, marker: str) -> str | None:
-        """A recent dispatched run of `workflow` whose run name contains `marker`."""
+    def find_workflow_run(
+        self, org: str, repo: str, workflow: str, marker: str
+    ) -> dict[str, Any] | None:
+        """The newest recent dispatched run of `workflow` whose run name contains `marker`."""
         try:
             data = self._json(
                 "GET",
@@ -209,7 +211,7 @@ class GitHub:
                 return None
             raise
         runs = data.get("workflow_runs", [])
-        return next((r["html_url"] for r in runs if marker in (r.get("display_title") or "")), None)
+        return next((r for r in runs if marker in (r.get("display_title") or "")), None)
 
     def dispatch_workflow(
         self, org: str, repo: str, workflow: str, ref: str, inputs: dict[str, str]

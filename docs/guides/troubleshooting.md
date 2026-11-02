@@ -51,17 +51,18 @@ vulgard that says "Started …":
 - **No "Started" comment.** Your org may not run vulgard with execution on, so requests wait
   for an admin. Do it by hand, or ask an admin. If the line ends in *vulgard can't do this one:
   …*, the reason tells you why, and you'll need to do it by hand.
-- **A "Started" comment, and its Progress link shows a failed run.** vulgard won't start the
-  same request twice, so it won't retry. Fix the cause, then deploy by hand, or post the
-  command again. A new comment gets a new request id.
-- **A "Started" comment, and the run succeeded.** The deploy probably found nothing to change,
-  so CloudFormation didn't update the stack, and vulgard can't see a new deploy. Deploy it
-  again with your tool's force option.
+- **A "Started" comment, and nothing since.** The run is still going. vulgard checks it on
+  every run. When it ends, vulgard comments "Finished …" or "Couldn't …".
+- **The line says *Its run failed*.** vulgard commented "Couldn't …" with the error and a
+  link, and it won't try that request again. Fix the cause, then deploy by hand, or post the
+  command again. A new comment gets a new request id, so vulgard starts a fresh run.
 - **The line says *In progress*.** A deploy or delete is running on that stack right now,
   started by vulgard or a person. vulgard checks again on the next run.
 
 **vulgard commented "Couldn't redeploy …" or "Couldn't delete …".** The error is in the comment.
-The usual causes are:
+If it ends with "vulgard won't try this one again", the op ran and failed: a workflow run that
+didn't succeed, a failed Amplify job or Vercel deployment, or CloudFormation's `DELETE_FAILED`.
+Otherwise vulgard couldn't start the op at all. The usual causes are:
 
 - **Access denied in AWS.** The `VulgardLifecycle` or `VulgardStackDelete` role is missing a
   permission. Ask an admin.
@@ -73,8 +74,9 @@ The usual causes are:
   [Use your own deploy workflow](use-your-own-deploy-workflow.md).
 - **no repo to run it from.** The deployment isn't linked to a repo. See the next section.
 
-These are errors from *starting* the op, so vulgard tries again on every run, and comments each
-time, until it works or someone records a different decision.
+When the op couldn't start, vulgard tries again on every run, and comments each time, until it
+works or someone records a different decision. When the op ran and failed, vulgard reports it
+once and stops.
 
 ## Deployments vulgard found
 

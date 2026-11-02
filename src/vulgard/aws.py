@@ -17,8 +17,9 @@ from botocore.exceptions import BotoCoreError, ClientError
 from .estate import (
     AmplifyBranch,
     CfnStack,
+    Found,
     Framework,
-    OpFailed,
+    RunState,
     ScanError,
     Sighting,
     SstStage,
@@ -31,6 +32,7 @@ SST_LOCK_RE = re.compile(r"^lock/(?P<app>[^/]+)/(?P<stage>[^/]+)\.json$")
 AMPLIFY_SANDBOX_RE = re.compile(r"^amplify-(?P<app>.+)-(?P<user>[^-]+)-sandbox-[0-9a-f]+$")
 SKIP_PREFIXES = ("CDKToolkit", "SSTBootstrap", "StackSet-", "aws-sam-cli-managed")
 AMPLIFY_RUNNING = ("PENDING", "PROVISIONING", "RUNNING", "CANCELLING")
+AMPLIFY_FAILED = ("FAILED", "CANCELLED")
 
 
 def _time(value: Any) -> datetime:
@@ -241,9 +243,9 @@ class AwsOps:
         self._client("cloudformation", ref.region).delete_stack(**args)
         return self.stack_url(ref)
 
-    def deleting(self, ref: CfnStack, request_id: str) -> str | None:
-        """A link if a delete with this token is running. Raises OpFailed if it failed. None when
-        the stack is gone, because that says nothing about who deleted it."""
+    def deleting(self, ref: CfnStack, request_id: str) -> Found | None:
+        """The delete with this token, if the stack still exists. None when the stack is gone,
+        because that says nothing about who deleted it."""
         stack = self.stack(ref)
         if stack is None:
             return None
@@ -252,9 +254,11 @@ class AwsOps:
         )["StackEvents"]
         if not any(e.get("ClientRequestToken") == request_id for e in events):
             return None
+        url = self.stack_url(ref)
         if stack.get("StackStatus") == "DELETE_FAILED":
-            raise OpFailed(f"DELETE_FAILED: {stack.get('StackStatusReason', 'see the console')}")
-        return self.stack_url(ref)
+            why = f"DELETE_FAILED: {stack.get('StackStatusReason', 'see the console')}"
+            return Found(url, RunState.FAILED, why)
+        return Found(url)
 
     def _empty_bucket(self, bucket: str, region: str) -> None:
         """Serverless deployment buckets must be empty before CloudFormation can delete them."""
@@ -299,11 +303,18 @@ class AwsOps:
             f"{CONSOLE.format(region=ref.region)}/amplify/apps/{ref.app_id}/branches/{ref.branch}"
         )
 
-    def amplify_job(self, ref: AmplifyBranch, request_id: str) -> str | None:
+    def amplify_job(self, ref: AmplifyBranch, request_id: str) -> Found | None:
         amplify = self._client("amplify", ref.region)
         jobs = amplify.list_jobs(appId=ref.app_id, branchName=ref.branch, maxResults=10)
-        found = any(j.get("jobReason") == request_id for j in jobs["jobSummaries"])
-        return self.amplify_url(ref) if found else None
+        job = next((j for j in jobs["jobSummaries"] if j.get("jobReason") == request_id), None)
+        if job is None:
+            return None
+        url, status = self.amplify_url(ref), job.get("status")
+        if status == "SUCCEED":
+            return Found(url, RunState.SUCCEEDED)
+        if status in AMPLIFY_FAILED:
+            return Found(url, RunState.FAILED, f"the Amplify job ended `{status}`")
+        return Found(url)
 
     def amplify_release(self, ref: AmplifyBranch, request_id: str) -> str:
         self._client("amplify", ref.region).start_job(

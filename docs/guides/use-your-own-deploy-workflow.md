@@ -88,11 +88,10 @@ That's the same thing vulgard does.
 
 - **It runs from the default branch.** vulgard always dispatches on the default branch, so
   that's the code that gets deployed.
-- **The deploy has to change something.** vulgard counts a redeploy as done once the stack's
-  last-deployed time is after the request. If your tool decides nothing changed and skips the
-  deploy, the time doesn't move and the request stays open. `cdk deploy` reports "no changes"
-  in this case, and Serverless can skip an unchanged service. Use your tool's force option
-  (`serverless deploy --force`, `cdk deploy --force`) for vulgard's runs.
-- **A failed run isn't retried.** vulgard sees a run with the request id and treats the op as
-  started. If the run failed, fix the problem, then either deploy by hand or post the
-  `/vulgard redeploy` command again. A new comment gets a new request id.
+- **Success means the run's conclusion is `success`.** vulgard then counts the stack as
+  deployed at that point, even if your tool found nothing to change and the stack itself
+  wasn't updated. So make the workflow fail when the deploy fails. A step that swallows errors
+  makes vulgard think the redeploy worked.
+- **A failed run isn't retried.** vulgard comments once with the error and a link, then stops.
+  Fix the problem, then either deploy by hand or post the `/vulgard redeploy` command again.
+  A new comment gets a new request id.

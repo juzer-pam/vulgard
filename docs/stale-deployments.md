@@ -146,10 +146,13 @@ vulgard runs once a day, so commands aren't instant. A request goes like this:
 4. **Right before deleting, it checks again.** It re-reads the live stack. If someone redeployed
    it, turned on termination protection, or it now counts as production, vulgard skips it and
    says why.
-5. **It comments on the issue** when the op starts, with a link, or if it fails, with the error.
-6. **The world decides when it's done.** A redeploy is done once the stack's last-deployed time is
-   after your comment. A delete is done once the stack is gone. Then the request drops off the
-   list.
+5. **It comments on the issue** when the op starts, with a link. On later runs it checks how the
+   op is going. When it ends, vulgard comments once: "Finished …" or "Couldn't …" with the
+   error. It doesn't retry a failed op. Post the command again once you've fixed the cause.
+6. **Then the request drops off the list.** A redeploy is done once the stack's last-deployed
+   time is after your comment, or once vulgard has seen the redeploy finish successfully. The
+   second rule matters because CloudFormation leaves a stack untouched when a deploy changes
+   nothing. A delete is done once the stack is gone.
 
 How each framework is redeployed or deleted:
 

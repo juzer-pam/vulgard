@@ -239,8 +239,10 @@ commits to. This section is the reference. For an explanation from scratch, read
   command wins, and an expired keep brings the finding back. Deploying, deleting or committing
   by hand also counts.
 - `nag --apply --execute` carries out `redeploy` and `delete` requests, and comments on the
-  issue when one starts or fails. Each op has a fixed request id, so it runs once however
-  often `nag` does.
+  issue when one starts and once when it ends. Each op has a fixed request id, so it runs once
+  however often `nag` does. A failed op isn't retried: post the command again to get a new
+  request id. A successful redeploy counts as a deploy even when CloudFormation had nothing to
+  update.
 
   | Framework | Redeploy | Delete |
   |---|---|---|
