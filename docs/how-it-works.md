@@ -118,6 +118,14 @@ vulnerabilities topic.
      `vulgard / automerge / approve`, and it shows as *skipped* on PRs Dependabot didn't open.
 5. Turns on Dependabot alerts and security updates for the repo, and opens a PR with the new
    files.
+6. With `--slack`, DMs each team lead one list of the open rollout PRs in their team's repos,
+   asking them to approve. The team is the repo's Linear route, the lead is that team's
+   `linear.leads` email, and `slack.users` maps the email to a Slack user. Repos whose team
+   has no lead, or whose lead has no Slack ID, are listed as skipped.
+
+The `rollout` workflow in the vulgard repo runs this by hand from the Actions tab, with the
+GitHub App token and the Slack secret. It's a dry run unless you tick *apply*, only repo admins
+can apply, and its log shows counts only because the repo may be public.
 
 Because the real logic lives in the vulgard repo, changing the check later means editing one
 file, not 200.

@@ -1,0 +1,79 @@
+# Run by hand to open or refresh rollout PRs across the repos in `repos.include`, then DM each
+# team lead (`linear.leads`, mapped in `slack.users`) the open PRs in their team's repos.
+name: rollout
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Open PRs and send DMs (uncheck for a dry run)
+        type: boolean
+        default: false
+      slack:
+        description: DM team leads their open rollout PRs
+        type: boolean
+        default: true
+      lifecycle:
+        description: Roll out vulgard-lifecycle.yml instead
+        type: boolean
+        default: false
+      repos:
+        description: Space-separated repo names to limit to (default every selected repo)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vulgard-rollout
+  cancel-in-progress: false
+
+jobs:
+  rollout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Only repo admins can apply
+        if: inputs.apply
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+          if [ "$perm" != admin ]; then
+            echo "Only repo admins can apply a rollout"; exit 1
+          fi
+
+      - id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.VULGARD_APP_ID }}
+          private-key: ${{ secrets.VULGARD_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Load org config
+        env:
+          VULGARD_CONFIG: ${{ secrets.VULGARD_CONFIG }}
+        run: |
+          if [ -n "$VULGARD_CONFIG" ]; then printf '%s\n' "$VULGARD_CONFIG" > vulgard.yml; fi
+
+      - name: Run vulgard
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          APPLY: ${{ inputs.apply }}
+          SLACK: ${{ inputs.slack }}
+          LIFECYCLE: ${{ inputs.lifecycle }}
+          REPOS: ${{ inputs.repos }}
+        run: |
+          args=(--org "${{ github.repository_owner }}" rollout)
+          if [ "$APPLY" = "true" ]; then args+=(--apply); fi
+          if [ "$SLACK" = "true" ]; then args+=(--slack); fi
+          if [ "$LIFECYCLE" = "true" ]; then args+=(--lifecycle); fi
+          for r in $REPOS; do args+=(--repo "$r"); done
+          uv run vulgard "${args[@]}"

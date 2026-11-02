@@ -166,6 +166,42 @@ def notify_slack(
     ]
 
 
+@dataclass(frozen=True)
+class RolloutPR:
+    repo: str
+    owners: list[str]
+    url: str | None  # None in a dry run, before the PR exists
+
+
+def notify_leads(
+    client: SlackClient, config: Config, prs: list[RolloutPR], apply: bool
+) -> list[Action]:
+    """DMs each team lead one list of the open rollout PRs in their team's repos. The team is the
+    repo's Linear route, its lead comes from `linear.leads`, and `slack.users` maps that email."""
+    by_lead: dict[str, list[str]] = defaultdict(list)
+    actions: list[Action] = []
+    for pr in prs:
+        target = config.linear.target(pr.repo, pr.owners)
+        lead = config.linear.leads.get(target.team) if target else None
+        user = config.slack.dm_target(lead) if lead else None
+        if user is None:
+            why = f"no Slack user for {lead}" if lead else "no team lead"
+            actions.append(Action(pr.repo, ActionKind.SLACK_SKIP, why))
+            continue
+        by_lead[user].append(f"• <{pr.url}|{pr.repo}>" if pr.url else f"• {pr.repo} (new PR)")
+    for user, lines in by_lead.items():
+        message = digest_message(
+            "vulgard rollout · approval needed",
+            "These PRs turn on Dependabot and the vulgard check in your team's repos. "
+            "Please review and approve them, or ask the repo owners to.",
+            lines,
+        )
+        actions.append(
+            _post(user, f"{len(lines)} rollout PR(s)", partial(client.post, user, *message), apply)
+        )
+    return actions
+
+
 def header_block(text: str) -> Block:
     return {"type": "header", "text": {"type": "plain_text", "text": text[:150], "emoji": True}}
 

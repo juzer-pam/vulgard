@@ -18,9 +18,16 @@ from .linear import LinearError
 from .plan import ActionKind, Topic
 from .policy import RepoReport, now_utc
 from .render import format_table, render_org_summary
-from .repos import build_index, selected_repos
+from .repos import build_index, resolve_owners, selected_repos
 from .rollout import apply_rollout, plan_lifecycle_rollout, plan_rollout
-from .slack import SlackError, leaderboard_message, notify_slack, send_leaderboard
+from .slack import (
+    RolloutPR,
+    SlackError,
+    leaderboard_message,
+    notify_leads,
+    notify_slack,
+    send_leaderboard,
+)
 from .stale import survey
 from .topics import RUNNERS, NagContext, load_kev
 from .vulns import collect
@@ -176,24 +183,46 @@ def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> i
         ]
     else:
         plans = [plan_rollout(gh, config, r) for r in repos]
+    tally: Counter[str] = Counter()
+
+    def report(outcome: str, line: str, error: bool = False) -> None:
+        tally[outcome] += 1
+        if not args.redact:
+            print(f"{prefix}{line}", file=sys.stderr if error else sys.stdout)
+
+    open_prs: list[tuple[str, str | None]] = []
     for plan in plans:
         if plan.skipped_reason:
-            print(f"{prefix}{plan.repo}: skip ({plan.skipped_reason})")
+            report("skip", f"{plan.repo}: skip ({plan.skipped_reason})")
+            if plan.existing_pr:
+                open_prs.append((plan.repo, plan.existing_pr))
             continue
         files = ", ".join(plan.files)
         target = f"open rollout PR {plan.existing_pr}" if plan.existing_pr else "a new PR"
         if not args.apply:
-            print(f"{prefix}{plan.repo}: would write {files} to {target}")
-            if args.show:
+            report("would write", f"{plan.repo}: would write {files} to {target}")
+            if args.show and not args.redact:
                 for path, content in plan.files.items():
                     print(f"\n--- {path} ---\n{content}")
+            open_prs.append((plan.repo, plan.existing_pr))
             continue
         try:
             url = apply_rollout(gh, config, plan)
-            print(f"{plan.repo}: {'updated' if plan.existing_pr else 'opened'} {url}")
+            verb = "updated" if plan.existing_pr else "opened"
+            report(verb, f"{plan.repo}: {verb} {url}")
+            open_prs.append((plan.repo, url))
         except GitHubError as e:
-            print(f"{plan.repo}: failed: {e}", file=sys.stderr)
-    return 0
+            report("failed", f"{plan.repo}: failed: {e}", error=True)
+    if args.slack and clients.slack is None:
+        print(f"Skipping team lead DMs: ${config.slack.token_env} is not set.", file=sys.stderr)
+    elif args.slack:
+        prs = [RolloutPR(repo, resolve_owners(gh, config, repo), url) for repo, url in open_prs]
+        for a in notify_leads(clients.slack, config, prs, args.apply):
+            report(a.kind, f"{a.repo or 'slack'}: {a.kind} ({a.detail})", a.kind.is_error)
+    if args.redact:
+        for outcome, n in sorted(tally.items()):
+            print(f"{prefix}{outcome}: {n}")
+    return 1 if tally["failed"] or tally[ActionKind.SLACK_ERROR] else 0
 
 
 def cmd_enforce(clients: Clients, config: Config, args: argparse.Namespace) -> int:
@@ -281,6 +310,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("rollout", help="open PRs adding dependabot.yml and the vulgard workflow")
     p.add_argument("--apply", action="store_true", help="open PRs (default is dry-run)")
     p.add_argument("--show", action="store_true", help="print the generated files in dry-run")
+    p.add_argument(
+        "--slack", action="store_true", help="DM each team lead their open rollout PRs to approve"
+    )
+    p.add_argument(
+        "--redact", action="store_true", help="print only outcome counts, for public workflow logs"
+    )
     p.add_argument(
         "--lifecycle",
         action="store_true",

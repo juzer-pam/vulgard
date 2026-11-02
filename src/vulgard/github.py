@@ -328,11 +328,18 @@ class GitHub:
     def create_pr(
         self, org: str, repo: str, title: str, body: str, head: str, base: str
     ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/repos/{org}/{repo}/pulls",
-            json={"title": title, "body": body, "head": head, "base": base},
-        )
+        """A retried POST after a 5xx can find the PR it already opened, so a 422 falls back to it."""
+        try:
+            return self._json(
+                "POST",
+                f"/repos/{org}/{repo}/pulls",
+                json={"title": title, "body": body, "head": head, "base": base},
+            )
+        except GitHubError as e:
+            existing = self.find_open_pr(org, repo, head) if e.status == 422 else None
+            if existing is None:
+                raise
+            return existing
 
     def enable_security_features(self, org: str, repo: str, allow_auto_merge: bool) -> None:
         self._request("PUT", f"/repos/{org}/{repo}/vulnerability-alerts")

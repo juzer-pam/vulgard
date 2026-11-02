@@ -136,7 +136,8 @@ the demo never goes stale.
      changes. A label name matches the team's own label first, then a workspace
      label, and vulgard creates a workspace label if neither exists.
    - `slack.users` maps GitHub handles to Slack user IDs, used for mentions and DMs, or to
-     user group IDs (`S…`) for team mentions.
+     user group IDs (`S…`) for team mentions. Add each `linear.leads` email too, so
+     `rollout --slack` can DM leads their rollout PRs to approve.
    - `linear.users` maps GitHub handles to Linear emails. `linear.leads` maps a Linear team
      key to its lead's email, for example `{INB: lead@your-org.com}`. vulgard assigns a new
      Linear issue to the repo's first owner listed in `linear.users`. If none is listed, the
@@ -153,6 +154,9 @@ the demo never goes stale.
                                                                  # security updates, and
                                                                  # auto-merge if opted in
    ```
+
+   Or run the **rollout** workflow from the Actions tab. It uses the GitHub App, and with
+   *slack* ticked it DMs each team lead the open rollout PRs in their team's repos.
 
    To pilot first, set `repos.include` to a few repos in `org.yml`, update the secret,
    and widen it later.

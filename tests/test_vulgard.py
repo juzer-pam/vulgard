@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 
@@ -12,6 +13,7 @@ from vulgard.cli import collect, main
 from vulgard.config import LinearTarget, parse_config, route
 from vulgard.enforce import STATUS_CHECK_CONTEXT, plan_enforce
 from vulgard.fixtures import FakeLinear, FakeSlack, FixtureGitHub, fixture_clients
+from vulgard.github import GitHub
 from vulgard.plan import ActionKind, IssueOp, LinearRef, TrackedIssue, TrackingState
 from vulgard.policy import SlaStatus, evaluate, parse_codeowners_default, summarize_closed
 from vulgard.rollout import (
@@ -23,7 +25,13 @@ from vulgard.rollout import (
     render_caller_workflow,
     render_dependabot_config,
 )
-from vulgard.slack import leaderboard_message, notify_slack, send_leaderboard
+from vulgard.slack import (
+    RolloutPR,
+    leaderboard_message,
+    notify_leads,
+    notify_slack,
+    send_leaderboard,
+)
 from vulgard.vulns import VulnMemory, leaderboard_blocks, nag, plan_repo
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
@@ -574,6 +582,48 @@ def test_rollout_plan_only_adds_missing_files():
     }
     assert set(plan_rollout(gh, config, repos["web-storefront"]).files) == {WORKFLOW_PATH}
     assert plan_rollout(gh, config, repos["inventory-service"]).skipped_reason
+
+
+def test_rollout_dms_each_team_lead_their_open_prs():
+    config = example_config()
+    slack = FakeSlack()
+    prs = [
+        RolloutPR("data-pipeline", [], "https://github.com/acme/data-pipeline/pull/1"),
+        RolloutPR("sandbox-experiments", [], None),
+        RolloutPR("payments-api", ["@acme/payments"], "https://github.com/acme/payments-api/pull/2"),
+    ]
+    actions = notify_leads(slack, config, prs, apply=True)
+    assert [(a.repo, a.kind) for a in actions] == [
+        ("payments-api", ActionKind.SLACK_SKIP),  # PAY has no lead
+        (None, ActionKind.SLACK),
+    ]
+    assert [channel for channel, _ in slack.messages] == ["U01SAM"]
+    text = json.dumps(slack.blocks[0])
+    assert "<https://github.com/acme/data-pipeline/pull/1|data-pipeline>" in text
+    assert "sandbox-experiments (new PR)" in text
+
+
+def test_rollout_cli_dms_leads_and_redacts(tmp_path, capsys, monkeypatch):
+    clients = fixture_clients(EXAMPLES / "demo-org.json")
+    monkeypatch.setattr("vulgard.cli.fixture_clients", lambda _: clients)
+    args = ["--config", str(EXAMPLES / "vulgard.yml"), "--fixtures", "x", "rollout"]
+    assert main([*args, "--apply", "--slack", "--redact"]) == 0
+    out = capsys.readouterr().out
+    assert "github.com" not in out and "payments-api" not in out
+    assert "opened: " in out and "slack: 1" in out
+    assert [channel for channel, _ in clients.slack.messages] == ["U01SAM"]
+
+
+def test_create_pr_falls_back_to_the_pr_a_retried_post_already_opened():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(422, json={"message": "Validation Failed"})
+        return httpx.Response(200, json=[{"html_url": "https://github.com/acme/api/pull/7"}])
+
+    gh = GitHub(token="t")
+    gh._http = httpx.Client(base_url="https://api.test", transport=httpx.MockTransport(handler))
+    pr = gh.create_pr("acme", "api", "title", "body", "vulgard/rollout", "main")
+    assert pr["html_url"].endswith("/pull/7")
 
 
 def test_enforce_status_check_targets_enrolled_repos_only():

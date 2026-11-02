@@ -81,7 +81,7 @@ Optional. Without a token or webhook in the environment, vulgard skips Slack.
 | `default_channel` | string | none | Org-wide channel. Gets the weekly leaderboard, plus updates for repos `channels` doesn't map. |
 | `escalation_channel` | string | none | Channel for escalations. |
 | `channels` | map of repo, glob or handle to channel | `{}` | Team channel per repo. Matching order is described in [Who owns a repo](#who-owns-a-repo). |
-| `users` | map of handle to Slack ID | `{}` | A `U…` or `W…` user ID turns a handle into a mention and a DM target. An `S…` user group ID turns a team handle into a group mention. |
+| `users` | map of handle or email to Slack ID | `{}` | A `U…` or `W…` user ID turns a handle into a mention and a DM target. An `S…` user group ID turns a team handle into a group mention. Key a lead's email from `linear.leads` here so `rollout --slack` can DM them. |
 | `dm_owners` | bool | `true` | DM each owner with a `U…` or `W…` ID in `users` one summary per run covering all their repos. |
 
 ## `linear`
