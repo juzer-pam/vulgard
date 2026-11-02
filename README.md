@@ -39,7 +39,9 @@ to the project.
 - [Troubleshooting](docs/guides/troubleshooting.md)
 
 **If you run vulgard:** follow [Rolling it out](#rolling-it-out-to-a-real-org) below, then
-[Set up stale deployments](docs/guides/set-up-stale-deployments.md).
+[Set up stale deployments](docs/guides/set-up-stale-deployments.md). The
+[configuration reference](docs/configuration.md) lists every setting, its default and its
+validation rules.
 
 ## How it fits together
 
@@ -113,9 +115,10 @@ the demo never goes stale.
    `vulgard.yml` before it runs. Don't use an Actions *variable*: Actions prints step
    environment values in run logs, which anyone can read on a public fork, and only secrets
    are masked. Secrets can't be read back, so keep `org.yml` somewhere private (a private
-   repo or a password manager) as the source of truth. Settings to fill in: SLA days, owners,
-   escalation contacts, included and excluded repos, `rollout.engine` (see the caveats
-   below), `rollout.auto_merge`, and the `slack` and `linear` routing:
+   repo or a password manager) as the source of truth. The
+   [configuration reference](docs/configuration.md) describes every key. Settings to fill
+   in: SLA days, owners, escalation contacts, included and excluded repos, `rollout.engine`
+   (see the caveats below), `rollout.auto_merge`, and the `slack` and `linear` routing:
    - `rollout.auto_merge` lists the repos (names or globs like `web-*`) whose minor and
      patch Dependabot PRs merge automatically. It's empty by default, so nothing
      auto-merges until a repo is added. `["*"]` turns it on everywhere.

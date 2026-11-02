@@ -140,4 +140,6 @@ topic keeps working when this happens.
 
 **A config change didn't take effect.** The scheduled job reads the `VULGARD_CONFIG` secret, not
 the file in the repo. Run `gh secret set VULGARD_CONFIG -R <org>/vulgard < org.yml` again. An
-unknown or misspelled key makes vulgard stop with an error, so check the run log too.
+unknown or misspelled key inside a section makes vulgard stop with an error, so check the run
+log too. A misspelled top-level key is ignored. The
+[configuration reference](../configuration.md#errors-you-may-see) lists every error and its fix.
