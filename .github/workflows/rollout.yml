@@ -71,7 +71,7 @@ jobs:
           LIFECYCLE: ${{ inputs.lifecycle }}
           REPOS: ${{ inputs.repos }}
         run: |
-          args=(--org "${{ github.repository_owner }}" rollout)
+          args=(--org "${{ github.repository_owner }}" rollout --redact)
           if [ "$APPLY" = "true" ]; then args+=(--apply); fi
           if [ "$SLACK" = "true" ]; then args+=(--slack); fi
           if [ "$LIFECYCLE" = "true" ]; then args+=(--lifecycle); fi
