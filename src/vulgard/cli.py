@@ -14,12 +14,13 @@ from .config import SEVERITIES, Config, load_config
 from .enforce import apply_enforce, plan_enforce
 from .fixtures import fixture_clients
 from .github import GitHubError
-from .linear import LinearError
 from .plan import ActionKind, Topic
 from .policy import RepoReport, now_utc
 from .render import format_table, render_org_summary
 from .repos import build_index, resolve_owners, selected_repos
+from .linear import LinearError
 from .rollout import apply_rollout, plan_lifecycle_rollout, plan_rollout
+from .rollout_onboarding import collect_open_rollout_prs, sync_rollout_onboarding
 from .slack import (
     RolloutPR,
     SlackError,
@@ -214,12 +215,25 @@ def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> i
             open_prs.append((plan.repo, url))
         except GitHubError as e:
             report("failed", f"{plan.repo}: failed: {e}", error=True)
+    rollout_prs = collect_open_rollout_prs(
+        gh, config, [RolloutPR(repo, resolve_owners(gh, config, repo), url) for repo, url in open_prs]
+    )
+    team_tickets: dict[str, str] = {}
+    if args.linear:
+        linear = clients.linear
+        if linear is None:
+            print(f"Skipping Linear onboarding: ${config.linear.api_key_env} is not set.", file=sys.stderr)
+        else:
+            team_tickets, linear_actions = sync_rollout_onboarding(
+                linear, config, rollout_prs, args.apply
+            )
+            for a in linear_actions:
+                report(a.kind, f"{a.repo or 'linear'}: {a.kind} ({a.detail})", a.kind.is_error)
     slack = clients.slack
     if args.slack and slack is None:
         print(f"Skipping team lead DMs: ${config.slack.token_env} is not set.", file=sys.stderr)
     elif args.slack and slack is not None:
-        prs = [RolloutPR(repo, resolve_owners(gh, config, repo), url) for repo, url in open_prs]
-        for a in notify_leads(slack, config, prs, args.apply):
+        for a in notify_leads(slack, config, rollout_prs, args.apply, team_tickets):
             report(a.kind, f"{a.repo or 'slack'}: {a.kind} ({a.detail})", a.kind.is_error)
     if args.redact:
         for outcome, n in sorted(tally.items()):
@@ -314,6 +328,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--show", action="store_true", help="print the generated files in dry-run")
     p.add_argument(
         "--slack", action="store_true", help="DM each team lead their open rollout PRs to approve"
+    )
+    p.add_argument(
+        "--linear",
+        action="store_true",
+        help="create one onboarding issue per team and link open rollout PRs",
     )
     p.add_argument(
         "--redact", action="store_true", help="print only outcome counts, for public workflow logs"

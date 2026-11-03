@@ -14,7 +14,10 @@ API_URL = "https://api.linear.app/graphql"
 PRIORITY = {"critical": 1, "high": 2, "medium": 3, "low": 4}  # Linear: 1 urgent … 4 low
 CLOSED_STATES = ("completed", "canceled")
 
-ISSUE_FIELDS = "id identifier url title state { type } team { key } labels { nodes { id } }"
+ISSUE_FIELDS = (
+    "id identifier url title state { type } team { key } labels { nodes { id } } "
+    "attachments { nodes { url title } }"
+)
 
 
 class LinearError(RuntimeError):
@@ -31,6 +34,7 @@ class LinearClient(Protocol):
     def update_issue(self, issue_id: str, fields: dict[str, Any]) -> None: ...
     def comment(self, issue_id: str, body: str) -> None: ...
     def attach_url(self, issue_id: str, url: str, title: str) -> None: ...
+    def find_issue(self, team_key: str, title: str) -> dict[str, Any] | None: ...
 
 
 class Linear:
@@ -157,6 +161,17 @@ class Linear:
             "{ attachmentCreate(input: $input) { success } }",
             {"input": {"issueId": issue_id, "url": url, "title": title}},
         )
+
+    def find_issue(self, team_key: str, title: str) -> dict[str, Any] | None:
+        team_id = self.team(team_key)["id"]
+        data = self._gql(
+            "query($team: ID!, $title: String!) { issues("
+            "filter: { team: { id: { eq: $team } }, title: { eq: $title } }, first: 1) "
+            f"{{ nodes {{ {ISSUE_FIELDS} }} }} }}",
+            {"team": team_id, "title": title},
+        )
+        nodes = data["issues"]["nodes"]
+        return nodes[0] if nodes else None
 
 
 def state_id(team: dict[str, Any], state_type: str) -> str:

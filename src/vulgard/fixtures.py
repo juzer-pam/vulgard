@@ -245,6 +245,12 @@ class FakeLinear:
     def attach_url(self, issue_id: str, url: str, title: str) -> None:
         self.writes.append(("attach_url", (issue_id, url)))
 
+    def find_issue(self, team_key: str, title: str) -> dict[str, Any] | None:
+        for issue in self.issues.values():
+            if issue["team"]["key"] == team_key and issue["title"] == title:
+                return issue
+        return None
+
 
 class FixtureScanner:
     """Replays raw AWS and Vercel API shapes from the fixture through the real parsers."""

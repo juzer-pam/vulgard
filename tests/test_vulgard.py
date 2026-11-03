@@ -611,15 +611,18 @@ def test_rollout_dms_each_team_lead_their_open_prs():
         RolloutPR("sandbox-experiments", [], None),
         RolloutPR("payments-api", ["@acme/payments"], "https://github.com/acme/payments-api/pull/2"),
     ]
-    actions = notify_leads(slack, config, prs, apply=True)
+    tickets = {"SEC": "https://linear.app/acme/issue/SEC-99"}
+    actions = notify_leads(slack, config, prs, apply=True, team_tickets=tickets)
     assert [(a.repo, a.kind) for a in actions] == [
-        ("payments-api", ActionKind.SLACK_SKIP),  # PAY has no lead
+        (None, ActionKind.SLACK_SKIP),  # PAY has no lead
         (None, ActionKind.SLACK),
     ]
     assert [channel for channel, _ in slack.messages] == ["U01SAM"]
     text = json.dumps(slack.blocks[0])
+    assert "SEC-99" in text
     assert "<https://github.com/acme/data-pipeline/pull/1|data-pipeline>" in text
-    assert "sandbox-experiments (new PR)" in text
+    assert "sandbox-experiments" not in text or "sandbox-experiments (new PR)" not in text
+    # sandbox has no url so it's omitted from the DM list
 
 
 def test_rollout_cli_dms_leads_and_redacts(tmp_path, capsys, monkeypatch):

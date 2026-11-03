@@ -13,6 +13,10 @@ on:
         description: DM team leads their open rollout PRs
         type: boolean
         default: true
+      linear:
+        description: Create onboarding issues per team and link rollout PRs
+        type: boolean
+        default: true
       lifecycle:
         description: Roll out vulgard-lifecycle.yml instead
         type: boolean
@@ -66,14 +70,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           APPLY: ${{ inputs.apply }}
           SLACK: ${{ inputs.slack }}
+          LINEAR: ${{ inputs.linear }}
           LIFECYCLE: ${{ inputs.lifecycle }}
           REPOS: ${{ inputs.repos }}
         run: |
           args=(--org "${{ github.repository_owner }}" rollout --redact)
           if [ "$APPLY" = "true" ]; then args+=(--apply); fi
           if [ "$SLACK" = "true" ]; then args+=(--slack); fi
+          if [ "$LINEAR" = "true" ]; then args+=(--linear); fi
           if [ "$LIFECYCLE" = "true" ]; then args+=(--lifecycle); fi
           for r in $REPOS; do args+=(--repo "$r"); done
           uv run vulgard "${args[@]}"

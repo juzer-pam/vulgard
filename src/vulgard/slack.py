@@ -174,30 +174,40 @@ class RolloutPR:
 
 
 def notify_leads(
-    client: SlackClient, config: Config, prs: list[RolloutPR], apply: bool
+    client: SlackClient,
+    config: Config,
+    prs: list[RolloutPR],
+    apply: bool,
+    team_tickets: dict[str, str] | None = None,
 ) -> list[Action]:
-    """DMs each team lead one list of the open rollout PRs in their team's repos. The team is the
-    repo's Linear route, its lead comes from `linear.leads`, and `slack.users` maps that email."""
-    by_lead: dict[str, list[str]] = defaultdict(list)
+    """DMs each team lead about their onboarding ticket and rollout PRs to approve."""
+    from .rollout_onboarding import group_rollout_prs_by_team
+
+    tickets = team_tickets or {}
     actions: list[Action] = []
-    for pr in prs:
-        target = config.linear.target(pr.repo, pr.owners)
-        lead = config.linear.leads.get(target.team) if target else None
+    for team, team_prs in sorted(group_rollout_prs_by_team(config, prs).items()):
+        linked = [p for p in team_prs if p.url]
+        if not linked:
+            continue
+        lead = config.linear.leads.get(team)
         user = config.slack.dm_target(lead) if lead else None
         if user is None:
             why = f"no Slack user for {lead}" if lead else "no team lead"
-            actions.append(Action(pr.repo, ActionKind.SLACK_SKIP, why))
+            actions.append(Action(None, ActionKind.SLACK_SKIP, f"team {team}: {why}"))
             continue
-        by_lead[user].append(f"• <{pr.url}|{pr.repo}>" if pr.url else f"• {pr.repo} (new PR)")
-    for user, lines in by_lead.items():
-        message = digest_message(
-            "vulgard rollout · approval needed",
-            "These PRs turn on Dependabot and the vulgard check in your team's repos. "
-            "Please review and approve them, or ask the repo owners to.",
-            lines,
+        ticket = tickets.get(team)
+        intro = (
+            f"Your team's vulgard onboarding ticket: <{ticket}|open in Linear>. "
+            f"It links {len(linked)} rollout PR(s) that add Dependabot and the vulgard check. "
+            "Please review and approve them, or ask repo owners to merge."
+            if ticket
+            else f"{len(linked)} rollout PR(s) in your team's repos need approval "
+            "(Dependabot + vulgard check). Run `vulgard rollout --linear` to open a tracking ticket."
         )
+        lines = [f"• <{p.url}|{p.repo}>" for p in sorted(linked, key=lambda p: p.repo.lower())]
+        message = digest_message("vulgard rollout · approval needed", intro, lines)
         actions.append(
-            _post(user, f"{len(lines)} rollout PR(s)", partial(client.post, user, *message), apply)
+            _post(user, f"team {team}: {len(linked)} PR(s)", partial(client.post, user, *message), apply)
         )
     return actions
 
