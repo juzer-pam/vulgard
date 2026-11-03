@@ -296,9 +296,11 @@ def plan_rollout(gh: Any, config: Config, repo: dict[str, Any]) -> RolloutPlan:
     ref = config.rollout.branch if existing else default
 
     ecosystems = detect_ecosystems(paths)
-    desired_dependabot = (
-        render_dependabot_config(ecosystems, config.rollout.schedule_interval) if ecosystems else None
-    )
+    desired_dependabot = None
+    if ecosystems:
+        desired_dependabot = render_dependabot_config(
+            ecosystems, config.rollout.schedule_interval
+        )
     current_dependabot = gh.get_file(config.org, name, DEPENDABOT_PATH, ref)
     if desired_dependabot and (
         current_dependabot is None
