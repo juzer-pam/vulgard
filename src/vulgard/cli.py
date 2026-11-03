@@ -19,7 +19,7 @@ from .plan import ActionKind, Topic
 from .policy import RepoReport, now_utc
 from .render import format_table, render_org_summary
 from .repos import build_index, resolve_owners, selected_repos
-from .rollout import apply_rollout, plan_lifecycle_rollout, plan_rollout
+from .rollout import apply_rollout, merge_open_rollout_prs, plan_lifecycle_rollout, plan_rollout
 from .rollout_onboarding import collect_open_rollout_prs, sync_rollout_onboarding
 from .slack import (
     RolloutPR,
@@ -239,10 +239,23 @@ def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> i
     elif args.slack and slack is not None:
         for a in notify_leads(slack, config, rollout_prs, args.apply, team_tickets):
             report(a.kind, f"{a.repo or 'slack'}: {a.kind} ({a.detail})", a.kind.is_error)
+    if args.merge:
+        merge_repos = [r for r in selected_repos(gh, config, args.repo) if r["name"] != own]
+        if not args.apply:
+            for repo in merge_repos:
+                pr = gh.find_open_pr(config.org, repo["name"], config.rollout.branch)
+                if pr:
+                    report("would merge", f"{repo['name']}: would merge {pr['html_url']}")
+        else:
+            for name, url, err in merge_open_rollout_prs(gh, config, merge_repos):
+                if err:
+                    report("merge failed", f"{name}: merge failed ({err}): {url}", error=True)
+                else:
+                    report("merged", f"{name}: merged {url}")
     if args.redact:
         for outcome, n in sorted(tally.items()):
             print(f"{prefix}{outcome}: {n}")
-    return 1 if tally["failed"] or tally[ActionKind.SLACK_ERROR] else 0
+    return 1 if tally["failed"] or tally["merge failed"] else 0
 
 
 def cmd_enforce(clients: Clients, config: Config, args: argparse.Namespace) -> int:
@@ -340,6 +353,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--redact", action="store_true", help="print only outcome counts, for public workflow logs"
+    )
+    p.add_argument(
+        "--merge",
+        action="store_true",
+        help="with --apply, squash-merge every open rollout PR after writing branches",
     )
     p.add_argument(
         "--lifecycle",

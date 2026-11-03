@@ -151,6 +151,14 @@ class FixtureGitHub:
     def create_branch(self, org: str, repo: str, branch: str, sha: str) -> None:
         self._record("create_branch", repo, branch)
 
+    def update_branch(self, org: str, repo: str, branch: str, sha: str, *, force: bool) -> None:
+        self._record("update_branch", repo, branch, sha, force)
+
+    def merge_pull_request(
+        self, org: str, repo: str, number: int, merge_method: str = "squash"
+    ) -> None:
+        self._record("merge_pull_request", repo, number, merge_method)
+
     def put_file(
         self, org: str, repo: str, path: str, content: str, message: str, branch: str
     ) -> None:

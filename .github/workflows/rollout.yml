@@ -25,6 +25,10 @@ on:
         description: Space-separated repo names to limit to (default every selected repo)
         type: string
         default: ""
+      merge:
+        description: Squash-merge open rollout PRs after writing (requires apply)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -76,11 +80,13 @@ jobs:
           LINEAR: ${{ inputs.linear }}
           LIFECYCLE: ${{ inputs.lifecycle }}
           REPOS: ${{ inputs.repos }}
+          MERGE: ${{ inputs.merge }}
         run: |
           args=(--org "${{ github.repository_owner }}" rollout --redact)
           if [ "$APPLY" = "true" ]; then args+=(--apply); fi
           if [ "$SLACK" = "true" ]; then args+=(--slack); fi
           if [ "$LINEAR" = "true" ]; then args+=(--linear); fi
+          if [ "$MERGE" = "true" ]; then args+=(--merge); fi
           if [ "$LIFECYCLE" = "true" ]; then args+=(--lifecycle); fi
           for r in $REPOS; do args+=(--repo "$r"); done
           uv run vulgard "${args[@]}"

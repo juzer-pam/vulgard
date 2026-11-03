@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import posixpath
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -8,6 +9,7 @@ import yaml
 
 from .config import Config
 from .estate import Framework
+from .github import GitHubError
 
 DEPENDABOT_PATH = ".github/dependabot.yml"
 WORKFLOW_PATH = ".github/workflows/vulgard.yml"
@@ -329,9 +331,15 @@ def apply_rollout(gh: Any, config: Config, plan: RolloutPlan) -> str | None:
         gh.enable_security_features(org, plan.repo, allow_auto_merge=config.auto_merges(plan.repo))
     if not plan.files:
         return None
-    if gh.get_branch_sha(org, plan.repo, plan.branch) is None:
-        base_sha = gh.get_branch_sha(org, plan.repo, plan.default_branch)
+    base_sha = gh.get_branch_sha(org, plan.repo, plan.default_branch)
+    if base_sha is None:
+        raise ValueError(f"{plan.repo}: default branch {plan.default_branch!r} not found")
+    branch_sha = gh.get_branch_sha(org, plan.repo, plan.branch)
+    if branch_sha is None:
         gh.create_branch(org, plan.repo, plan.branch, base_sha)
+    elif not plan.existing_pr and branch_sha != base_sha:
+        # Prior rollout merged but the branch still exists: start fresh from default.
+        gh.update_branch(org, plan.repo, plan.branch, base_sha, force=True)
     for path, content in plan.files.items():
         gh.put_file(org, plan.repo, path, content, f"chore(security): vulgard {path}", plan.branch)
     if plan.existing_pr:
@@ -340,3 +348,40 @@ def apply_rollout(gh: Any, config: Config, plan: RolloutPlan) -> str | None:
         org, plan.repo, plan.pr_title, plan.pr_body, plan.branch, plan.default_branch
     )
     return pr["html_url"]
+
+
+def _admin_merge_via_gh(url: str) -> None:
+    subprocess.run(
+        ["gh", "pr", "merge", url, "--admin", "--squash"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def merge_open_rollout_prs(
+    gh: Any, config: Config, repos: list[dict[str, Any]]
+) -> list[tuple[str, str, str | None]]:
+    """Merge every open rollout PR in `repos`. Returns (repo, url, error)."""
+    org, branch = config.org, config.rollout.branch
+    own = config.rollout.workflow_repo
+    results: list[tuple[str, str, str | None]] = []
+    for repo in repos:
+        name = repo["name"]
+        if name == own:
+            continue
+        pr = gh.find_open_pr(org, name, branch)
+        if not pr:
+            continue
+        url = pr["html_url"]
+        try:
+            gh.merge_pull_request(org, name, pr["number"])
+            results.append((name, url, None))
+        except GitHubError as api_error:
+            try:
+                _admin_merge_via_gh(url)
+                results.append((name, url, None))
+            except subprocess.CalledProcessError as cli_error:
+                detail = (cli_error.stderr or cli_error.stdout or str(api_error)).strip()
+                results.append((name, url, detail or str(api_error)))
+    return results

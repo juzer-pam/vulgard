@@ -307,6 +307,21 @@ class GitHub:
             json={"ref": f"refs/heads/{branch}", "sha": sha},
         )
 
+    def update_branch(self, org: str, repo: str, branch: str, sha: str, *, force: bool) -> None:
+        payload: dict[str, Any] = {"sha": sha}
+        if force:
+            payload["force"] = True
+        self._json("PATCH", f"/repos/{org}/{repo}/git/refs/heads/{branch}", json=payload)
+
+    def merge_pull_request(
+        self, org: str, repo: str, number: int, merge_method: str = "squash"
+    ) -> None:
+        self._json(
+            "PUT",
+            f"/repos/{org}/{repo}/pulls/{number}/merge",
+            json={"merge_method": merge_method},
+        )
+
     def put_file(
         self, org: str, repo: str, path: str, content: str, message: str, branch: str
     ) -> None:

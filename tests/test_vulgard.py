@@ -572,6 +572,28 @@ def test_auto_merge_rejects_the_old_boolean_form():
         parse_config({"org": "acme", "rollout": {"auto_merge": True}})
 
 
+def test_merge_open_rollout_prs():
+    from vulgard.rollout import merge_open_rollout_prs
+
+    config = example_config()
+    gh = FixtureGitHub(
+        {
+            "repos": [{"name": "payments-api", "default_branch": "main"}],
+            "open_prs": {
+                "payments-api": {
+                    "vulgard/rollout": {
+                        "number": 9,
+                        "html_url": "https://github.com/acme/payments-api/pull/9",
+                    }
+                }
+            },
+        }
+    )
+    merged = merge_open_rollout_prs(gh, config, gh.list_repos("acme"))
+    assert merged == [("payments-api", "https://github.com/acme/payments-api/pull/9", None)]
+    assert ("merge_pull_request", ("payments-api", 9, "squash")) in gh.writes
+
+
 def test_rollout_refreshes_managed_dependabot_config():
     config = example_config()
     gh = FixtureGitHub.from_file(EXAMPLES / "demo-org.json")
