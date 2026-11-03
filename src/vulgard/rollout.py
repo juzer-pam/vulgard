@@ -33,6 +33,7 @@ MANIFESTS: dict[str, str] = {
     "main.tf": "terraform",
 }
 SKIP_DIRS = ("node_modules/", "vendor/", "third_party/", ".git/", "dist/", "build/")
+DOCS_ONLY_SKIP = "docs only (no dependency manifests)"
 
 
 def detect_ecosystems(paths: list[str]) -> dict[str, list[str]]:
@@ -54,6 +55,17 @@ def detect_ecosystems(paths: list[str]) -> dict[str, list[str]]:
         elif path.startswith(".github/workflows/") and name.endswith((".yml", ".yaml")):
             add("github-actions", "")
     return {eco: sorted(dirs) for eco, dirs in sorted(found.items())}
+
+
+def rollout_skip_reason(paths: list[str]) -> str | None:
+    """Skip repos with nothing for Dependabot or vulgard to scan (README-only, and so on).
+
+    Workflows alone do not count: a docs repo with only a Pages workflow is still skipped.
+    """
+    eco = detect_ecosystems(paths)
+    if set(eco) - {"github-actions"}:
+        return None
+    return DOCS_ONLY_SKIP
 
 
 def render_dependabot_config(ecosystems: dict[str, list[str]], interval: str) -> str:
@@ -271,12 +283,16 @@ def plan_rollout(gh: Any, config: Config, repo: dict[str, Any]) -> RolloutPlan:
     if repo.get("archived") or repo.get("fork"):
         plan.skipped_reason = "archived" if repo.get("archived") else "fork"
         return plan
+    paths = gh.list_tree_paths(config.org, name, default)
+    if skip := rollout_skip_reason(paths):
+        plan.skipped_reason = skip
+        return plan
     existing = gh.find_open_pr(config.org, name, config.rollout.branch)
     plan.existing_pr = existing["html_url"] if existing else None
     ref = config.rollout.branch if existing else default
 
     if gh.get_file(config.org, name, DEPENDABOT_PATH, ref) is None:
-        ecosystems = detect_ecosystems(gh.list_tree_paths(config.org, name, default))
+        ecosystems = detect_ecosystems(paths)
         if ecosystems:
             plan.files[DEPENDABOT_PATH] = render_dependabot_config(
                 ecosystems, config.rollout.schedule_interval

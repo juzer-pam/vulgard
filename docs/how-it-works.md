@@ -100,7 +100,8 @@ vulnerabilities topic.
 
 `vulgard rollout` goes through each repo in the org and, for each one:
 
-1. Skips it if it's archived, a fork, or already has an open rollout PR.
+1. Skips it if it's archived, a fork, docs-only (no package manifests for Dependabot to
+   manage), or already has an open rollout PR.
 2. Lists the repo's files and spots package manifests: `package.json` means npm, `go.mod`
    means Go, a `Dockerfile` means Docker, and so on (see `MANIFESTS` in `rollout.py`). It
    ignores vendored folders like `node_modules/`.

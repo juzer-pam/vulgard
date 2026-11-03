@@ -9,6 +9,7 @@ from typing import Any
 from .config import Config
 from .linear import LinearClient, LinearError, _assignee_id, state_named
 from .plan import Action, ActionKind
+from .rollout import rollout_skip_reason
 from .slack import RolloutPR
 
 ONBOARDING_TITLE = "vulgard onboarding: approve rollout PRs"
@@ -124,8 +125,10 @@ def collect_open_rollout_prs(gh: Any, config: Config, prs: list[RolloutPR]) -> l
         if name == own:
             continue
         open_pr = gh.find_open_pr(config.org, name, config.rollout.branch)
-        if open_pr and name not in seen:
-            seen[name] = RolloutPR(
-                name, resolve_owners(gh, config, name), open_pr["html_url"]
-            )
+        if not open_pr or name in seen:
+            continue
+        branch = repo.get("default_branch") or "main"
+        if rollout_skip_reason(gh.list_tree_paths(config.org, name, branch)):
+            continue
+        seen[name] = RolloutPR(name, resolve_owners(gh, config, name), open_pr["html_url"])
     return list(seen.values())

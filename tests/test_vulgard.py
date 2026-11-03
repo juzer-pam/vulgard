@@ -18,12 +18,14 @@ from vulgard.plan import ActionKind, IssueOp, LinearRef, TrackedIssue, TrackingS
 from vulgard.policy import SlaStatus, evaluate, parse_codeowners_default, summarize_closed
 from vulgard.rollout import (
     DEPENDABOT_PATH,
+    DOCS_ONLY_SKIP,
     WORKFLOW_PATH,
     apply_rollout,
     detect_ecosystems,
     plan_rollout,
     render_caller_workflow,
     render_dependabot_config,
+    rollout_skip_reason,
 )
 from vulgard.slack import (
     RolloutPR,
@@ -589,6 +591,20 @@ def test_rollout_enables_repo_auto_merge_only_when_opted_in():
         apply_rollout(gh, config, plan_rollout(gh, config, repos[name]))
     calls = [args for op, args in gh.writes if op == "enable_security_features"]
     assert calls == [("payments-api", True), ("web-storefront", False)]
+
+
+def test_rollout_skips_docs_only_repos():
+    assert rollout_skip_reason(["README.md", "docs/guide.md"]) == DOCS_ONLY_SKIP
+    assert rollout_skip_reason(["package.json"]) is None
+    gh = FixtureGitHub(
+        {
+            "repos": [{"name": "handbook", "default_branch": "main"}],
+            "trees": {"handbook": ["README.md", "docs/guide.md"]},
+        }
+    )
+    config = parse_config({"org": "acme"})
+    plan = plan_rollout(gh, config, gh.list_repos("acme")[0])
+    assert plan.skipped_reason == DOCS_ONLY_SKIP
 
 
 def test_rollout_plan_only_adds_missing_files():
