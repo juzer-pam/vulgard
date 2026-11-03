@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import time
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Any
 
 from .config import Config
@@ -22,15 +22,6 @@ After these merge, the org ruleset step can make the vulgard check required.
 """
 
 
-@dataclass(frozen=True)
-class TeamOnboarding:
-    team: str
-    prs: list[RolloutPR]
-    issue_id: str | None = None
-    issue_url: str | None = None
-    issue_identifier: str | None = None
-
-
 def group_rollout_prs_by_team(config: Config, prs: list[RolloutPR]) -> dict[str, list[RolloutPR]]:
     by_team: dict[str, list[RolloutPR]] = defaultdict(list)
     default = config.linear.default_team
@@ -40,6 +31,13 @@ def group_rollout_prs_by_team(config: Config, prs: list[RolloutPR]) -> dict[str,
         if team:
             by_team[team].append(pr)
     return dict(by_team)
+
+
+def onboarding_description(linked: list[RolloutPR]) -> str:
+    lines = [ONBOARDING_BODY, "", "## Rollout PRs", ""]
+    for pr in sorted(linked, key=lambda p: p.repo.lower()):
+        lines.append(f"- [{pr.repo}]({pr.url})")
+    return "\n".join(lines)
 
 
 def _issue_attachments(client: LinearClient, issue_id: str) -> set[str]:
@@ -77,7 +75,7 @@ def sync_rollout_onboarding(
                 payload: dict[str, Any] = {
                     "teamId": team_obj["id"],
                     "title": ONBOARDING_TITLE,
-                    "description": ONBOARDING_BODY,
+                    "description": onboarding_description(linked),
                     "labelIds": [client.label_id(name, team_obj["id"]) for name in linear.labels],
                 }
                 if linear.state:
@@ -94,6 +92,7 @@ def sync_rollout_onboarding(
                 issue_id = existing["id"]
                 identifier = existing["identifier"]
                 url = existing["url"]
+                client.update_issue(issue_id, {"description": onboarding_description(linked)})
             attached = _issue_attachments(client, issue_id)
             added = 0
             for pr in linked:
@@ -101,6 +100,7 @@ def sync_rollout_onboarding(
                     continue
                 client.attach_url(issue_id, pr.url, f"{pr.repo} rollout PR")
                 added += 1
+                time.sleep(0.4)
             if added:
                 actions.append(
                     Action(None, ActionKind.LINEAR_UPDATE, f"{identifier}: linked {added} PR(s)")
