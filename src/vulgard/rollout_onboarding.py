@@ -7,14 +7,14 @@ from collections import defaultdict
 from typing import Any
 
 from .config import Config
-from .linear import LinearClient, LinearError, _assignee_id, state_id, state_named
+from .linear import LinearClient, LinearError, _assignee_id, state_named
 from .plan import Action, ActionKind
 from .slack import RolloutPR
 
 ONBOARDING_TITLE = "vulgard onboarding: approve rollout PRs"
 
 ONBOARDING_BODY = """\
-Vulgard opened PRs on branch `vulgard/rollout` that add Dependabot and the dependency check workflow.
+Vulgard opened PRs on branch `vulgard/rollout` that add Dependabot and the vulgard check workflow.
 
 **Team lead:** review and approve each linked PR (or ask the repo owners to merge).
 
@@ -96,9 +96,11 @@ def sync_rollout_onboarding(
             attached = _issue_attachments(client, issue_id)
             added = 0
             for pr in linked:
-                if pr.url in attached:
+                url = pr.url
+                assert url is not None
+                if url in attached:
                     continue
-                client.attach_url(issue_id, pr.url, f"{pr.repo} rollout PR")
+                client.attach_url(issue_id, url, f"{pr.repo} rollout PR")
                 added += 1
                 time.sleep(0.4)
             if added:

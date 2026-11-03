@@ -14,11 +14,11 @@ from .config import SEVERITIES, Config, load_config
 from .enforce import apply_enforce, plan_enforce
 from .fixtures import fixture_clients
 from .github import GitHubError
+from .linear import LinearError
 from .plan import ActionKind, Topic
 from .policy import RepoReport, now_utc
 from .render import format_table, render_org_summary
 from .repos import build_index, resolve_owners, selected_repos
-from .linear import LinearError
 from .rollout import apply_rollout, plan_lifecycle_rollout, plan_rollout
 from .rollout_onboarding import collect_open_rollout_prs, sync_rollout_onboarding
 from .slack import (
@@ -215,14 +215,18 @@ def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> i
             open_prs.append((plan.repo, url))
         except GitHubError as e:
             report("failed", f"{plan.repo}: failed: {e}", error=True)
-    rollout_prs = collect_open_rollout_prs(
-        gh, config, [RolloutPR(repo, resolve_owners(gh, config, repo), url) for repo, url in open_prs]
-    )
+    seeded = [
+        RolloutPR(repo, resolve_owners(gh, config, repo), url) for repo, url in open_prs
+    ]
+    rollout_prs = collect_open_rollout_prs(gh, config, seeded)
     team_tickets: dict[str, str] = {}
     if args.linear:
         linear = clients.linear
         if linear is None:
-            print(f"Skipping Linear onboarding: ${config.linear.api_key_env} is not set.", file=sys.stderr)
+            print(
+                f"Skipping Linear onboarding: ${config.linear.api_key_env} is not set.",
+                file=sys.stderr,
+            )
         else:
             team_tickets, linear_actions = sync_rollout_onboarding(
                 linear, config, rollout_prs, args.apply

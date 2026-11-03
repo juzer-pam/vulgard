@@ -202,13 +202,12 @@ def notify_leads(
             "Please review and approve them, or ask repo owners to merge."
             if ticket
             else f"{len(linked)} rollout PR(s) in your team's repos need approval "
-            "(Dependabot + vulgard check). Run `vulgard rollout --linear` to open a tracking ticket."
+            "(Dependabot + vulgard check). Run `vulgard rollout --linear` for a tracking ticket."
         )
         lines = [f"• <{p.url}|{p.repo}>" for p in sorted(linked, key=lambda p: p.repo.lower())]
         message = digest_message("vulgard rollout · approval needed", intro, lines)
-        actions.append(
-            _post(user, f"team {team}: {len(linked)} PR(s)", partial(client.post, user, *message), apply)
-        )
+        detail = f"team {team}: {len(linked)} PR(s)"
+        actions.append(_post(user, detail, partial(client.post, user, *message), apply))
     return actions
 
 
