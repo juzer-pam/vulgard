@@ -83,7 +83,7 @@ vulgard is a Python command-line tool. Every command reads `vulgard.yml` for set
 
 | Command | What it does | How often |
 |---|---|---|
-| `vulgard report` | Prints a table of open alerts and deadlines per repo. Changes nothing. `--topic stale` lists stale deployments instead. | Whenever you're curious |
+| `vulgard report` | Prints a table of open alerts and deadlines per repo. Changes nothing. `--topic stale` lists stale deployments instead, and `--topic inspector` lists Amazon Inspector findings by repo ([details](configuration.md#inspector)). | Whenever you're curious |
 | `vulgard rollout` | Opens a PR in each repo adding the Dependabot config and the check workflow. `--lifecycle` adds the stale-deployments workflow instead. | Once, then again for new repos |
 | `vulgard enforce` | Creates the org ruleset that makes the check required. | After rollout PRs merge |
 | `vulgard nag` | Updates tracking issues, pings owners, escalates, and posts to Slack and Linear. | Weekdays at 15:00 UTC, from GitHub Actions |
