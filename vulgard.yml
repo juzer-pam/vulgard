@@ -88,6 +88,14 @@ rollout:
   schedule_interval: weekly
   branch: vulgard/rollout
 
+# Amazon Inspector findings on deployed Lambda functions, ECR images and EC2 instances, each
+# attributed to the repo that deployed it. Read-only: `vulgard report --topic inspector`.
+inspector:
+  regions: [us-east-1]
+  min_severity: high              # the least severe to report: critical | high | medium | low
+  attribution: {}                 # resource or stack glob -> repo, wins over tags and deployments
+  ignore: []                      # resource or stack globs never reported
+
 # Stale deployments: every stack needs a deploy every `stale_days`, every repo a human commit
 # every `repo_inactive_days`. Anything older needs a baseline within `baseline_days`: redeploy,
 # delete, or `/vulgard keep` / `/vulgard active` on the repo's `vulgard-stale` issue.

@@ -11,6 +11,11 @@ import yaml
 
 SEVERITIES = ("critical", "high", "medium", "low")
 
+
+def severities_at_least(minimum: str) -> tuple[str, ...]:
+    """`minimum` and every more severe level, most severe first."""
+    return SEVERITIES[: SEVERITIES.index(minimum) + 1]
+
 DEFAULT_SLA_DAYS = {"critical": 7, "high": 30, "medium": 90, "low": 180}
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
@@ -304,6 +309,24 @@ class DeploymentsConfig:
 
 
 @dataclass
+class InspectorConfig:
+    """The Amazon Inspector topic: package vulnerabilities on deployed Lambda functions, ECR
+    images and EC2 instances, attributed to the repo that deployed them."""
+
+    regions: list[str] = field(default_factory=lambda: ["us-east-1"])
+    min_severity: str = "high"
+    attribution: dict[str, str] = field(default_factory=dict)  # resource or stack glob -> repo
+    ignore: list[str] = field(default_factory=list)  # resource or stack globs never reported
+
+    def __post_init__(self) -> None:
+        if self.min_severity not in SEVERITIES:
+            raise ValueError(
+                f"inspector.min_severity must be one of {', '.join(SEVERITIES)}, "
+                f"not {self.min_severity!r}"
+            )
+
+
+@dataclass
 class Config:
     org: str
     include: list[str] = field(default_factory=lambda: ["*"])
@@ -323,6 +346,7 @@ class Config:
     kev: KevConfig = field(default_factory=KevConfig)
     exceptions: list[RiskException] = field(default_factory=list)
     deployments: DeploymentsConfig = field(default_factory=DeploymentsConfig)
+    inspector: InspectorConfig = field(default_factory=InspectorConfig)
 
     def repo_selected(self, name: str) -> bool:
         if any(fnmatch.fnmatch(name, pat) for pat in self.exclude):
@@ -435,6 +459,7 @@ def parse_config(raw: dict[str, Any], org_override: str | None = None) -> Config
         kev=_section(raw, "kev", KevConfig),
         exceptions=_parse_exceptions(raw.get("exceptions")),
         deployments=parse_deployments(raw.get("deployments") or {}),
+        inspector=_section(raw, "inspector", InspectorConfig),
     )
 
 
