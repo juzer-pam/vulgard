@@ -227,6 +227,16 @@ def test_attribution_rules(on, inspector, expected):
     assert [group.findings for group in placed] == [(finding,)]
 
 
+def test_a_stack_name_in_two_regions_attributes_to_the_resource_region():
+    west = deployment(CfnStack("1", "us-west-2", "api-dev", "id-west"), "api-west")
+    resource = InspectorResource(
+        ResourceType.LAMBDA, "arn:west", "api-dev-handler", "us-west-2", {STACK: "api-dev"}
+    )
+    finding = make_finding(resource)
+    report = build_report([finding], [API_DEV, west], InspectorConfig(), None)
+    assert report.attributions[finding.arn].repo == "api-west"
+
+
 def test_via_counts_how_findings_were_attributed():
     found = [
         make_finding(function("a", {STACK: "api-dev"})),

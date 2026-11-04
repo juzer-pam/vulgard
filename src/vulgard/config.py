@@ -11,11 +11,6 @@ import yaml
 
 SEVERITIES = ("critical", "high", "medium", "low")
 
-
-def severities_at_least(minimum: str) -> tuple[str, ...]:
-    """`minimum` and every more severe level, most severe first."""
-    return SEVERITIES[: SEVERITIES.index(minimum) + 1]
-
 DEFAULT_SLA_DAYS = {"critical": 7, "high": 30, "medium": 90, "low": 180}
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
@@ -368,6 +363,11 @@ def route[T](mapping: dict[str, T], repo: str, owners: list[str], default: T | N
         if owner in mapping:
             return mapping[owner]
     return default
+
+
+def severities_at_least(minimum: str) -> tuple[str, ...]:
+    """`minimum` and every more severe level, most severe first."""
+    return SEVERITIES[: SEVERITIES.index(minimum) + 1]
 
 
 def team_of_owners(owners: list[str]) -> str:

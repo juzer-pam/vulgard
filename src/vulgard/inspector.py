@@ -122,12 +122,12 @@ type DeploymentKey = tuple[str, ...]
 def deployment_key(native: NativeRef) -> DeploymentKey | None:
     """The identity Inspector's resource tags can name a deployment by."""
     match native:
-        case CfnStack(name=name):
-            return ("cfn", name)
-        case SstStage(app=app, stage=stage):
-            return ("sst", app, stage)
-        case AmplifyBranch(app_id=app_id, branch=branch):
-            return ("amplify", app_id, branch)
+        case CfnStack(region=region, name=name):
+            return ("cfn", region, name)
+        case SstStage(region=region, app=app, stage=stage):
+            return ("sst", region, app, stage)
+        case AmplifyBranch(region=region, app_id=app_id, branch=branch):
+            return ("amplify", region, app_id, branch)
         case VercelProject():
             return None
         case _ as unreachable:
@@ -145,19 +145,19 @@ def index_deployments(deployments: Iterable[Deployment]) -> dict[DeploymentKey, 
 
 def candidate_keys(resource: InspectorResource) -> list[DeploymentKey]:
     """The deployments a resource says it belongs to, in order of trust."""
-    tags = resource.tags
+    tags, region = resource.tags, resource.region
     keys: list[DeploymentKey] = []
     if stack := tags.get(STACK_NAME_TAG):
-        keys.append(("cfn", stack))
+        keys.append(("cfn", region, stack))
     if (app := tags.get("sst:app")) and (stage := tags.get("sst:stage")):
-        keys.append(("sst", app, stage))
+        keys.append(("sst", region, app, stage))
     if (app_id := tags.get("amplify:app-id")) and (branch := tags.get("amplify:branch-name")):
-        keys.append(("amplify", app_id, branch))
+        keys.append(("amplify", region, app_id, branch))
     if resource.type is ResourceType.ECR_IMAGE:
         # ECR images carry no tags. Serverless names its repository `serverless-<service>-<stage>`
         # and the stack `<service>-<stage>`.
         if serverless := SERVERLESS_REPOSITORY_RE.match(resource.name):
-            keys.append(("cfn", serverless[1]))
+            keys.append(("cfn", region, serverless[1]))
     return keys
 
 
