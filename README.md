@@ -303,7 +303,8 @@ for the options.
 - `VulgardLifecycle`, trusted by the vulgard repo's workflows:
   - Reads: `cloudformation:DescribeStacks`, `DescribeStackEvents`; `ssm:GetParameter` on
     `/sst/bootstrap`; `s3:ListBucket` and `s3:GetObject` on the SST state bucket;
-    `amplify:ListApps`, `ListBranches`, `ListJobs`, `GetApp`, `GetBranch`.
+    `amplify:ListApps`, `ListBranches`, `ListJobs`, `GetApp`, `GetBranch`;
+    `inspector2:ListFindings`, for `report --topic inspector`.
   - Writes: `cloudformation:DeleteStack`; `iam:PassRole` on `VulgardStackDelete` only;
     `s3:ListBucketVersions`, `s3:DeleteObject` and `s3:DeleteObjectVersion` on
     `arn:aws:s3:::*-serverlessdeploymentbucket-*`; `amplify:StartJob`, `amplify:DeleteBranch`.

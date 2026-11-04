@@ -94,6 +94,11 @@ export class VulgardRolesStack extends Stack {
         ],
         resources: ["*"],
       }),
+      new iam.PolicyStatement({
+        sid: "ReadInspectorFindings",
+        actions: ["inspector2:ListFindings"],
+        resources: ["*"],
+      }),
     ];
     if (props.writes) {
       const serverlessBucket = `arn:${Aws.PARTITION}:s3:::*-serverlessdeploymentbucket-*`;

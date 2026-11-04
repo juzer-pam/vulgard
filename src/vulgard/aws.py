@@ -10,10 +10,11 @@ import json
 import re
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any
+from typing import Any, assert_never
 
 from botocore.exceptions import BotoCoreError, ClientError
 
+from .config import SEVERITIES, severities_at_least
 from .estate import (
     AmplifyBranch,
     CfnStack,
@@ -24,6 +25,7 @@ from .estate import (
     Sighting,
     SstStage,
 )
+from .inspector import Finding, InspectorResource, ResourceType
 from .policy import parse_time
 
 SST_BOOTSTRAP = "/sst/bootstrap"
@@ -33,6 +35,12 @@ AMPLIFY_SANDBOX_RE = re.compile(r"^amplify-(?P<app>.+)-(?P<user>[^-]+)-sandbox-[
 SKIP_PREFIXES = ("CDKToolkit", "SSTBootstrap", "StackSet-", "aws-sam-cli-managed", "VulgardRoles")
 AMPLIFY_RUNNING = ("PENDING", "PROVISIONING", "RUNNING", "CANCELLING")
 AMPLIFY_FAILED = ("FAILED", "CANCELLED")
+INSPECTOR_RESOURCE_TYPES = {
+    "AWS_LAMBDA_FUNCTION": ResourceType.LAMBDA,
+    "AWS_ECR_CONTAINER_IMAGE": ResourceType.ECR_IMAGE,
+    "AWS_EC2_INSTANCE": ResourceType.EC2,
+}
+INSPECTOR_PAGE_SIZE = 100
 
 
 def _time(value: Any) -> datetime:
@@ -136,6 +144,55 @@ def sight_amplify_branch(
     )
 
 
+def _inspector_resource(raw: dict[str, Any]) -> InspectorResource | None:
+    kind = INSPECTOR_RESOURCE_TYPES.get(raw["type"])
+    if kind is None:
+        return None
+    details = raw.get("details") or {}
+    match kind:
+        case ResourceType.LAMBDA:
+            name = details["awsLambdaFunction"]["functionName"]
+        case ResourceType.ECR_IMAGE:
+            name = details["awsEcrContainerImage"]["repositoryName"]
+        case ResourceType.EC2:
+            name = raw["id"]
+        case _ as unreachable:
+            assert_never(unreachable)
+    return InspectorResource(kind, raw["id"], name, raw.get("region", ""), raw.get("tags") or {})
+
+
+def sight_finding(raw: dict[str, Any]) -> Finding | None:
+    """One ListFindings entry -> Finding, or None if vulgard doesn't report it: not a package
+    vulnerability, a resource type vulgard doesn't map, or a severity outside `SEVERITIES`
+    (Inspector's INFORMATIONAL and UNTRIAGED).
+
+    Only the first vulnerable package is kept: a finding is one vulnerability on one resource.
+    """
+    severity = raw["severity"].lower()
+    if raw["type"] != "PACKAGE_VULNERABILITY" or severity not in SEVERITIES:
+        return None
+    resource = _inspector_resource(raw["resources"][0])
+    if resource is None:
+        return None
+    details = raw["packageVulnerabilityDetails"]
+    package = details["vulnerablePackages"][0]
+    fixed_in = package.get("fixedInVersion")
+    return Finding(
+        arn=raw["findingArn"],
+        vulnerability_id=details["vulnerabilityId"],
+        severity=severity,
+        package=package["name"],
+        package_manager=package.get("packageManager", ""),
+        installed_version=package["version"],
+        fixed_in=None if fixed_in in (None, "NotAvailable") else fixed_in,
+        fix_available=raw.get("fixAvailable") in ("YES", "PARTIAL"),
+        exploit_available=raw.get("exploitAvailable") == "YES",
+        first_observed=_time(raw["firstObservedAt"]),
+        title=raw.get("title", ""),
+        resource=resource,
+    )
+
+
 def sst_state_bucket(parameter_value: str) -> str | None:
     try:
         return json.loads(parameter_value).get("state")
@@ -202,6 +259,50 @@ class AwsScanner:
                             )
                         )
         return found
+
+
+class AwsInspector:
+    """Active package-vulnerability findings from Amazon Inspector in every configured region.
+    Severities below `min_severity` are filtered by Inspector itself: an account can hold tens of
+    thousands of findings."""
+
+    def __init__(self, session: Any, regions: list[str], min_severity: str):
+        self._session = session
+        self._regions = regions
+        self._severities = severities_at_least(min_severity)
+
+    def findings(self) -> list[Finding]:
+        found: list[Finding] = []
+        try:
+            for region in self._regions:
+                found += self._region(region)
+        except (BotoCoreError, ClientError) as e:
+            raise ScanError(f"Inspector scan failed: {e}") from e
+        return found
+
+    def _region(self, region: str) -> list[Finding]:
+        inspector = self._session.client("inspector2", region_name=region)
+        pages = inspector.get_paginator("list_findings").paginate(
+            filterCriteria={
+                "findingStatus": [{"comparison": "EQUALS", "value": "ACTIVE"}],
+                "findingType": [{"comparison": "EQUALS", "value": "PACKAGE_VULNERABILITY"}],
+                "severity": [
+                    {"comparison": "EQUALS", "value": severity.upper()}
+                    for severity in self._severities
+                ],
+                "resourceType": [
+                    {"comparison": "EQUALS", "value": resource_type}
+                    for resource_type in INSPECTOR_RESOURCE_TYPES
+                ],
+            },
+            maxResults=INSPECTOR_PAGE_SIZE,
+        )
+        return [
+            finding
+            for page in pages
+            for raw in page["findings"]
+            if (finding := sight_finding(raw))
+        ]
 
 
 CONSOLE = "https://{region}.console.aws.amazon.com"
