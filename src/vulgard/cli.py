@@ -8,12 +8,14 @@ from collections import Counter
 from dataclasses import asdict
 from typing import Any
 
-from . import stale_render
+from . import inspector_render, stale_render
 from .clients import Clients, live_clients
 from .config import SEVERITIES, Config, load_config
 from .enforce import apply_enforce, plan_enforce
+from .estate import ScanError, discover
 from .fixtures import fixture_clients
 from .github import GitHubError
+from .inspector import build_report
 from .linear import LinearError
 from .plan import ActionKind, Topic
 from .policy import RepoReport, now_utc
@@ -93,9 +95,25 @@ def report_stale(clients: Clients, config: Config, args: argparse.Namespace) -> 
     return 0
 
 
+def report_inspector(clients: Clients, config: Config, args: argparse.Namespace) -> int:
+    gh = clients.github
+    index = build_index(gh, config, selected_repos(gh, config))
+    deployments = discover(clients.scanners(), index, config.deployments)
+    findings = clients.inspector().findings()
+    only = set(args.repo) if args.repo else None
+    report = build_report(findings, deployments, config.inspector, only)
+    if args.format == "json":
+        print(json.dumps(inspector_render.report_json(report), indent=2))
+    else:
+        print(inspector_render.report_text(report, config.inspector))
+    return 0
+
+
 def cmd_report(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     if args.topic == Topic.STALE:
         return report_stale(clients, config, args)
+    if args.topic == Topic.INSPECTOR:
+        return report_inspector(clients, config, args)
     reports = collect(clients.github, config, args.repo, load_kev(clients, config))
     if args.format == "json":
         print(report_json(reports))
@@ -326,7 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--topic",
         action="append",
-        choices=[t.value for t in Topic],
+        choices=[t.value for t in RUNNERS],
         help="what to track (repeatable; default: vulns, plus stale when deployments.enabled)",
     )
     p.add_argument(
@@ -380,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config, args.org)
         clients = fixture_clients(args.fixtures) if args.fixtures else live_clients(config)
         return args.func(clients, config, args)
-    except (ValueError, FileNotFoundError, GitHubError, LinearError, SlackError) as e:
+    except (ValueError, FileNotFoundError, GitHubError, LinearError, ScanError, SlackError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 

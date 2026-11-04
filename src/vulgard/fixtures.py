@@ -7,10 +7,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .aws import sight_amplify_branch, sight_cfn_stack, sight_sst_objects
+from .aws import sight_amplify_branch, sight_cfn_stack, sight_finding, sight_sst_objects
 from .clients import Clients
 from .config import IssueConfig
 from .estate import Deployment, Found, NativeRef, RunState, Sighting
+from .inspector import Finding
 from .lifecycle import Op, SafeDelete, Verb
 from .policy import now_utc
 from .vercel import sight_vercel_project
@@ -285,6 +286,16 @@ class FixtureScanner:
         return found
 
 
+class FixtureInspector:
+    """Replays raw ListFindings shapes from the fixture through the real parser."""
+
+    def __init__(self, data: dict[str, Any]):
+        self._raw = ((data.get("aws") or {}).get("inspector") or {}).get("findings", [])
+
+    def findings(self) -> list[Finding]:
+        return [finding for raw in self._raw if (finding := sight_finding(raw))]
+
+
 class FakeSlack:
     def __init__(self) -> None:
         self.messages: list[tuple[str, str]] = []
@@ -340,4 +351,5 @@ def fixture_clients(path: str | Path) -> Clients:
         kev=lambda: kev,
         scanners=lambda: [FixtureScanner(gh.data)],
         executor=lambda: executor,
+        inspector=lambda: FixtureInspector(gh.data),
     )

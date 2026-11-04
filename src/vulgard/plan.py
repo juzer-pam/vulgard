@@ -25,6 +25,7 @@ ENGINE_KEYS = ("last_reminder", "linear")
 class Topic(StrEnum):
     VULNS = "vulns"
     STALE = "stale"
+    INSPECTOR = "inspector"
 
 
 @dataclass(frozen=True)

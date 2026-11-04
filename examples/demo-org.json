@@ -594,7 +594,325 @@
           }
         ]
       }
-    ]
+    ],
+    "inspector": {
+      "findings": [
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000001",
+          "severity": "HIGH",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-41d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2023-45857 - axios",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2023-45857",
+            "vulnerablePackages": [
+              {
+                "name": "axios",
+                "version": "0.21.4",
+                "packageManager": "NODE",
+                "filePath": "/var/task/node_modules/axios/package.json",
+                "fixedInVersion": "1.6.0"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_LAMBDA_FUNCTION",
+              "id": "arn:aws:lambda:us-east-1:111122223333:function:payments-api-dev-createOrder",
+              "region": "us-east-1",
+              "details": {
+                "awsLambdaFunction": {
+                  "functionName": "payments-api-dev-createOrder"
+                }
+              },
+              "tags": {
+                "aws:cloudformation:stack-name": "payments-api-dev"
+              }
+            }
+          ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000002",
+          "severity": "CRITICAL",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-19d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "YES",
+          "title": "CVE-2022-23539 - jsonwebtoken",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2022-23539",
+            "vulnerablePackages": [
+              {
+                "name": "jsonwebtoken",
+                "version": "8.5.1",
+                "packageManager": "NODE",
+                "filePath": "/var/task/node_modules/jsonwebtoken/package.json",
+                "fixedInVersion": "9.0.0"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_LAMBDA_FUNCTION",
+              "id": "arn:aws:lambda:us-east-1:111122223333:function:payments-api-production-authorize",
+              "region": "us-east-1",
+              "details": {
+                "awsLambdaFunction": {
+                  "functionName": "payments-api-production-authorize"
+                }
+              },
+              "tags": {
+                "aws:cloudformation:stack-name": "payments-api-production"
+              }
+            }
+          ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000003",
+          "severity": "CRITICAL",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-19d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "YES",
+          "title": "CVE-2022-23539 - jsonwebtoken",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2022-23539",
+            "vulnerablePackages": [
+              {
+                "name": "jsonwebtoken",
+                "version": "8.5.1",
+                "packageManager": "NODE",
+                "filePath": "/var/task/node_modules/jsonwebtoken/package.json",
+                "fixedInVersion": "9.0.0"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_LAMBDA_FUNCTION",
+              "id": "arn:aws:lambda:us-east-1:111122223333:function:payments-api-production-refund",
+              "region": "us-east-1",
+              "details": {
+                "awsLambdaFunction": {
+                  "functionName": "payments-api-production-refund"
+                }
+              },
+              "tags": {
+                "aws:cloudformation:stack-name": "payments-api-production"
+              }
+            }
+          ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000004",
+          "severity": "HIGH",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-12d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2024-45296 - path-to-regexp",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2024-45296",
+            "vulnerablePackages": [
+              {
+                "name": "path-to-regexp",
+                "version": "0.1.7",
+                "packageManager": "NODE",
+                "filePath": "/var/task/node_modules/path-to-regexp/package.json",
+                "fixedInVersion": "0.1.10"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_LAMBDA_FUNCTION",
+              "id": "arn:aws:lambda:us-east-1:111122223333:function:inventory-production-ReorderFunction",
+              "region": "us-east-1",
+              "details": {
+                "awsLambdaFunction": {
+                  "functionName": "inventory-production-ReorderFunction"
+                }
+              },
+              "tags": {
+                "sst:app": "inventory",
+                "sst:stage": "production"
+              }
+            }
+          ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000005",
+          "severity": "HIGH",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-8d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2024-25062 - libxml2",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2024-25062",
+            "vulnerablePackages": [
+              {
+                "name": "libxml2",
+                "version": "2.10.4-1.amzn2023.0.6",
+                "packageManager": "OS",
+                "fixedInVersion": "2.10.4-1.amzn2023.0.8"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_ECR_CONTAINER_IMAGE",
+              "id": "arn:aws:ecr:us-east-1:111122223333:repository/serverless-payments-api-production/sha256:00000000000000000000000000000000a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4",
+              "region": "us-east-1",
+              "details": {
+                "awsEcrContainerImage": {
+                  "repositoryName": "serverless-payments-api-production"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000006",
+          "severity": "HIGH",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-25d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2024-21538 - cross-spawn",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2024-21538",
+            "vulnerablePackages": [
+              {
+                "name": "cross-spawn",
+                "version": "7.0.3",
+                "packageManager": "NODE",
+                "filePath": "/app/node_modules/cross-spawn/package.json",
+                "fixedInVersion": "7.0.5"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_ECR_CONTAINER_IMAGE",
+              "id": "arn:aws:ecr:us-east-1:111122223333:repository/sst-asset/sha256:00000000000000000000000000000000e5f6a7b8e5f6a7b8e5f6a7b8e5f6a7b8",
+              "region": "us-east-1",
+              "details": {
+                "awsEcrContainerImage": {
+                  "repositoryName": "sst-asset"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000007",
+          "severity": "HIGH",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-33d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2024-4068 - braces",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2024-4068",
+            "vulnerablePackages": [
+              {
+                "name": "braces",
+                "version": "3.0.2",
+                "packageManager": "NODE",
+                "filePath": "/var/task/node_modules/braces/package.json",
+                "fixedInVersion": "3.0.3"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_LAMBDA_FUNCTION",
+              "id": "arn:aws:lambda:us-east-1:111122223333:function:orphan-handler",
+              "region": "us-east-1",
+              "details": {
+                "awsLambdaFunction": {
+                  "functionName": "orphan-handler"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000008",
+          "severity": "LOW",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-41d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2021-23566 - nanoid",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2021-23566",
+            "vulnerablePackages": [
+              {
+                "name": "nanoid",
+                "version": "3.1.30",
+                "packageManager": "NODE",
+                "filePath": "/var/task/node_modules/nanoid/package.json",
+                "fixedInVersion": "3.1.31"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_LAMBDA_FUNCTION",
+              "id": "arn:aws:lambda:us-east-1:111122223333:function:payments-api-dev-createOrder",
+              "region": "us-east-1",
+              "details": {
+                "awsLambdaFunction": {
+                  "functionName": "payments-api-dev-createOrder"
+                }
+              },
+              "tags": {
+                "aws:cloudformation:stack-name": "payments-api-dev"
+              }
+            }
+          ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000009",
+          "severity": "INFORMATIONAL",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-41d",
+          "fixAvailable": "NO",
+          "exploitAvailable": "NO",
+          "title": "CVE-2023-26136 - tough-cookie",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2023-26136",
+            "vulnerablePackages": [
+              {
+                "name": "tough-cookie",
+                "version": "4.0.0",
+                "packageManager": "NODE",
+                "filePath": "/var/task/node_modules/tough-cookie/package.json"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_LAMBDA_FUNCTION",
+              "id": "arn:aws:lambda:us-east-1:111122223333:function:payments-api-dev-createOrder",
+              "region": "us-east-1",
+              "details": {
+                "awsLambdaFunction": {
+                  "functionName": "payments-api-dev-createOrder"
+                }
+              },
+              "tags": {
+                "aws:cloudformation:stack-name": "payments-api-dev"
+              }
+            }
+          ]
+        }
+      ]
+    }
   },
   "vercel": {
     "team_id": "team_acme",

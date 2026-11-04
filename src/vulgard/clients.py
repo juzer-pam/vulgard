@@ -7,12 +7,13 @@ from typing import Any
 
 import boto3
 
-from .aws import AwsOps, AwsScanner
+from .aws import AwsInspector, AwsOps, AwsScanner
 from .config import Config
 from .estate import Scanner
 from .execute import Executor
 from .executor import LiveExecutor
 from .github import GitHub
+from .inspector import InspectorSource
 from .kev import fetch_kev
 from .linear import Linear, LinearClient
 from .slack import Slack, SlackClient
@@ -28,6 +29,7 @@ class Clients:
     kev: Callable[[], frozenset[str]]
     scanners: Callable[[], list[Scanner]]  # built on first use: they need cloud creds
     executor: Callable[[], Executor]
+    inspector: Callable[[], InspectorSource]  # built on first use: it needs cloud creds
 
 
 def _vercel(config: Config) -> Vercel | None:
@@ -62,4 +64,7 @@ def live_clients(config: Config) -> Clients:
         kev=fetch_kev,
         scanners=lambda: live_scanners(config),
         executor=lambda: live_executor(gh, config),
+        inspector=lambda: AwsInspector(
+            boto3.Session(), config.inspector.regions, config.inspector.min_severity
+        ),
     )
