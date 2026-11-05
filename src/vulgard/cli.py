@@ -15,10 +15,10 @@ from .enforce import apply_enforce, plan_enforce
 from .estate import ScanError, discover
 from .fixtures import fixture_clients
 from .github import GitHubError
-from .inspector import build_report
+from .inspector import build_report, build_tracking
 from .linear import LinearError
 from .plan import ActionKind, Topic
-from .policy import RepoReport, now_utc
+from .policy import Alert, RepoReport, now_utc
 from .render import format_table, render_org_summary
 from .repos import build_index, resolve_owners, selected_repos
 from .rollout import apply_rollout, merge_open_rollout_prs, plan_lifecycle_rollout, plan_rollout
@@ -101,11 +101,16 @@ def report_inspector(clients: Clients, config: Config, args: argparse.Namespace)
     deployments = discover(clients.scanners(), index, config.deployments)
     findings = clients.inspector().findings()
     only = set(args.repo) if args.repo else None
-    report = build_report(findings, deployments, config.inspector, only)
+    reports = collect(gh, config, args.repo, load_kev(clients, config))
+    fixed_alerts = [Alert.from_api(raw) for raw in gh.list_fixed_alerts(config.org)]
+    linear = clients.linear if config.inspector.linear_labels else None
+    issues = linear.open_issues_with_labels(config.inspector.linear_labels) if linear else []
+    tracking = build_tracking(reports, fixed_alerts, issues)
+    report = build_report(findings, deployments, config.inspector, only, tracking)
     if args.format == "json":
         print(json.dumps(inspector_render.report_json(report), indent=2))
     else:
-        print(inspector_render.report_text(report, config.inspector))
+        print(inspector_render.report_text(report, config.inspector, linear is not None))
     return 0
 
 
