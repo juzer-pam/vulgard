@@ -311,6 +311,7 @@ class InspectorConfig:
     regions: list[str] = field(default_factory=lambda: ["us-east-1"])
     min_severity: str = "high"
     ignore: list[str] = field(default_factory=list)  # resource or stack globs never reported
+    linear_labels: list[str] = field(default_factory=list)  # names of labels on tracking issues
 
     def __post_init__(self) -> None:
         if self.min_severity not in SEVERITIES:

@@ -13,6 +13,7 @@ from .config import IssueConfig
 from .estate import Deployment, Found, NativeRef, RunState, Sighting
 from .inspector import Finding
 from .lifecycle import Op, SafeDelete, Verb
+from .linear import CLOSED_STATES, LinearIssue
 from .policy import now_utc
 from .vercel import sight_vercel_project
 
@@ -60,6 +61,9 @@ class FixtureGitHub:
 
     def list_open_alerts(self, org: str) -> list[dict[str, Any]]:
         return self.data.get("alerts", [])
+
+    def list_fixed_alerts(self, org: str) -> list[dict[str, Any]]:
+        return self.data.get("fixed_alerts", [])
 
     def list_closed_alerts(self, org: str, since: datetime) -> list[dict[str, Any]]:
         return self.data.get("closed_alerts", [])
@@ -192,9 +196,12 @@ STATE_TYPES = {
 
 
 class FakeLinear:
-    """In-memory Linear: every team key and project exists, with Triage/Todo/…/Won't-do states."""
+    """In-memory Linear: every team key and project exists, with Triage/Todo/…/Won't-do states.
+    `existing` are issues that were there before the run: `{identifier, title, url, state,
+    labels}`, where `state` is a key of STATE_TYPES and `labels` are label names."""
 
-    def __init__(self) -> None:
+    def __init__(self, existing: list[dict[str, Any]] | None = None) -> None:
+        self.existing = existing or []
         self.issues: dict[str, dict[str, Any]] = {}
         self.writes: list[tuple[str, tuple[Any, ...]]] = []
 
@@ -259,6 +266,14 @@ class FakeLinear:
             if issue["team"]["key"] == team_key and issue["title"] == title:
                 return issue
         return None
+
+    def open_issues_with_labels(self, labels: list[str]) -> list[LinearIssue]:
+        wanted = set(labels)
+        return [
+            LinearIssue(issue["identifier"], issue["title"], issue["url"])
+            for issue in self.existing
+            if STATE_TYPES[issue["state"]] not in CLOSED_STATES and wanted & set(issue["labels"])
+        ]
 
 
 class FixtureScanner:
@@ -345,7 +360,7 @@ def fixture_clients(path: str | Path) -> Clients:
     executor = FixtureExecutor(gh.data)
     return Clients(
         github=gh,
-        linear=FakeLinear(),
+        linear=FakeLinear(gh.data.get("linear_issues")),
         slack=FakeSlack(),
         slack_webhook=None,
         kev=lambda: kev,

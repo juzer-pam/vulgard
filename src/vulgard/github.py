@@ -110,6 +110,9 @@ class GitHub:
     def list_open_alerts(self, org: str) -> list[dict[str, Any]]:
         return self._paginate(f"/orgs/{org}/dependabot/alerts", {"state": "open"})
 
+    def list_fixed_alerts(self, org: str) -> list[dict[str, Any]]:
+        return self._paginate(f"/orgs/{org}/dependabot/alerts", {"state": "fixed"})
+
     def list_closed_alerts(self, org: str, since: datetime) -> list[dict[str, Any]]:
         return self._paginate(
             f"/orgs/{org}/dependabot/alerts",
