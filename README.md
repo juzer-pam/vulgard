@@ -158,8 +158,9 @@ the demo never goes stale.
    Or run the **rollout** workflow from the Actions tab. It uses the GitHub App, and with
    *slack* ticked it DMs each team lead the open rollout PRs in their team's repos.
 
-   To pilot first, set `repos.include` to a few repos in `org.yml`, update the secret,
-   and widen it later.
+   To pilot first, pass `--repo` once per repo (`rollout --repo payments-api --repo web-app`).
+   `repos.include` doesn't limit rollout. It only picks the repos whose Dependabot alerts get
+   tracking issues (see [Which repos vulgard works on](docs/configuration.md#which-repos-vulgard-works-on)).
 
    Re-running is safe. Repos that are up to date are skipped. A `vulgard.yml` that vulgard
    wrote (it starts with `# Managed by vulgard`) is refreshed when config changes, for
@@ -191,7 +192,9 @@ with a worked example.
   high 30, medium 90, low 180). CVEs on CISA's KEV list get `kev.sla_days` (default 3).
 - Each repo with open alerts or stale Dependabot PRs gets one issue labeled `vulgard`. It
   lists overdue, due-soon, and within-SLA alerts, the patched version, the Dependabot PR
-  that fixes each one, and any accepted risks with their expiry.
+  that fixes each one, and any accepted risks with their expiry. Only repos matching
+  `repos.include` get one, and not the repos Amazon Inspector tracks (when `inspector.enabled`):
+  Inspector's issue already covers them, and an old Dependabot issue in a repo that moved is closed.
 - Owners come from `owners:` in config, then the `*` rule in `CODEOWNERS`, then
   `default_owners`. vulgard assigns individual owners, but not teams, to the issue.
 - Comments and Slack messages, which are what notify people, are only sent when:
@@ -371,7 +374,7 @@ lives in `src/vulgard/`.
 | `baseline.py` | Parsing `/vulgard` commands and folding a comment thread into decisions |
 | `lifecycle.py` | Which redeploys and deletes to run, notices, and the safety checks |
 | `execute.py`, `executor.py` | Running one op idempotently, and the live GitHub, AWS and Vercel executor |
-| `repos.py` | Repo selection, owners, the framework index, and commit activity |
+| `repos.py` | Which repos each job covers (`all_repos`, `dependabot_repos`), owners, the framework index, and commit activity |
 | `linear.py`, `slack.py` | Linear sync; Slack routing, DMs, and the leaderboard |
 | `kev.py` | The CISA KEV feed |
 | `rollout.py`, `enforce.py` | Generated Dependabot config and workflows; org rulesets |

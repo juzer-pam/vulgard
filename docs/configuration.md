@@ -33,13 +33,57 @@ Settings that map a repo or owner to something (`slack.channels`, `linear.teams`
 exact repo name first, then repo globs in file order, then each owner in order, then the
 section's default.
 
+## Which repos vulgard works on
+
+vulgard does several jobs, and they don't all need the same repos. Two terms first:
+
+- A **Dependabot alert** is GitHub's warning that a dependency a repo declares (an npm package, say) has a known vulnerability.
+- **Amazon Inspector** is the AWS service that scans what is deployed. See [`inspector`](#inspector). vulgard turns its findings into **fix items** and attributes each one to the repo that deployed the resource.
+
+Inspector is now the main source of vulnerabilities, because it reports what is actually running. Dependabot alerts still matter for a repo that nothing in AWS runs from, such as a front-end site, a library or an internal tool. So `include` and `exclude` pick between three scopes, from the widest to the narrowest.
+
+**Every repo** is each repo in the org that is not archived and does not match `exclude`. These jobs use it:
+
+- `rollout` (including `--merge`, `--lifecycle` and the onboarding issues and lead DMs) opens the PR that adds `dependabot.yml` and the vulgard workflow. It covers every repo because the check should be in all of them, whether or not a repo gets Dependabot tickets.
+- `enforce` makes the check required on the repos that have the workflow.
+- The stale deployments topic looks at the commit history of every repo, and at critical Dependabot alerts in any repo to decide which personal deployments can be redeployed or deleted automatically.
+- The Inspector topic uses it to work out which repo deployed a resource, by reading each repo's file tree and its Serverless and SST manifests.
+
+**The Dependabot scope** is every repo that matches `include`, minus `exclude`, minus the repos the Inspector topic tracks. The vulns topic of `nag` tracks Dependabot alerts in these repos, and `vulgard report` prints them. Set `include` to the repos that do not deploy to AWS. With the default `["*"]`, every repo gets Dependabot tickets until Inspector finds something in it.
+
+A repo leaves this scope as soon as Inspector has at least one fix item for it, because Inspector's ticket already tells the owners what to fix and a second ticket would ask for the same work twice. When the fix items clear, the repo is back in the Dependabot scope on the next run and its old issue reopens if alerts remain. The subtraction only happens when the run includes the Inspector topic and `inspector.report_only` is off. In a trial with `report_only: true`, or a run with `--topic vulns`, the vulns topic keeps every repo that matches `include`, so nothing goes untracked. `vulgard report` never talks to AWS, so it shows every repo that matches `include`.
+
+**The Inspector scope** is every repo with at least one fix item. You don't configure it: the findings decide. `exclude` still applies. A finding attributed to an excluded repo is dropped, the same as a resource that matches `inspector.ignore`, so excluding a repo silences it everywhere.
+
+For example, with this config:
+
+```yaml
+repos:
+  include: ["web-*", "docs-*"]
+  exclude: ["sandbox-*"]
+```
+
+- `payments-api` runs Lambda functions with Inspector findings and doesn't match `include`. Inspector tracks it. It gets a rollout PR.
+- `web-storefront` matches `include` and has no findings. The vulns topic tracks its Dependabot alerts.
+- `web-admin` matches `include`, but Inspector has findings for it. Only Inspector tracks it.
+- `sandbox-tests` matches `exclude`. Nothing touches it.
+
+`--repo` (repeatable) narrows every scope to the repos you name, so `nag --repo web-admin` still tracks only that repo.
+
+**Issues that moved.** When a repo leaves the Dependabot scope, its open vulns issue would otherwise stay open forever with nobody updating it. So the vulns topic closes it, in GitHub and in Linear, with one of these comments:
+
+- "Inspector now tracks this repo's vulnerabilities." when the repo has Inspector fix items.
+- "This repo is no longer in vulgard's Dependabot scope (`include`)." when it no longer matches `include`.
+
+This happens only when `inspector.enabled` is true, `inspector.report_only` is false and the run includes the Inspector topic. So turning Inspector off never closes tickets. It finds those issues with one GitHub issue search for the vulns label (`issue.label`), not by opening every repo. A dry run (no `--apply`) only lists what it would close, and `--redact` prints just the counts. Repos in `exclude` and archived repos are left as they are. If Inspector's report can't be built (for example, AWS credentials expired), the vulns topic is skipped for that run and the run fails, because without Inspector's repo list it can't tell which repos to leave alone.
+
 ## Top-level settings
 
 | Key | Type | Default | What it does |
 |---|---|---|---|
 | `org` | string | none | GitHub organization. Usually left out: the workflow passes `--org`. Required one way or the other. |
-| `repos.include` | list of globs | `["*"]` | Repos vulgard works on. |
-| `repos.exclude` | list of globs | `[]` | Repos skipped even if included. Archived repos are always skipped. |
+| `repos.include` | list of globs | `["*"]` | Repos whose Dependabot alerts get tracking issues, unless Inspector tracks them. It does not limit rollout, stale deployments or Inspector. See [Which repos vulgard works on](#which-repos-vulgard-works-on). |
+| `repos.exclude` | list of globs | `[]` | Repos vulgard leaves alone in every topic and in rollout. Archived repos are always skipped. |
 | `sla_days` | map of severity to days | `{critical: 7, high: 30, medium: 90, low: 180}` | Days from when an alert opened until it's overdue. Keys must be `critical`, `high`, `medium` or `low`; missing ones keep their default. |
 | `due_soon_days` | int | `5` | Alerts and deployments this close to their deadline are marked due soon. |
 | `stale_pr_days` | int | `14` | Dependabot PRs open this long are called out as stale. |
@@ -313,7 +357,7 @@ When every item of a repo clears, its GitHub issue and Linear sub-issue close. A
 
 **Deadlines.** Each fix item is due `sla_days` days after a vulgard issue first listed it, by the item's severity. With the default `sla_days`, a critical item is due 7 days after it first appears and a high one 30 days after. vulgard keeps the date each item was first listed in the GitHub issue, so the deadline doesn't move when the item's fix status changes, for example from `needs_fix` to `needs_deploy`. An item is due soon within `due_soon_days` of its deadline. An overdue item escalates the same way an overdue Dependabot alert does: once it is `escalation.after_days_overdue` days late and its severity is in `escalation.severities`, vulgard mentions `escalation.mentions` on the issue, comments on the Linear issue and posts in `slack.escalation_channel`. When an issue closes, its dates are forgotten, so items that come back later start a new deadline.
 
-**Public repos have no deadlines yet.** A public repo has no GitHub issue to keep the dates in, so every run lists its items as new. Their deadlines are always a full `sla_days` away, they never go overdue or escalate, and Slack only hears about them when their Linear issue opens or reopens. The same holds for a repo vulgard doesn't select (excluded in `repos`, archived, or not in the org) that Inspector findings are attributed to.
+**Public repos have no deadlines yet.** A public repo has no GitHub issue to keep the dates in, so every run lists its items as new. Their deadlines are always a full `sla_days` away, they never go overdue or escalate, and Slack only hears about them when their Linear issue opens or reopens. The same holds for an archived repo, or one that is not in the org, that Inspector findings are attributed to. Findings attributed to a repo in `repos.exclude` are dropped.
 
 **Linear is needed for public repos.** Without `--linear`, public repos and findings with no repo are skipped, and `nag` says how many repos it skipped.
 

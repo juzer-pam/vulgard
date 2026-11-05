@@ -2,8 +2,12 @@
 # the scheduled workflow (passed via --org), so it is left unset here.
 
 repos:
+  # Repos whose Dependabot alerts get tracking issues. Set it to the repos that don't deploy to
+  # AWS: a repo Amazon Inspector has findings for (see `inspector`) is left to Inspector, and
+  # its old Dependabot issue is closed. Rollout, stale deployments and Inspector cover every
+  # repo that isn't excluded, whatever `include` says.
   include: ["*"]
-  exclude: []            # e.g. ["sandbox-*", "legacy-monolith"]
+  exclude: []            # left alone by every topic and by rollout, e.g. ["sandbox-*", "legacy-*"]
 
 # Days from when an alert opened until it must be fixed.
 sla_days:

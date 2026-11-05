@@ -1,7 +1,7 @@
 org: acme
 repos:
-  include: ["*"]
-  exclude: ["sandbox-*"]
+  include: ["*"]          # Dependabot alert issues, except repos Inspector tracks (inspector below)
+  exclude: ["sandbox-*"]  # left alone by every topic and by rollout
 owners:
   payments-api: ["@acme/payments"]
 default_owners: ["@acme/platform"]

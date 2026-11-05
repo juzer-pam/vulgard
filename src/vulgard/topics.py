@@ -396,16 +396,16 @@ def _linear_issue(
 def _inspector_pass(
     ctx: NagContext,
 ) -> tuple[list[InspectorRepo], InspectorReport, list[RepoRun], list[Action]]:
-    """A GitHub issue per selected private repo with items, a Linear sub-issue per repo under
-    a parent issue per team, and one Linear issue for findings with no repo. Public repos, and
-    repos vulgard doesn't select, are tracked in Linear only, so only with --linear. With
-    `inspector.report_only` nothing is written and no runs are returned."""
+    """A GitHub issue per private repo with items, a Linear sub-issue per repo under a parent
+    issue per team, and one Linear issue for findings with no repo. Public repos, and repos
+    vulgard doesn't list (archived or not in the org), are tracked in Linear only, so only with
+    --linear. With `inspector.report_only` nothing is written and no runs are returned."""
     gh, config, linear = ctx.clients.github, ctx.config, ctx.linear
     found = ctx.inspector
     if isinstance(found, Exception):
         raise found
-    selected, report = found
-    private = {r["name"] for r in selected if not is_public(r)}
+    repos, report = found
+    private = {r["name"] for r in repos if not is_public(r)}
     if ctx.only:
         private &= set(ctx.only)
     issues = load_issues(gh, config, SPEC, sorted(private))
