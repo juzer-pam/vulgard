@@ -59,4 +59,4 @@ deployments:
   auto:
     repos: ["payments-*"]
 inspector:
-  linear_labels: [security]
+  min_severity: high

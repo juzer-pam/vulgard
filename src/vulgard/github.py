@@ -130,9 +130,6 @@ class GitHub:
     def list_open_alerts(self, org: str) -> list[dict[str, Any]]:
         return self._paginate(f"/orgs/{org}/dependabot/alerts", {"state": "open"})
 
-    def list_fixed_alerts(self, org: str) -> list[dict[str, Any]]:
-        return self._paginate(f"/orgs/{org}/dependabot/alerts", {"state": "fixed"})
-
     def get_sbom(self, org: str, repo: str) -> dict[str, Any] | None:
         """The default branch's dependency graph as SPDX, or None when the repo has none."""
         try:

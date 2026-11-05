@@ -810,13 +810,13 @@ def test_aws_inspector_wraps_aws_errors_in_scan_error():
 
 def test_inspector_config_defaults_and_validation():
     config = parse_config({"org": "acme"}).inspector
-    assert config == InspectorConfig(["us-east-1"], "high", [], [])
-    labelled = parse_config({"org": "acme", "inspector": {"linear_labels": ["security"]}})
-    assert labelled.inspector == InspectorConfig(linear_labels=["security"])
+    assert config == InspectorConfig(["us-east-1"], "high", [])
     with pytest.raises(ValueError, match="inspector.min_severity must be one of"):
         parse_config({"org": "acme", "inspector": {"min_severity": "urgent"}})
     with pytest.raises(ValueError, match="Unknown keys in 'inspector': enabled"):
         parse_config({"org": "acme", "inspector": {"enabled": True}})
+    with pytest.raises(ValueError, match="Unknown keys in 'inspector': linear_labels"):
+        parse_config({"org": "acme", "inspector": {"linear_labels": ["security"]}})
 
 
 # --- CLI

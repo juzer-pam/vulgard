@@ -24,13 +24,6 @@ class LinearError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True)
-class LinearIssue:
-    identifier: str
-    title: str
-    url: str
-
-
 class LinearClient(Protocol):
     def team(self, key: str) -> dict[str, Any]: ...
     def user_id(self, email: str) -> str | None: ...
@@ -42,7 +35,6 @@ class LinearClient(Protocol):
     def comment(self, issue_id: str, body: str) -> None: ...
     def attach_url(self, issue_id: str, url: str, title: str) -> None: ...
     def find_issue(self, team_key: str, title: str) -> dict[str, Any] | None: ...
-    def open_issues_with_labels(self, labels: list[str]) -> list[LinearIssue]: ...
 
 
 class Linear:
@@ -180,24 +172,6 @@ class Linear:
         )
         nodes = data["issues"]["nodes"]
         return nodes[0] if nodes else None
-
-    def open_issues_with_labels(self, labels: list[str]) -> list[LinearIssue]:
-        """Issues not completed or canceled that carry any of these label names."""
-        issues: list[LinearIssue] = []
-        after: str | None = None
-        while True:
-            data = self._gql(
-                "query($labels: [String!]!, $closed: [String!]!, $after: String) { issues("
-                "filter: { labels: { some: { name: { in: $labels } } }, "
-                "state: { type: { nin: $closed } } }, first: 100, after: $after) "
-                "{ nodes { identifier title url } pageInfo { hasNextPage endCursor } } }",
-                {"labels": labels, "closed": list(CLOSED_STATES), "after": after},
-            )
-            page = data["issues"]
-            issues += [LinearIssue(n["identifier"], n["title"], n["url"]) for n in page["nodes"]]
-            if not page["pageInfo"]["hasNextPage"]:
-                return issues
-            after = page["pageInfo"]["endCursor"]
 
 
 def state_id(team: dict[str, Any], state_type: str) -> str:

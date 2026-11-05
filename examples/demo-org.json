@@ -341,42 +341,6 @@
       }
     }
   ],
-  "fixed_alerts": [
-    {
-      "number": 9,
-      "state": "fixed",
-      "repository": {
-        "name": "inventory-service"
-      },
-      "created_at": "@-60d",
-      "updated_at": "@-5d",
-      "fixed_at": "@-5d",
-      "html_url": "https://github.com/acme/inventory-service/security/dependabot/9",
-      "dependency": {
-        "package": {
-          "ecosystem": "npm",
-          "name": "word-wrap"
-        },
-        "manifest_path": "package-lock.json"
-      },
-      "security_advisory": {
-        "ghsa_id": "GHSA-j8xg-fqg3-53r7",
-        "cve_id": "CVE-2023-26115",
-        "summary": "Regular expression denial of service",
-        "severity": "high"
-      },
-      "security_vulnerability": {
-        "package": {
-          "ecosystem": "npm",
-          "name": "word-wrap"
-        },
-        "severity": "high",
-        "first_patched_version": {
-          "identifier": "1.2.4"
-        }
-      }
-    }
-  ],
   "dependabot_prs": [
     {
       "number": 88,
@@ -1139,35 +1103,6 @@
       }
     ]
   },
-  "linear_issues": [
-    {
-      "identifier": "SEC-201",
-      "title": "Patch vulnerable packages in inventory-service Lambdas",
-      "url": "https://linear.app/acme/issue/SEC-201",
-      "state": "doing",
-      "labels": [
-        "security"
-      ]
-    },
-    {
-      "identifier": "SEC-202",
-      "title": "Triage payments-api Lambda findings",
-      "url": "https://linear.app/acme/issue/SEC-202",
-      "state": "todo",
-      "labels": [
-        "infra"
-      ]
-    },
-    {
-      "identifier": "SEC-203",
-      "title": "Patch payments-api Lambda packages",
-      "url": "https://linear.app/acme/issue/SEC-203",
-      "state": "done",
-      "labels": [
-        "security"
-      ]
-    }
-  ],
   "sboms": {
     "inventory-service": {
       "sbom": {
