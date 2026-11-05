@@ -297,8 +297,13 @@ def _why_unattributed(reason: Reason) -> str:
     match reason:
         case Reason.SHARED_ASSET_REPOSITORY:
             return (
-                "The image is in a repository every app in the account shares, so its name "
-                "can't say whose it is."
+                "The image is in a repository every app in the account shares, and no ECS task "
+                "definition that runs it names a repo."
+            )
+        case Reason.RUNNERS_IN_SEVERAL_REPOS:
+            return (
+                "The image is in a repository every app shares, and the ECS task definitions "
+                "that run it belong to different repos. Check which repo should own the fix."
             )
         case Reason.NO_DEPLOYMENT_TAGS:
             return (
