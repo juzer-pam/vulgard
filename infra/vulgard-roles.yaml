@@ -1,0 +1,182 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  IAM roles for vulgard. VulgardLifecycle is assumed by the vulgard fork's workflows through
+  GitHub OIDC. VulgardStackDelete is the role CloudFormation deletes stale stacks with, so the
+  lifecycle role never holds delete permissions on resources itself.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Who may assume VulgardLifecycle }
+        Parameters: [GitHubOrg, VulgardRepo, Branch, SubjectPrefix, ExistingOidcProviderArn]
+      - Label: { default: What VulgardLifecycle may do }
+        Parameters: [Writes, SstStateBucket, DeletePolicyArns]
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Description: The GitHub org that owns the vulgard fork.
+    AllowedPattern: "[A-Za-z0-9][A-Za-z0-9-]*"
+  VulgardRepo:
+    Type: String
+    Default: vulgard
+    Description: The fork's name.
+  Branch:
+    Type: String
+    Default: main
+    Description: The only branch whose workflows may assume VulgardLifecycle.
+  SubjectPrefix:
+    Type: String
+    Default: ""
+    Description: >-
+      Leave empty unless the fork uses GitHub's immutable OIDC subject. Then paste the
+      sub_claim_prefix from `gh api repos/<org>/<repo>/actions/oidc/customization/sub`,
+      for example repo:acme@123/vulgard@456.
+  ExistingOidcProviderArn:
+    Type: String
+    Default: ""
+    Description: >-
+      The account's GitHub OIDC provider, if it has one (IAM, Identity providers). Leave empty
+      to create one. Creating fails with "already exists" when the account has one.
+  Writes:
+    Type: String
+    Default: "false"
+    AllowedValues: ["false", "true"]
+    Description: Let vulgard redeploy and delete stale deployments. Start with false.
+  SstStateBucket:
+    Type: String
+    Default: sst-state-*
+    Description: Name or glob of SST's state bucket, the state value in SSM /sst/bootstrap.
+  DeletePolicyArns:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: >-
+      Managed policies VulgardStackDelete deletes resources with. Empty means
+      AdministratorAccess.
+
+Conditions:
+  CreateOidcProvider: !Equals [!Ref ExistingOidcProviderArn, ""]
+  RepoSubject: !Equals [!Ref SubjectPrefix, ""]
+  GrantWrites: !Equals [!Ref Writes, "true"]
+  AdministratorDelete: !Equals [!Join ["", !Ref DeletePolicyArns], ""]
+
+Resources:
+  GitHubOidc:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOidcProvider
+    # Other workflows in the account may come to rely on the provider.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  StackDelete:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: VulgardStackDelete
+      Description: CloudFormation deletes stale stacks' resources with this role for vulgard
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudformation.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { aws:SourceAccount: !Ref AWS::AccountId }
+      ManagedPolicyArns: !If
+        - AdministratorDelete
+        - [!Sub "arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess"]
+        - !Ref DeletePolicyArns
+      Tags:
+        - { Key: vulgard:repo, Value: !Ref VulgardRepo }
+
+  Lifecycle:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: VulgardLifecycle
+      Description: !Sub Assumed by ${GitHubOrg}/${VulgardRepo} to find and clean up stale deployments
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateOidcProvider, !Ref GitHubOidc, !Ref ExistingOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Join
+                  - ""
+                  - - !If [RepoSubject, !Sub "repo:${GitHubOrg}/${VulgardRepo}", !Ref SubjectPrefix]
+                    - !Sub ":ref:refs/heads/${Branch}"
+      Policies:
+        - PolicyName: vulgard-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadStacks
+                Effect: Allow
+                Action: [cloudformation:DescribeStacks, cloudformation:DescribeStackEvents]
+                Resource: "*"
+              - Sid: FindSstState
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/sst/bootstrap
+              - Sid: ReadSstState
+                Effect: Allow
+                Action: [s3:ListBucket, s3:GetObject]
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${SstStateBucket}
+                  - !Sub arn:${AWS::Partition}:s3:::${SstStateBucket}/*
+              - Sid: ReadAmplify
+                Effect: Allow
+                Action:
+                  - amplify:ListApps
+                  - amplify:ListBranches
+                  - amplify:ListJobs
+                  - amplify:GetApp
+                  - amplify:GetBranch
+                Resource: "*"
+              - Sid: ReadInspectorFindings
+                Effect: Allow
+                Action: inspector2:ListFindings
+                Resource: "*"
+        - !If
+          - GrantWrites
+          - PolicyName: vulgard-write
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: DeleteStacks
+                  Effect: Allow
+                  Action: cloudformation:DeleteStack
+                  Resource: "*"
+                - Sid: PassOnlyTheDeleteRole
+                  Effect: Allow
+                  Action: iam:PassRole
+                  Resource: !GetAtt StackDelete.Arn
+                  Condition:
+                    StringEquals: { iam:PassedToService: cloudformation.amazonaws.com }
+                - Sid: EmptyServerlessBuckets
+                  Effect: Allow
+                  Action: [s3:ListBucketVersions, s3:DeleteObject, s3:DeleteObjectVersion]
+                  Resource:
+                    - !Sub arn:${AWS::Partition}:s3:::*-serverlessdeploymentbucket-*
+                    - !Sub arn:${AWS::Partition}:s3:::*-serverlessdeploymentbucket-*/*
+                - Sid: ReleaseAndDeleteAmplifyBranches
+                  Effect: Allow
+                  Action: [amplify:StartJob, amplify:DeleteBranch]
+                  Resource: "*"
+          - !Ref AWS::NoValue
+      Tags:
+        - { Key: vulgard:repo, Value: !Ref VulgardRepo }
+
+Outputs:
+  LifecycleRoleArn:
+    Description: Set as the VULGARD_AWS_ROLE variable on the vulgard fork
+    Value: !GetAtt Lifecycle.Arn
+  StackDeleteRoleArn:
+    Description: Set as deployments.aws.delete_role_arn in the org config
+    Value: !GetAtt StackDelete.Arn

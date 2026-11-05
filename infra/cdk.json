@@ -1,9 +1,0 @@
-{
-  "app": "npx tsx bin/vulgard-roles.ts",
-  "context": {
-    "vulgardRepo": "vulgard",
-    "branch": "main",
-    "writes": false,
-    "sstStateBucket": "sst-state-*"
-  }
-}
