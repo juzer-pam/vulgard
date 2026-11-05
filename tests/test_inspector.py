@@ -24,17 +24,26 @@ from vulgard.estate import (
     Tier,
     VercelProject,
 )
-from vulgard.fixtures import FixtureInspector
+from vulgard.fixtures import FakeLinear, FixtureInspector
 from vulgard.inspector import (
+    NO_TRACKING,
     Attributed,
+    Coverage,
+    CoverageMatch,
     Finding,
     InspectorResource,
     Reason,
     ResourceType,
+    Tracking,
     Unattributed,
     Via,
     build_report,
+    build_tracking,
+    cover,
+    group_findings,
 )
+from vulgard.linear import LinearIssue
+from vulgard.policy import Alert, DependabotPR, RepoReport
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
 NOW = datetime(2026, 11, 1, 12, tzinfo=UTC)
@@ -185,7 +194,7 @@ ATTRIBUTION_CASES = [
 @pytest.mark.parametrize(("on", "expected"), ATTRIBUTION_CASES)
 def test_attribution_rules(on, expected):
     finding = make_finding(on)
-    report = build_report([finding], DEPLOYMENTS, InspectorConfig(), None)
+    report = build_report([finding], DEPLOYMENTS, InspectorConfig(), None, {})
     assert report.attributions == {finding.arn: expected}
     if isinstance(expected, Attributed):
         placed = report.by_repo[expected.repo]
@@ -200,7 +209,7 @@ def test_a_stack_name_in_two_regions_attributes_to_the_resource_region():
         ResourceType.LAMBDA, "arn:west", "api-dev-handler", "us-west-2", {STACK: "api-dev"}
     )
     finding = make_finding(resource)
-    report = build_report([finding], [API_DEV, west], InspectorConfig(), None)
+    report = build_report([finding], [API_DEV, west], InspectorConfig(), None, {})
     assert report.attributions[finding.arn].repo == "api-west"
 
 
@@ -210,7 +219,7 @@ def test_via_counts_how_findings_were_attributed():
         make_finding(function("b", {"repo": "payments"})),
         make_finding(function("c", {"Repo": "payments"})),
     ]
-    report = build_report(found, DEPLOYMENTS, InspectorConfig(), None)
+    report = build_report(found, DEPLOYMENTS, InspectorConfig(), None, {})
     assert report.via == Counter({Via.DEPLOYMENT: 1, Via.TAG: 2})
 
 
@@ -227,7 +236,7 @@ def test_findings_group_by_vulnerability_and_package_worst_first():
         make_finding(first, "CVE-3"),
         make_finding(second, "CVE-3", package="lodash"),
     ]
-    groups = build_report(found, DEPLOYMENTS, InspectorConfig(), None).by_repo["api"]
+    groups = build_report(found, DEPLOYMENTS, InspectorConfig(), None, {}).by_repo["api"]
     assert [
         (group.vulnerability_id, group.package, group.severity, group.resources)
         for group in groups
@@ -252,7 +261,7 @@ def test_findings_group_by_vulnerability_and_package_worst_first():
 def test_min_severity_keeps_that_severity_and_worse(minimum, kept):
     on = function(tags={STACK: "api-dev"})
     found = [make_finding(on, f"CVE-{severity}", severity=severity) for severity in SEVERITIES]
-    report = build_report(found, DEPLOYMENTS, InspectorConfig(min_severity=minimum), None)
+    report = build_report(found, DEPLOYMENTS, InspectorConfig(min_severity=minimum), None, {})
     assert [group.severity for group in report.by_repo["api"]] == kept
 
 
@@ -261,7 +270,7 @@ def test_ignore_drops_findings_by_resource_name_or_stack_tag():
     by_name = function("scratch-handler", {STACK: "api-dev"})
     by_stack = function("handler", {STACK: "scratch-stack"})
     found = [make_finding(on) for on in (kept, by_name, by_stack)]
-    report = build_report(found, DEPLOYMENTS, InspectorConfig(ignore=["scratch-*"]), None)
+    report = build_report(found, DEPLOYMENTS, InspectorConfig(ignore=["scratch-*"]), None, {})
     assert [group.resources for group in report.by_repo["api"]] == [["worker"]]
     assert report.unattributed == {} and len(report.attributions) == 1
 
@@ -272,10 +281,202 @@ def test_only_keeps_those_repos_and_drops_the_unattributed():
         make_finding(function("b", {"sst:app": "inventory", "sst:stage": "prod"})),
         make_finding(function("c")),
     ]
-    report = build_report(found, DEPLOYMENTS, InspectorConfig(), {"inventory"})
+    report = build_report(found, DEPLOYMENTS, InspectorConfig(), {"inventory"}, {})
     assert list(report.by_repo) == ["inventory"]
     assert report.unattributed == {}
     assert len(report.attributions) == 1
+
+
+# --- coverage
+
+
+def alert(cve="CVE-2024-0001", ghsa="GHSA-aaaa-bbbb-cccc", package="axios", repo="api", number=1):
+    return Alert.from_api(
+        {
+            "number": number,
+            "repository": {"name": repo},
+            "created_at": "2026-10-01T00:00:00Z",
+            "html_url": f"https://github.com/acme/{repo}/security/dependabot/{number}",
+            "dependency": {"package": {"name": package, "ecosystem": "npm"}},
+            "security_advisory": {"ghsa_id": ghsa, "cve_id": cve, "severity": "high"},
+        }
+    )
+
+
+def bump(package="axios", repo="api", number=7):
+    return DependabotPR.from_api(
+        {
+            "number": number,
+            "title": f"Bump {package} from 1.0.0 to 1.0.1",
+            "html_url": f"https://github.com/acme/{repo}/pull/{number}",
+            "repository_url": f"https://api.github.com/repos/acme/{repo}",
+            "created_at": "2026-10-20T00:00:00Z",
+        }
+    )
+
+
+def issue(title="Patch api images", identifier="SEC-1"):
+    return LinearIssue(identifier, title, f"https://linear.app/acme/issue/{identifier}")
+
+
+def tracking(open_alerts=(), fixed_alerts=(), prs=(), linear_issues=()):
+    return Tracking(tuple(open_alerts), tuple(fixed_alerts), tuple(prs), tuple(linear_issues))
+
+
+def a_group(vulnerability_id="CVE-2024-0001", package="axios", package_manager="NODE"):
+    on = function(tags={STACK: "api-dev"})
+    finding = make_finding(on, vulnerability_id, package, package_manager=package_manager)
+    return group_findings([finding], NO_TRACKING)[0]
+
+
+STATUS_CASES = [
+    pytest.param(tracking(open_alerts=[alert()]), "NODE", Coverage.DEPENDABOT_ALERT, id="alert"),
+    pytest.param(
+        tracking(prs=[bump()]), "NODE", Coverage.DEPENDABOT_PR, id="pr-bumping-the-package"
+    ),
+    pytest.param(
+        tracking(fixed_alerts=[alert()]), "NODE", Coverage.FIXED_NOT_DEPLOYED, id="fixed-alert"
+    ),
+    pytest.param(
+        tracking(linear_issues=[issue()]), "NODE", Coverage.LINEAR_ISSUE, id="linear-issue"
+    ),
+    pytest.param(NO_TRACKING, "OS", Coverage.UNTRACKED_OS_PACKAGE, id="os-package"),
+    pytest.param(NO_TRACKING, "NODE", Coverage.UNTRACKED, id="application-package"),
+    pytest.param(
+        tracking(
+            open_alerts=[alert(cve="CVE-2024-9999", ghsa="GHSA-zzzz-zzzz-zzzz")],
+            prs=[bump(package="lodash")],
+            fixed_alerts=[alert(cve="CVE-2024-8888", ghsa="GHSA-yyyy-yyyy-yyyy")],
+        ),
+        "NODE",
+        Coverage.UNTRACKED,
+        id="alerts-and-prs-for-something-else",
+    ),
+]
+
+
+@pytest.mark.parametrize(("known", "package_manager", "expected"), STATUS_CASES)
+def test_cover_gives_each_group_one_status(known, package_manager, expected):
+    group = a_group(package_manager=package_manager)
+    assert cover(group, known).status is expected
+
+
+def test_an_open_alert_links_the_pull_request_that_fixes_it():
+    fix = bump()
+    flagged = alert()
+    flagged.fix_pr = fix
+    match = cover(a_group(), tracking(open_alerts=[flagged], prs=[fix]))
+    assert (match.status, match.alert, match.pr) == (Coverage.DEPENDABOT_ALERT, flagged, fix)
+
+
+def test_a_pull_request_without_an_alert_is_the_match_when_no_alert_names_the_vulnerability():
+    fix = bump()
+    match = cover(a_group(), tracking(prs=[fix]))
+    assert (match.status, match.alert, match.pr) == (Coverage.DEPENDABOT_PR, None, fix)
+
+
+def test_an_open_alert_wins_over_a_fixed_alert_for_the_same_vulnerability():
+    open_one, fixed_one = alert(number=2), alert(number=1)
+    match = cover(a_group(), tracking(open_alerts=[open_one], fixed_alerts=[fixed_one]))
+    assert (match.status, match.alert) == (Coverage.DEPENDABOT_ALERT, open_one)
+
+
+def test_a_fixed_alert_beats_a_linear_issue():
+    fixed_one = alert()
+    match = cover(a_group(), tracking(fixed_alerts=[fixed_one], linear_issues=[issue()]))
+    assert (match.status, match.alert) == (Coverage.FIXED_NOT_DEPLOYED, fixed_one)
+
+
+def test_a_ghsa_vulnerability_id_matches_an_alert_by_its_ghsa_id_ignoring_case():
+    ghsa_only = alert(cve=None, ghsa="GHSA-AAAA-bbbb-cccc")
+    match = cover(a_group("ghsa-aaaa-BBBB-cccc"), tracking(open_alerts=[ghsa_only]))
+    assert (match.status, match.alert) == (Coverage.DEPENDABOT_ALERT, ghsa_only)
+
+
+def test_a_linear_issue_covers_every_group_nothing_stronger_covers():
+    found = [issue("Patch api images", "SEC-1"), issue("api container audit", "SEC-2")]
+    match = cover(a_group(package_manager="OS"), tracking(linear_issues=found))
+    assert (match.status, match.linear_issues) == (Coverage.LINEAR_ISSUE, tuple(found))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(lambda: CoverageMatch(Coverage.UNTRACKED, alert=alert()), id="alert"),
+        pytest.param(lambda: CoverageMatch(Coverage.DEPENDABOT_ALERT), id="missing-alert"),
+        pytest.param(lambda: CoverageMatch(Coverage.DEPENDABOT_PR), id="missing-pr"),
+        pytest.param(lambda: CoverageMatch(Coverage.UNTRACKED, pr=bump()), id="pr"),
+        pytest.param(lambda: CoverageMatch(Coverage.LINEAR_ISSUE), id="missing-issues"),
+        pytest.param(
+            lambda: CoverageMatch(Coverage.UNTRACKED, linear_issues=(issue(),)), id="issues"
+        ),
+    ],
+)
+def test_a_coverage_match_only_carries_what_its_status_has(bad):
+    with pytest.raises(AssertionError):
+        bad()
+
+
+def test_a_linear_issue_naming_a_longer_repo_does_not_cover_the_shorter_one():
+    reports = {"payments": RepoReport("payments"), "payments-api": RepoReport("payments-api")}
+    titles = [
+        issue("Patch payments-api images", "SEC-1"),
+        issue("Audit payments, then rotate keys", "SEC-2"),
+        issue("Upgrade (payments-api-v2)", "SEC-3"),
+    ]
+    got = build_tracking(reports, [], titles)
+    assert [i.identifier for i in got["payments"].linear_issues] == ["SEC-2"]
+    assert [i.identifier for i in got["payments-api"].linear_issues] == ["SEC-1"]
+
+
+def test_build_tracking_keeps_open_alerts_prs_and_fixed_alerts_per_repo():
+    open_one, fix = alert(), bump()
+    report = RepoReport("api", alerts=[open_one], dependabot_prs=[fix])
+    elsewhere = alert(repo="web", number=3)
+    fixed_one = alert(repo="api", number=4)
+    got = build_tracking({"api": report, "web": RepoReport("web")}, [fixed_one, elsewhere], [])
+    assert got["api"] == tracking([open_one], [fixed_one], [fix])
+    assert got["web"] == tracking(fixed_alerts=[elsewhere])
+
+
+def test_linear_ignores_issues_without_a_configured_label_and_closed_ones():
+    def existing(identifier, state, label):
+        return {
+            "identifier": identifier,
+            "title": identifier.lower(),
+            "url": f"u-{identifier}",
+            "state": state,
+            "labels": [label],
+        }
+
+    issues = [
+        existing("SEC-1", "doing", "security"),
+        existing("SEC-2", "todo", "infra"),
+        existing("SEC-3", "done", "security"),
+        existing("SEC-4", "wontdo", "security"),
+    ]
+    found = FakeLinear(issues).open_issues_with_labels(["security", "vulnerability"])
+    assert found == [LinearIssue("SEC-1", "sec-1", "u-SEC-1")]
+
+
+def test_build_report_covers_each_group_by_its_repo_and_only_untracks_the_unattributed():
+    matching = alert()
+    found = [
+        make_finding(function("a", {STACK: "api-dev"})),
+        make_finding(function("b"), "CVE-2024-0002", package_manager="OS"),
+        make_finding(function("c"), "CVE-2024-0001"),
+    ]
+    known = {"api": tracking(open_alerts=[matching], linear_issues=[issue()])}
+    report = build_report(found, DEPLOYMENTS, InspectorConfig(), None, known)
+    assert [group.coverage.status for group in report.by_repo["api"]] == [Coverage.DEPENDABOT_ALERT]
+    unattributed = report.unattributed[Reason.NO_DEPLOYMENT_TAGS]
+    assert {group.vulnerability_id: group.coverage.status for group in unattributed} == {
+        "CVE-2024-0001": Coverage.UNTRACKED,
+        "CVE-2024-0002": Coverage.UNTRACKED_OS_PACKAGE,
+    }
+    assert report.coverage == Counter(
+        {Coverage.DEPENDABOT_ALERT: 1, Coverage.UNTRACKED: 1, Coverage.UNTRACKED_OS_PACKAGE: 1}
+    )
 
 
 # --- parser
@@ -489,7 +690,9 @@ def test_aws_inspector_wraps_aws_errors_in_scan_error():
 
 def test_inspector_config_defaults_and_validation():
     config = parse_config({"org": "acme"}).inspector
-    assert config == InspectorConfig(["us-east-1"], "high", [])
+    assert config == InspectorConfig(["us-east-1"], "high", [], [])
+    labelled = parse_config({"org": "acme", "inspector": {"linear_labels": ["security"]}})
+    assert labelled.inspector == InspectorConfig(linear_labels=["security"])
     with pytest.raises(ValueError, match="inspector.min_severity must be one of"):
         parse_config({"org": "acme", "inspector": {"min_severity": "urgent"}})
     with pytest.raises(ValueError, match="Unknown keys in 'inspector': enabled"):
@@ -513,9 +716,13 @@ def vulnerabilities(groups):
 
 def test_report_attributes_the_demo_findings_to_repos(tmp_path, capsys):
     report = report_json(tmp_path, capsys)
-    assert report["via"] == {"tag": 0, "deployment": 5}
+    assert report["via"] == {"tag": 0, "deployment": 7}
     assert {repo: vulnerabilities(groups) for repo, groups in report["repos"].items()} == {
-        "inventory-service": [("CVE-2024-45296", ["inventory-production-ReorderFunction"])],
+        "inventory-service": [
+            ("CVE-2023-26115", ["inventory-production-ReorderFunction"]),
+            ("CVE-2024-21534", ["inventory-production-ReorderFunction"]),
+            ("CVE-2024-45296", ["inventory-production-ReorderFunction"]),
+        ],
         "payments-api": [
             (
                 "CVE-2022-23539",
@@ -573,7 +780,7 @@ def test_repo_scope_keeps_only_that_repo(tmp_path, capsys):
     report = report_json(tmp_path, capsys, "", "--repo", "inventory-service")
     assert list(report["repos"]) == ["inventory-service"]
     assert report["unattributed"] == {}
-    assert report["via"] == {"tag": 0, "deployment": 1}
+    assert report["via"] == {"tag": 0, "deployment": 3}
 
 
 def test_report_table_lists_repos_worst_first_then_the_unattributed(capsys):
@@ -581,12 +788,12 @@ def test_report_table_lists_repos_worst_first_then_the_unattributed(capsys):
     out = capsys.readouterr().out
     rows = [line.split() for line in out.splitlines()]
     assert ["payments-api", "1", "2", "0", "0", "1", "3", "4"] in rows
-    assert ["inventory-service", "0", "1", "0", "0", "0", "1", "1"] in rows
+    assert ["inventory-service", "0", "3", "0", "0", "0", "3", "1"] in rows
     assert ["unattributed:", "shared_asset_repository", "0", "1", "0", "0", "0", "1", "1"] in rows
     assert ["unattributed:", "no_deployment_tags", "0", "1", "0", "0", "0", "1", "1"] in rows
     order = [out.index(name) for name in ("payments-api", "inventory-service", "unattributed")]
     assert order == sorted(order)
-    assert "7 finding(s) in 6 group(s) at high or above" in out
+    assert "9 finding(s) in 8 group(s) at high or above" in out
 
 
 def test_report_table_says_so_when_nothing_matches(capsys):
@@ -608,3 +815,61 @@ def test_a_failing_inspector_scan_is_a_one_line_error(monkeypatch, capsys):
     monkeypatch.setattr(FixtureInspector, "findings", throttled)
     assert main([*FIXTURE_ARGS, "report", "--topic", "inspector"]) == 1
     assert capsys.readouterr().err == "error: Inspector scan failed: throttled\n"
+
+
+def test_report_json_gives_every_demo_status_with_what_covers_it(tmp_path, capsys):
+    report = report_json(tmp_path, capsys)
+    assert report["coverage"] == {
+        "dependabot_alert": 2,
+        "dependabot_pr": 1,
+        "fixed_not_deployed": 1,
+        "linear_issue": 1,
+        "untracked_os_package": 1,
+        "untracked": 2,
+    }
+    groups = {
+        group["vulnerability_id"]: group
+        for found in [*report["repos"].values(), *report["unattributed"].values()]
+        for group in found
+    }
+    assert groups["CVE-2022-23539"]["alert"] == {
+        "number": 12,
+        "state": "open",
+        "url": "https://github.com/acme/payments-api/security/dependabot/12",
+    }
+    assert groups["CVE-2022-23539"]["pr"] == {
+        "number": 88,
+        "url": "https://github.com/acme/payments-api/pull/88",
+    }
+    assert groups["CVE-2023-26115"]["coverage"] == "fixed_not_deployed"
+    assert groups["CVE-2023-26115"]["alert"]["state"] == "fixed"
+    assert groups["CVE-2024-21534"]["coverage"] == "dependabot_pr"
+    assert groups["CVE-2024-45296"]["linear_issues"] == [
+        {"identifier": "SEC-201", "url": "https://linear.app/acme/issue/SEC-201"}
+    ]
+    assert groups["CVE-2024-25062"]["coverage"] == "untracked_os_package"
+    assert groups["CVE-2024-4068"]["coverage"] == "untracked"
+    assert groups["CVE-2024-4068"]["linear_issues"] == []
+
+
+def test_report_table_counts_groups_by_coverage_status(capsys):
+    assert main([*FIXTURE_ARGS, "report", "--topic", "inspector"]) == 0
+    out = capsys.readouterr().out
+    rows = [line.split() for line in out.splitlines()]
+    assert ["repo", *(status.value for status in Coverage)] in rows
+    assert ["payments-api", "2", "0", "0", "0", "1", "0"] in rows
+    assert ["inventory-service", "0", "1", "1", "1", "0", "0"] in rows
+    assert ["unattributed:", "no_deployment_tags", "0", "0", "0", "0", "0", "1"] in rows
+    assert "Linear issues were not checked" not in out
+
+
+def test_without_linear_labels_the_table_says_linear_was_not_checked(tmp_path, capsys):
+    config = tmp_path / "vulgard.yml"
+    config.write_text((EXAMPLES / "vulgard.yml").read_text().replace("[security]", "[]"))
+    fixtures = ["--fixtures", str(EXAMPLES / "demo-org.json"), "--config", str(config)]
+    assert main([*fixtures, "report", "--topic", "inspector"]) == 0
+    out = capsys.readouterr().out
+    assert "Linear issues were not checked" in out
+    assert ["inventory-service", "0", "1", "1", "0", "0", "1"] in [
+        line.split() for line in out.splitlines()
+    ]
