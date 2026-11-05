@@ -81,11 +81,15 @@ class AlertRef:
     package: str
 
 
-# Dependabot's PR body: "| [axios](https://...) | `1.5.0` | `1.6.0` |", "Updates `axios` from" and
-# "Removes `zod`" (a dependency dropped by the update also resolves its alerts). The table comes
-# before the first <details>; release notes inside <details> can hold tables of their own.
-PR_TABLE_ROW_RE = re.compile(r"^\|\s*\[?([^\]|(]+?)\]?(?:\([^)]*\))?\s*\|\s*`[^`]+`\s*\|", re.M)
-PR_UPDATES_LINE_RE = re.compile(r"^(?:Updates `([^`]+)` from|Removes `([^`]+)`)", re.M)
+# Dependabot's PR body: "| [axios](https://...) | `1.5.0` | `1.6.0` |", "Updates `axios` from 1.5.0
+# to 1.6.0" and "Removes `zod`" (a dependency dropped by the update also resolves its alerts). The
+# table comes before the first <details>; release notes inside <details> can hold tables of their
+# own.
+PR_TITLE_RE = re.compile(r"[Bb]ump (\S+) from \S+ to (\S+)")
+PR_TABLE_ROW_RE = re.compile(
+    r"^\|\s*\[?([^\]|(]+?)\]?(?:\([^)]*\))?\s*\|\s*`[^`]+`\s*\|\s*`([^`]+)`\s*\|", re.M
+)
+PR_UPDATES_LINE_RE = re.compile(r"^(?:Updates `([^`]+)` from \S+ to (\S+)|Removes `([^`]+)`)", re.M)
 
 
 @dataclass
@@ -119,15 +123,24 @@ class DependabotPR:
         )
 
     @property
-    def packages(self) -> set[str]:
-        """A single update names its package in the title ("Bump lodash from 4.17.20 to
-        4.17.21"). A grouped or multi-package PR ("Bump the npm group ... with 3 updates", "Bump
-        zod and next") lists them in the body, as a table or as "Updates `x` from" and
-        "Removes `x`" lines."""
-        found = re.findall(r"[Bb]ump (\S+) from", self.title)
+    def updates(self) -> dict[str, str | None]:
+        """Each package the PR changes, lowercased, with the version it moves to, or None when
+        the PR removes it. A single update names its package in the title ("Bump lodash from
+        4.17.20 to 4.17.21"). A grouped or multi-package PR ("Bump the npm group ... with 3
+        updates", "Bump zod and next") lists them in the body, as a table or as "Updates `x`
+        from" and "Removes `x`" lines."""
+        found: list[tuple[str, str | None]] = PR_TITLE_RE.findall(self.title)
         found += PR_TABLE_ROW_RE.findall(self.body.split("<details>", 1)[0])
-        found += [name for pair in PR_UPDATES_LINE_RE.findall(self.body) for name in pair if name]
-        return {name.strip().lower() for name in found}
+        for updated, target, removed in PR_UPDATES_LINE_RE.findall(self.body):
+            found.append((updated, target) if updated else (removed, None))
+        updates: dict[str, str | None] = {}
+        for name, target in found:
+            updates.setdefault(name.strip().lower(), target)
+        return updates
+
+    @property
+    def packages(self) -> set[str]:
+        return set(self.updates)
 
     @property
     def ci_passing(self) -> bool:
