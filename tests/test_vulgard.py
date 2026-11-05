@@ -945,3 +945,21 @@ def test_report_covers_the_include_scope_only(tmp_path, capsys):
     args = [*scope_args(tmp_path), "report", "--format", "json"]
     assert main(args) == 0
     assert list(json.loads(capsys.readouterr().out)) == ["docs-site"]
+
+
+def test_repos_with_open_issues_comes_from_one_search():
+    queries = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        queries.append(request.url.params["q"])
+        items = [
+            {"repository_url": "https://api.github.com/repos/acme/web"},
+            {"repository_url": "https://api.github.com/repos/acme/api"},
+            {"repository_url": "https://api.github.com/repos/acme/web"},
+        ]
+        return httpx.Response(200, json={"total_count": 3, "items": items})
+
+    gh = GitHub(token="t")
+    gh._http = httpx.Client(base_url="https://api.test", transport=httpx.MockTransport(handler))
+    assert gh.repos_with_open_issues("acme", "vulgard") == ["api", "web"]
+    assert queries == ['org:acme is:issue is:open archived:false label:"vulgard"']

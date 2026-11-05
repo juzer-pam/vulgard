@@ -60,7 +60,7 @@ from .repos import all_repos, build_index, dependabot_repos, is_public, resolve_
 from .slack import Block
 from .stale import StaleMemory, StaleReport, evaluate, spec, survey
 from .stale_plan import plan_repo
-from .vulns import collect, critical_repos, leaderboard_blocks, nag
+from .vulns import collect, critical_repos, hand_over, leaderboard_blocks, nag
 
 SCAN_ERRORS = (ScanError, GitHubError, httpx.HTTPError)
 
@@ -140,6 +140,10 @@ def run_vulns(ctx: NagContext) -> TopicResult:
     repos = dependabot_repos(config, ctx.repos, tracked_by_inspector)
     reports = {r["name"]: ctx.reports[r["name"]] for r in repos}
     runs = nag(gh, config, reports, apply=ctx.apply, now=ctx.now, linear=ctx.linear)
+    if ctx.inspector_tracks_repos:
+        runs += hand_over(
+            gh, config, ctx.repos, set(reports), tracked_by_inspector, ctx.apply, ctx.linear
+        )
     since = ctx.now - timedelta(days=7)
     closed = summarize_closed(gh.list_closed_alerts(config.org, since), set(reports), since)
     blocks: list[Block] = []
