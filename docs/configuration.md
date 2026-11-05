@@ -215,17 +215,19 @@ this table is the reference. With `enabled: false`, vulgard builds no AWS or Ver
 
 Dependabot only knows the dependencies a repo declares. Inspector sees what is actually running. The catch is that a finding names a resource, such as a Lambda function, and says nothing about the repo that deployed it. vulgard works out the repo, so a finding can reach the team that can fix it.
 
-So far this topic is read-only. `vulgard report --topic inspector` prints the findings grouped by repo, and says which of them something already tracks. It opens no issues and sends no messages, and `nag` doesn't accept `--topic inspector`.
+So far this topic is read-only. `vulgard report --topic inspector` prints the findings grouped by repo, and says what each fix still needs. It opens no issues and sends no messages, and `nag` doesn't accept `--topic inspector`.
 
 ```bash
 vulgard report --topic inspector                       # a table: one row per repo
-vulgard report --topic inspector --format json         # every group and resource, and how each got its repo
+vulgard report --topic inspector --format json         # every fix item and resource, and how each got its repo
 vulgard report --topic inspector --repo payments-api   # only that repo; unattributed rows are left out
 ```
 
-The first table has one row per repo, worst first, then one row per reason a finding has no repo (see [Findings with no repo](#findings-with-no-repo)). The severity columns, `exploitable` and `fixable` count **groups**. A group is one vulnerability in one package, however many resources have it, so ten Lambda functions with the same vulnerable `axios` count once. `resources` counts the distinct resources affected.
+**Fix items.** One upgrade of a package fixes every vulnerability that package has in a repo, so vulgard reports a **fix item** per package, not per vulnerability. A fix item holds all the findings for one package in one repo, whichever vulnerabilities and resources they come from. For example, two vulnerabilities in `axios` found on three Lambda functions are one fix item. Its severity is the worst of its findings, and its **required version** (`fixed_in` in the JSON) is the highest fixed version any finding names.
 
-The second table has the same rows and counts groups by [coverage status](#coverage). In the JSON, each group has its `coverage`, the matching `alert` (`number`, `state`, `url`), `pr` (`number`, `url`) and `linear_issues` (a list of `identifier` and `url`), and the top level has a `coverage` object with the number of groups per status.
+The first table has one row per repo, worst first, then one row per reason a finding has no repo (see [Findings with no repo](#findings-with-no-repo)). The severity columns, `items` and `exploitable` count fix items. `resources` counts the distinct resources affected.
+
+The second table has the same rows and counts items by [fix status](#fix-status). In the JSON, `repos` and `unattributed` list the fix items. Each has its `package`, `ecosystem`, `severity`, `fixed_in`, `status`, `main_versions` (the versions on the default branch), `pr` (`number`, `url` and `target`, the version the pull request moves to, or `null`), `vulnerability_ids`, `exploit_available`, `resources` and the `findings` behind it. The top level has a `status` object with the number of items per status.
 
 ```yaml
 inspector:
@@ -233,7 +235,6 @@ inspector:
   min_severity: high
   ignore:
     - "scratch-*"                      # never reported
-  linear_labels: [security]            # Linear issues with this label count as coverage
 ```
 
 | Key | Type | Default | What it does |
@@ -241,7 +242,6 @@ inspector:
 | `regions` | list | `[us-east-1]` | Regions to read findings from. Credentials come from the environment, through GitHub OIDC in CI. The role needs `inspector2:ListFindings`, which the `VulgardLifecycle` role in `infra/` grants. |
 | `min_severity` | `critical`, `high`, `medium` or `low` | `high` | The least severe findings to report. Anything more severe is included too. See below for why it defaults to `high`. |
 | `ignore` | list of globs | `[]` | Resources never reported. Each glob is matched against the resource name (a Lambda function name, an ECR repository name or an EC2 instance id) and against its CloudFormation stack name. |
-| `linear_labels` | list of label names | `[]` | Open Linear issues carrying one of these labels can cover a repo's findings (see [Coverage](#coverage)). Leave it empty to skip the Linear check. It also needs the Linear API key (`linear.api_key_env`) to be set. |
 
 **Why `min_severity` defaults to `high`.** An AWS account can hold a very large number of findings. In one account we checked, about 62,000 findings were active and about 22,600 of them were high or critical. Reading all of them is slow, and the report would bury the ones that need action first. Lower it to `medium` or `low` when you want the long tail. Inspector's `INFORMATIONAL` and `UNTRIAGED` findings are never reported, and only package vulnerabilities are, not code or network findings.
 
@@ -258,20 +258,21 @@ There is no repo map to maintain for Inspector. vulgard tries these in order and
 
 The JSON output records which rule was used for each finding (`via` is `tag` or `deployment`) and, for `deployment`, the deployment's name.
 
-### Coverage
+### Fix status
 
-Inspector finds a problem, but a team may already be working on it. For each group, vulgard checks what already tracks it, so the report separates findings someone owns from findings nobody does. It only reads GitHub and Linear. It never writes to either.
+Each fix item gets one status that says what has to happen next. vulgard only reads GitHub, so a status is a statement about the code on the repo's default branch and its open pull requests, never a promise about what is running. It checks the statuses below in order and uses the first that holds.
 
-A group gets the first status below that matches. They are checked in this order, from the strongest sign that someone is on it to none:
+Two terms first. The **dependency graph** is GitHub's list of every package version on a repo's default branch, read from its lockfiles and manifests. A **Dependabot pull request** is a pull request the Dependabot bot opens to upgrade a dependency. A single-package pull request names its package in the title. A grouped one lists its packages in a table in the description, and vulgard reads the version each moves to from the table's `To` column, from lines such as ``Updates `axios` from 1.5.0 to 1.6.0``, and from lines such as ``Removes `zod` ``.
 
-1. `dependabot_alert`: the repo has an open **Dependabot alert** (GitHub's notice that a dependency has a known vulnerability) for the same vulnerability. vulgard compares the finding's vulnerability ID with the alert's CVE or GHSA ID, ignoring case. A **CVE** is the public ID of a vulnerability, such as `CVE-2024-45296`, and a **GHSA** is GitHub's own advisory ID. If Dependabot already opened a pull request that fixes the alert, the JSON links it as `pr`. An alert you accepted under `exceptions` counts too, because someone has already decided about it.
-2. `dependabot_pr`: no alert matches, but an open Dependabot pull request in the repo bumps the vulnerable package. Merging it will likely fix the finding once the repo redeploys.
-3. `fixed_not_deployed`: the repo has a Dependabot alert for the vulnerability that is already **fixed**. The code is fixed on GitHub but Inspector still finds the old version running, so the fix hasn't been deployed yet. Redeploying is usually all it takes. vulgard also counts a group here when there was never an alert: it reads the repo's **dependency graph** (GitHub's list of every package version on the default branch), and if the package is gone from the branch, or every copy of it is already at or past the version Inspector says fixes it, the code has moved on. This only applies to ecosystems the branch declares at all, so a Java library in a Node repo is not counted as removed. In the JSON, such a group has `branch_fix` with the version the branch has, or `null` when the package is gone. Open alerts and pull requests are checked first because they show the work is still in progress.
-4. `linear_issue`: an open Linear issue with one of the `linear_labels` names the repo in its title. The match is on the whole name, ignoring case, so an issue about `payments-api` covers `payments-api` but not `payments`, and an issue about `payments` doesn't cover `payments-api`. Such an issue is a note that someone is looking at the repo, not at one vulnerability, so one issue covers all the repo's groups that are not covered by a stronger status. Completed and canceled issues are ignored.
-5. `untracked_os_package`: nothing tracks it, and the vulnerable package comes from the operating system (Inspector reports its package manager as `OS`). Dependabot can't see these because they aren't in any repo's dependency files. The usual fix is a newer base image or runtime.
-6. `untracked`: nothing tracks it, and it is an application package. This is the status to work through first.
+1. `needs_deploy`: the code is already fixed on the default branch, but Inspector still finds the old version, so the fix is not running yet. Either the package is gone from the default branch's dependency graph, or every copy of it there is at or past the required version. Redeploy the repo. This only applies to ecosystems (npm, Maven, PyPI, Go) the default branch declares at all. A Java library in a repo that only has Node manifests is not counted as removed, because the graph says nothing about Java there.
+2. `needs_pr_merge`: the fix isn't on the default branch yet, but an open Dependabot pull request in the repo moves the package to the required version or later, or removes it. Merge the pull request, then redeploy. The JSON links it as `pr`. A pull request to a version below the required one doesn't count, because merging it would leave the vulnerability in place.
+3. `needs_fix`: the default branch still has a vulnerable version and no open pull request covers it. Someone has to upgrade the package, or ask Dependabot to. This is the status to work through first.
+4. `needs_os_update`: the vulnerable package comes from the operating system (Inspector reports its package manager as `OS`). Dependabot can't see these because they aren't in any repo's dependency files. The usual fix is a newer base image or runtime.
+5. `unknown`: none of the above can be decided, so a person has to look. This happens when the repo has no dependency graph, when the package's ecosystem isn't on the default branch, when Inspector gives no fixed version and the package is still on the branch, or when a version can't be read as a number.
 
-Groups with no repo (see below) can only be `untracked_os_package` or `untracked`, because there is no repo to look up.
+When Inspector names no fixed version for some finding, the item's required version is unknown. In that case `needs_deploy` only means the package is gone from the branch, and `needs_pr_merge` only means a pull request removes it, because vulgard can't compare any version against an unknown one.
+
+Findings with no repo (see below) have no repository to look in, so their items can only be `needs_os_update` or `unknown`.
 
 ### Findings with no repo
 

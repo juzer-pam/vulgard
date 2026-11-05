@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import asdict
 from typing import Any
 
@@ -15,10 +15,10 @@ from .enforce import apply_enforce, plan_enforce
 from .estate import ScanError, discover
 from .fixtures import fixture_clients
 from .github import GitHubError
-from .inspector import attributed_repos, branch_dependencies, build_report, build_tracking
+from .inspector import attributed_repos, branch_dependencies, build_report
 from .linear import LinearError
 from .plan import ActionKind, Topic
-from .policy import Alert, RepoReport, evaluate, now_utc
+from .policy import DependabotPR, RepoReport, now_utc
 from .render import format_table, render_org_summary
 from .repos import build_index, resolve_owners, selected_repos
 from .rollout import apply_rollout, merge_open_rollout_prs, plan_lifecycle_rollout, plan_rollout
@@ -102,27 +102,21 @@ def report_inspector(clients: Clients, config: Config, args: argparse.Namespace)
     deployments = discover(clients.scanners(), index, config.deployments)
     findings = clients.inspector().findings()
     only = set(args.repo) if args.repo else None
-    reports = evaluate(
-        config,
-        gh.list_open_alerts(config.org),
-        gh.list_dependabot_prs(config.org),
-        [repo["name"] for repo in repos],
-    )
-    fixed_alerts = [Alert.from_api(raw) for raw in gh.list_fixed_alerts(config.org)]
-    linear = clients.linear if config.inspector.linear_labels else None
-    issues = linear.open_issues_with_labels(config.inspector.linear_labels) if linear else []
+    prs: defaultdict[str, list[DependabotPR]] = defaultdict(list)
+    for raw in gh.list_dependabot_prs(config.org):
+        pr = DependabotPR.from_api(raw)
+        prs[pr.repo].append(pr)
     in_report = attributed_repos(findings, deployments, config.inspector)
     branches = {
         repo: branch_dependencies(sbom)
         for repo in sorted(in_report & only if only else in_report)
         if (sbom := gh.get_sbom(config.org, repo)) is not None
     }
-    tracking = build_tracking(reports, fixed_alerts, issues, branches)
-    report = build_report(findings, deployments, config.inspector, only, tracking)
+    report = build_report(findings, deployments, config.inspector, only, prs, branches)
     if args.format == "json":
         print(json.dumps(inspector_render.report_json(report), indent=2))
     else:
-        print(inspector_render.report_text(report, config.inspector, linear is not None))
+        print(inspector_render.report_text(report, config.inspector))
     return 0
 
 

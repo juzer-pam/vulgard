@@ -8,73 +8,67 @@ from typing import Any, assert_never
 from .config import SEVERITIES, InspectorConfig
 from .inspector import (
     Attributed,
-    Coverage,
-    CoverageMatch,
     Finding,
     FindingAttribution,
-    FindingGroup,
+    FixItem,
+    FixStatus,
     InspectorReport,
     Unattributed,
     Via,
 )
 from .render import format_table
 
-LINEAR_SKIPPED = (
-    "Linear issues were not checked: they need inspector.linear_labels and a Linear API key."
-)
 
-
-def _severity_counts(groups: list[FindingGroup]) -> list[int]:
-    by_severity = Counter(group.severity for group in groups)
+def _severity_counts(items: list[FixItem]) -> list[int]:
+    by_severity = Counter(item.severity for item in items)
     return [by_severity[severity] for severity in SEVERITIES]
 
 
-def _row(label: str, groups: list[FindingGroup]) -> list[str]:
-    resources = {finding.resource.id for group in groups for finding in group.findings}
+def _row(label: str, items: list[FixItem]) -> list[str]:
+    resources = {finding.resource.id for item in items for finding in item.findings}
     return [
         label,
-        *(str(count) for count in _severity_counts(groups)),
-        str(sum(group.exploit_available for group in groups)),
-        str(sum(group.fix_available for group in groups)),
+        *(str(count) for count in _severity_counts(items)),
+        str(len(items)),
+        str(sum(item.exploit_available for item in items)),
         str(len(resources)),
     ]
 
 
-def _worst_first(item: tuple[str, list[FindingGroup]]) -> tuple[list[int], str]:
-    repo, groups = item
-    return [-count for count in _severity_counts(groups)], repo
+def _worst_first(entry: tuple[str, list[FixItem]]) -> tuple[list[int], str]:
+    repo, items = entry
+    return [-count for count in _severity_counts(items)], repo
 
 
-def _coverage_row(label: str, groups: list[FindingGroup]) -> list[str]:
-    by_status = Counter(group.coverage.status for group in groups)
-    return [label, *(str(by_status[status]) for status in Coverage)]
+def _status_row(label: str, items: list[FixItem]) -> list[str]:
+    by_status = Counter(item.status for item in items)
+    return [label, *(str(by_status[status]) for status in FixStatus)]
 
 
-def report_text(report: InspectorReport, cfg: InspectorConfig, linear_checked: bool) -> str:
+def report_text(report: InspectorReport, cfg: InspectorConfig) -> str:
     """One row per repo, worst first, then one per reason findings couldn't be attributed.
-    Severity, exploitable and fixable count groups; resources counts distinct resources. A second
-    table, in the same row order, counts groups by coverage status."""
+    Severity, items and exploitable count fix items; resources counts distinct resources. A
+    second table, in the same row order, counts items by status."""
     sections = [*report.by_repo.values(), *report.unattributed.values()]
-    group_count = sum(len(groups) for groups in sections)
-    if not group_count:
+    item_count = sum(len(items) for items in sections)
+    if not item_count:
         return f"No Inspector findings at {cfg.min_severity} or above."
     ordered = sorted(report.by_repo.items(), key=_worst_first)
     ordered += [
-        (f"unattributed: {reason}", groups) for reason, groups in report.unattributed.items()
+        (f"unattributed: {reason}", items) for reason, items in report.unattributed.items()
     ]
-    rows = [_row(label, groups) for label, groups in ordered]
-    coverage_rows = [_coverage_row(label, groups) for label, groups in ordered]
+    rows = [_row(label, items) for label, items in ordered]
+    status_rows = [_status_row(label, items) for label, items in ordered]
     attributed = ", ".join(f"{report.via[kind]} by {kind}" for kind in Via)
-    header = ["repo", *SEVERITIES, "exploitable", "fixable", "resources"]
+    header = ["repo", *SEVERITIES, "items", "exploitable", "resources"]
     return "\n".join(
         [
-            f"{len(report.attributions)} finding(s) in {group_count} group(s) at "
+            f"{len(report.attributions)} finding(s) in {item_count} fix item(s) at "
             f"{cfg.min_severity} or above; attributed: {attributed}.",
             format_table(header, rows),
             "",
-            "Coverage: groups by what already tracks them.",
-            *([] if linear_checked else [LINEAR_SKIPPED]),
-            format_table(["repo", *Coverage], coverage_rows),
+            "Fix status: items by what they need.",
+            format_table(["repo", *FixStatus], status_rows),
         ]
     )
 
@@ -108,36 +102,21 @@ def _finding_json(finding: Finding, attribution: FindingAttribution) -> dict[str
     }
 
 
-def _coverage_json(match: CoverageMatch) -> dict[str, Any]:
-    alert, pr = match.alert, match.pr
+def _item_json(item: FixItem, report: InspectorReport) -> dict[str, Any]:
+    pr = item.pr
     return {
-        "coverage": match.status,
-        "alert": alert
-        and {
-            "number": alert.number,
-            "state": "fixed" if match.status is Coverage.FIXED_NOT_DEPLOYED else "open",
-            "url": alert.html_url,
-        },
-        "pr": pr and {"number": pr.number, "url": pr.html_url},
-        "branch_fix": match.branch_fix and {"default_branch_version": match.branch_fix.version},
-        "linear_issues": [
-            {"identifier": issue.identifier, "url": issue.url} for issue in match.linear_issues
-        ],
-    }
-
-
-def _group_json(group: FindingGroup, report: InspectorReport) -> dict[str, Any]:
-    return {
-        "vulnerability_id": group.vulnerability_id,
-        "package": group.package,
-        "severity": group.severity,
-        "exploit_available": group.exploit_available,
-        "fix_available": group.fix_available,
-        "fixed_in": group.fixed_in,
-        "resources": group.resources,
-        **_coverage_json(group.coverage),
+        "package": item.package,
+        "ecosystem": item.ecosystem,
+        "severity": item.severity,
+        "fixed_in": item.fixed_in,
+        "status": item.status,
+        "main_versions": sorted(item.main_versions),
+        "pr": pr and {"number": pr.number, "url": pr.html_url, "target": item.pr_target},
+        "vulnerability_ids": item.vulnerability_ids,
+        "exploit_available": item.exploit_available,
+        "resources": item.resources,
         "findings": [
-            _finding_json(finding, report.attributions[finding.arn]) for finding in group.findings
+            _finding_json(finding, report.attributions[finding.arn]) for finding in item.findings
         ],
     }
 
@@ -145,13 +124,13 @@ def _group_json(group: FindingGroup, report: InspectorReport) -> dict[str, Any]:
 def report_json(report: InspectorReport) -> dict[str, Any]:
     return {
         "via": {kind.value: report.via[kind] for kind in Via},
-        "coverage": {status.value: report.coverage[status] for status in Coverage},
+        "status": {status.value: report.status[status] for status in FixStatus},
         "repos": {
-            repo: [_group_json(group, report) for group in groups]
-            for repo, groups in report.by_repo.items()
+            repo: [_item_json(item, report) for item in items]
+            for repo, items in report.by_repo.items()
         },
         "unattributed": {
-            reason.value: [_group_json(group, report) for group in groups]
-            for reason, groups in report.unattributed.items()
+            reason.value: [_item_json(item, report) for item in items]
+            for reason, items in report.unattributed.items()
         },
     }

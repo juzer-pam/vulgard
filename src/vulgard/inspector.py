@@ -8,8 +8,9 @@ repo is the first of these that answers:
     2. the estate deployment the resource belongs to (see `estate.py`), found through its
        CloudFormation stack, SST app and stage, or Amplify app and branch tags
 
-Findings of one vulnerability in one package, across resources, are reported as one group. Each
-group is then checked against what already tracks it (see `cover`).
+All the findings of one package in one repo, across vulnerabilities and resources, are one fix
+item, because a single upgrade fixes them all. Each fix item gets a status that says what it needs
+next (see `FixStatus`).
 
 This module is pure. The parser is `aws.sight_finding`, the live source is `aws.AwsInspector`,
 and the printed tables and JSON are in `inspector_render.py`.
@@ -20,8 +21,8 @@ from __future__ import annotations
 import fnmatch
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, assert_never
@@ -37,8 +38,7 @@ from .estate import (
     VercelProject,
     repo_name,
 )
-from .linear import LinearIssue
-from .policy import Alert, DependabotPR, RepoReport
+from .policy import DependabotPR
 
 STACK_NAME_TAG = "aws:cloudformation:stack-name"
 SERVERLESS_REPOSITORY_RE = re.compile(r"^serverless-(.+)$")
@@ -198,16 +198,7 @@ def attribute(
     return Unattributed(Reason.DEPLOYMENT_NOT_FOUND if keys else Reason.NO_DEPLOYMENT_TAGS)
 
 
-# --- coverage
-
-
-class Coverage(StrEnum):
-    DEPENDABOT_ALERT = "dependabot_alert"
-    DEPENDABOT_PR = "dependabot_pr"
-    FIXED_NOT_DEPLOYED = "fixed_not_deployed"
-    LINEAR_ISSUE = "linear_issue"
-    UNTRACKED_OS_PACKAGE = "untracked_os_package"
-    UNTRACKED = "untracked"
+# --- the dependency graph
 
 
 @dataclass(frozen=True)
@@ -254,196 +245,177 @@ def _version(text: str) -> tuple[int, ...] | None:
     return tuple(int(part) for part in found.group(1).split(".")) if found else None
 
 
-@dataclass(frozen=True)
-class BranchFix:
-    """The default branch no longer has the vulnerable version: `version` is the lowest it has,
-    already at or past the fix, or None when the package is gone from the branch."""
-
-    version: str | None
+# --- fix items
 
 
-def fixed_on_branch(group: FindingGroup, branch: BranchDependencies) -> BranchFix | None:
-    """Only for ecosystems the branch declares at all: a package missing from a repo with no
-    manifest for its ecosystem (a Java JAR in a Node repo) says nothing about a fix."""
-    ecosystem = next(
-        (
-            SBOM_ECOSYSTEMS[finding.package_manager]
-            for finding in group.findings
-            if finding.package_manager in SBOM_ECOSYSTEMS
-        ),
-        None,
-    )
-    if ecosystem is None or ecosystem not in branch.ecosystems:
-        return None
-    present = branch.versions.get(_package_key(ecosystem, group.package))
-    if not present:
-        return BranchFix(None)
-    fixed = _version(group.fixed_in) if group.fixed_in else None
-    parsed = [_version(version) for version in present]
-    if fixed is None or any(version is None for version in parsed):
-        return None
-    if all(version is not None and version >= fixed for version in parsed):
-        lowest = min(present, key=lambda version: _version(version) or ())
-        return BranchFix(lowest)
-    return None
+class FixStatus(StrEnum):
+    """What a fix item needs next. The first that holds is the item's status."""
+
+    NEEDS_DEPLOY = "needs_deploy"
+    NEEDS_PR_MERGE = "needs_pr_merge"
+    NEEDS_FIX = "needs_fix"
+    NEEDS_OS_UPDATE = "needs_os_update"
+    UNKNOWN = "unknown"
+
+
+def _normalized(ecosystem: str | None, name: str) -> str:
+    return _package_key(ecosystem or "", name)[1]
+
+
+def _pr_updates(pr: DependabotPR, ecosystem: str | None) -> dict[str, str | None]:
+    return {_normalized(ecosystem, name): target for name, target in pr.updates.items()}
 
 
 @dataclass(frozen=True)
-class Tracking:
-    """What vulgard found for one repo. `branch` is None when the repo has no dependency
-    graph to read."""
+class FixItem:
+    """Every finding for one package in one repo. `severity` is the worst of its findings and
+    `fixed_in` the highest version any of them needs, None when a finding names none or a version
+    can't be parsed. `main_versions` are the versions the default branch has, empty when the
+    package is gone or the branch doesn't declare the package's ecosystem."""
 
-    open_alerts: tuple[Alert, ...]
-    fixed_alerts: tuple[Alert, ...]
-    prs: tuple[DependabotPR, ...]
-    linear_issues: tuple[LinearIssue, ...]  # open, labelled, and naming the repo in the title
-    branch: BranchDependencies | None = None
-
-
-NO_TRACKING = Tracking((), (), (), ())
-
-
-@dataclass(frozen=True)
-class CoverageMatch:
-    status: Coverage
-    alert: Alert | None = None  # DEPENDABOT_ALERT, or the fixed alert of FIXED_NOT_DEPLOYED
-    pr: DependabotPR | None = None  # DEPENDABOT_PR, or the DEPENDABOT_ALERT's fix PR
-    linear_issues: tuple[LinearIssue, ...] = ()  # LINEAR_ISSUE only
-    branch_fix: BranchFix | None = None  # FIXED_NOT_DEPLOYED with no fixed alert
-
-    def __post_init__(self) -> None:
-        if self.status is Coverage.FIXED_NOT_DEPLOYED:
-            assert (self.alert is None) != (self.branch_fix is None)
-        else:
-            assert self.branch_fix is None
-            assert (self.alert is not None) == (self.status is Coverage.DEPENDABOT_ALERT)
-        assert self.pr is not None or self.status is not Coverage.DEPENDABOT_PR
-        assert self.pr is None or self.status in (Coverage.DEPENDABOT_PR, Coverage.DEPENDABOT_ALERT)
-        assert bool(self.linear_issues) == (self.status is Coverage.LINEAR_ISSUE)
-
-
-def names_repo(title: str, repo: str) -> bool:
-    """Whether `title` names `repo` as a whole word, ignoring case as GitHub does. Repo names
-    contain hyphens and dots, so `payments` is not named by a title that says `payments-api`,
-    but a sentence may end right after the name."""
-    pattern = rf"(?<![\w.-]){re.escape(repo)}(?![\w-]|\.\w)"
-    return re.search(pattern, title, re.IGNORECASE) is not None
-
-
-def build_tracking(
-    reports: Mapping[str, RepoReport],
-    fixed_alerts: Iterable[Alert],
-    issues: Iterable[LinearIssue],
-    branches: Mapping[str, BranchDependencies] | None = None,
-) -> dict[str, Tracking]:
-    """Pure. `reports` are from `policy.evaluate`, with Dependabot PRs already linked to alerts.
-    An open alert accepted under `exceptions` still counts: someone has decided about it."""
-    fixed: defaultdict[str, list[Alert]] = defaultdict(list)
-    for alert in fixed_alerts:
-        fixed[alert.repo].append(alert)
-    return {
-        repo: Tracking(
-            open_alerts=(*report.alerts, *report.accepted),
-            fixed_alerts=tuple(fixed[repo]),
-            prs=tuple(report.dependabot_prs),
-            linear_issues=tuple(issue for issue in issues if names_repo(issue.title, repo)),
-            branch=(branches or {}).get(repo),
-        )
-        for repo, report in reports.items()
-    }
-
-
-def _names_vulnerability(alert: Alert, vulnerability_id: str) -> bool:
-    return vulnerability_id.lower() in {(alert.cve_id or "").lower(), alert.ghsa_id.lower()}
-
-
-def cover(group: FindingGroup, tracking: Tracking) -> CoverageMatch:
-    """The first thing that already tracks the group, in the order of `Coverage`."""
-    for alert in tracking.open_alerts:
-        if _names_vulnerability(alert, group.vulnerability_id):
-            return CoverageMatch(Coverage.DEPENDABOT_ALERT, alert=alert, pr=alert.fix_pr)
-    package = group.package.lower()
-    pr = next((pr for pr in tracking.prs if package in pr.packages), None)
-    if pr is not None:
-        return CoverageMatch(Coverage.DEPENDABOT_PR, pr=pr)
-    for alert in tracking.fixed_alerts:
-        if _names_vulnerability(alert, group.vulnerability_id):
-            return CoverageMatch(Coverage.FIXED_NOT_DEPLOYED, alert=alert)
-    fix = fixed_on_branch(group, tracking.branch) if tracking.branch else None
-    if fix is not None:
-        return CoverageMatch(Coverage.FIXED_NOT_DEPLOYED, branch_fix=fix)
-    if tracking.linear_issues:
-        return CoverageMatch(Coverage.LINEAR_ISSUE, linear_issues=tracking.linear_issues)
-    if any(finding.package_manager == OS_PACKAGE_MANAGER for finding in group.findings):
-        return CoverageMatch(Coverage.UNTRACKED_OS_PACKAGE)
-    return CoverageMatch(Coverage.UNTRACKED)
-
-
-# --- grouping and the report
-
-
-@dataclass(frozen=True)
-class FindingGroup:
-    """One vulnerability in one package, across every resource that has it. `severity` is the
-    highest of its findings, `exploit_available` is true if any finding has an exploit, and
-    `fixed_in` is the first version a finding names. `coverage` starts as untracked and is set
-    by `cover` once the group exists."""
-
-    vulnerability_id: str
     package: str
+    ecosystem: str | None
     severity: str
-    exploit_available: bool
     fixed_in: str | None
     findings: tuple[Finding, ...]
-    coverage: CoverageMatch = CoverageMatch(Coverage.UNTRACKED)
+    status: FixStatus
+    main_versions: frozenset[str]
+    pr: DependabotPR | None
+
+    def __post_init__(self) -> None:
+        assert (self.pr is not None) == (self.status is FixStatus.NEEDS_PR_MERGE)
+
+    @property
+    def vulnerability_ids(self) -> list[str]:
+        return sorted({finding.vulnerability_id for finding in self.findings})
 
     @property
     def resources(self) -> list[str]:
         return sorted({finding.resource.name for finding in self.findings})
 
     @property
-    def fix_available(self) -> bool:
-        return any(finding.fix_available for finding in self.findings)
+    def exploit_available(self) -> bool:
+        return any(finding.exploit_available for finding in self.findings)
+
+    @property
+    def pr_target(self) -> str | None:
+        """The version the PR moves the package to, None when it removes it or there is no PR."""
+        if self.pr is None:
+            return None
+        return _pr_updates(self.pr, self.ecosystem)[_normalized(self.ecosystem, self.package)]
 
 
-def _group(findings: list[Finding], tracking: Tracking) -> FindingGroup:
-    group = FindingGroup(
-        vulnerability_id=findings[0].vulnerability_id,
-        package=findings[0].package,
-        severity=min((finding.severity for finding in findings), key=SEVERITIES.index),
-        exploit_available=any(finding.exploit_available for finding in findings),
-        fixed_in=next((finding.fixed_in for finding in findings if finding.fixed_in), None),
-        findings=tuple(findings),
+def _required_version(findings: Sequence[Finding]) -> str | None:
+    fixed = [finding.fixed_in for finding in findings if finding.fixed_in]
+    if len(fixed) < len(findings):
+        return None
+    parsed = {version: _version(version) for version in fixed}
+    if None in parsed.values():
+        return None
+    return max(parsed, key=lambda version: parsed[version] or ())
+
+
+def _all_at_least(versions: Iterable[str], required: tuple[int, ...] | None) -> bool | None:
+    """Whether every version is at or past `required`, None when that can't be told."""
+    parsed = [_version(version) for version in versions]
+    if required is None or None in parsed:
+        return None
+    return all(version >= required for version in parsed if version is not None)
+
+
+def _fixes(target: str | None, required: tuple[int, ...] | None) -> bool | None:
+    """Whether moving to `target` fixes the item, None when that can't be told."""
+    if target is None:
+        return True
+    if required is None:
+        return False
+    version = _version(target)
+    return None if version is None else version >= required
+
+
+def _decide(
+    findings: Sequence[Finding],
+    required: tuple[int, ...] | None,
+    prs: Sequence[DependabotPR],
+    branch: BranchDependencies | None,
+) -> tuple[FixStatus, frozenset[str], DependabotPR | None]:
+    first = findings[0]
+    ecosystem = SBOM_ECOSYSTEMS.get(first.package_manager)
+    if first.package_manager == OS_PACKAGE_MANAGER:
+        return FixStatus.NEEDS_OS_UPDATE, frozenset(), None
+    present: frozenset[str] = frozenset()
+    on_branch: bool | None = None
+    if ecosystem is not None and branch is not None and ecosystem in branch.ecosystems:
+        present = branch.versions.get(_package_key(ecosystem, first.package), frozenset())
+        on_branch = _all_at_least(present, required)
+        if not present or on_branch:
+            return FixStatus.NEEDS_DEPLOY, present, None
+    name = _normalized(ecosystem, first.package)
+    covers: list[tuple[DependabotPR, bool | None]] = []
+    for pr in sorted(prs, key=lambda pr: pr.number):
+        updates = _pr_updates(pr, ecosystem)
+        if name in updates:
+            covers.append((pr, _fixes(updates[name], required)))
+    fixing = next((pr for pr, fixes in covers if fixes), None)
+    if fixing is not None:
+        return FixStatus.NEEDS_PR_MERGE, present, fixing
+    undecided = any(fixes is None for _, fixes in covers)
+    if present and on_branch is False and not undecided:
+        return FixStatus.NEEDS_FIX, present, None
+    return FixStatus.UNKNOWN, present, None
+
+
+def _fix_item(
+    findings: Sequence[Finding], prs: Sequence[DependabotPR], branch: BranchDependencies | None
+) -> FixItem:
+    fixed_in = _required_version(findings)
+    status, main_versions, pr = _decide(
+        findings, _version(fixed_in) if fixed_in else None, prs, branch
     )
-    return replace(group, coverage=cover(group, tracking))
+    return FixItem(
+        package=findings[0].package,
+        ecosystem=SBOM_ECOSYSTEMS.get(findings[0].package_manager),
+        severity=min((finding.severity for finding in findings), key=SEVERITIES.index),
+        fixed_in=fixed_in,
+        findings=tuple(findings),
+        status=status,
+        main_versions=main_versions,
+        pr=pr,
+    )
 
 
-def group_findings(findings: Iterable[Finding], tracking: Tracking) -> list[FindingGroup]:
-    """Most severe first, then the widest."""
+def fix_items(
+    findings: Iterable[Finding], prs: Sequence[DependabotPR], branch: BranchDependencies | None
+) -> list[FixItem]:
+    """One item per package, worst severity first, then with an exploit, then on the most
+    resources. Findings of an OS package or an ecosystem the SBOM has no type for are keyed by
+    their package manager, so an OS `openssl` and an npm `openssl` stay apart."""
     buckets: defaultdict[tuple[str, str], list[Finding]] = defaultdict(list)
     for finding in findings:
-        buckets[(finding.vulnerability_id, finding.package)].append(finding)
+        ecosystem = SBOM_ECOSYSTEMS.get(finding.package_manager, finding.package_manager)
+        buckets[_package_key(ecosystem, finding.package)].append(finding)
     return sorted(
-        (_group(bucket, tracking) for bucket in buckets.values()),
-        key=lambda group: (
-            SEVERITIES.index(group.severity),
-            -len(group.resources),
-            group.vulnerability_id,
-            group.package,
+        (_fix_item(bucket, prs, branch) for bucket in buckets.values()),
+        key=lambda item: (
+            SEVERITIES.index(item.severity),
+            not item.exploit_available,
+            -len(item.resources),
+            item.package,
+            item.ecosystem or "",
         ),
     )
 
 
 @dataclass(frozen=True)
 class InspectorReport:
-    by_repo: dict[str, list[FindingGroup]]
-    unattributed: dict[Reason, list[FindingGroup]]
+    by_repo: dict[str, list[FixItem]]
+    unattributed: dict[Reason, list[FixItem]]
     attributions: dict[str, FindingAttribution]  # finding ARN -> how it was attributed
 
     @property
-    def coverage(self) -> Counter[Coverage]:
-        groups = [*self.by_repo.values(), *self.unattributed.values()]
-        return Counter(group.coverage.status for repo_groups in groups for group in repo_groups)
+    def status(self) -> Counter[FixStatus]:
+        sections = [*self.by_repo.values(), *self.unattributed.values()]
+        return Counter(item.status for items in sections for item in items)
 
     @property
     def via(self) -> Counter[Via]:
@@ -483,12 +455,14 @@ def build_report(
     deployments: Iterable[Deployment],
     cfg: InspectorConfig,
     only: set[str] | None,
-    tracking: Mapping[str, Tracking],
+    prs: Mapping[str, Sequence[DependabotPR]],
+    branches: Mapping[str, BranchDependencies],
 ) -> InspectorReport:
     """Pure. Drops findings below `min_severity` and `ignore` matches, attributes the rest, and
-    groups them. `only` (from --repo) keeps just those repos and the unattributed buckets go,
-    as in `stale.survey(scoped=True)`. `tracking` is by repo; unattributed groups and repos missing
-    from it are checked against nothing."""
+    turns them into fix items. `only` (from --repo) keeps just those repos and the unattributed
+    buckets go, as in `stale.survey(scoped=True)`. `prs` are each repo's open Dependabot PRs and
+    `branches` its default branch's dependencies. A repo missing from `branches` has no
+    dependency graph, and unattributed findings have neither."""
     attributed = _attribute_wanted(findings, deployments, cfg)
     if only is not None:
         attributed = [
@@ -508,11 +482,11 @@ def build_report(
                 assert_never(unreachable)
     return InspectorReport(
         by_repo={
-            repo: group_findings(in_repo[repo], tracking.get(repo, NO_TRACKING))
+            repo: fix_items(in_repo[repo], prs.get(repo, ()), branches.get(repo))
             for repo in sorted(in_repo)
         },
         unattributed={
-            reason: group_findings(without_repo[reason], NO_TRACKING)
+            reason: fix_items(without_repo[reason], (), None)
             for reason in Reason
             if reason in without_repo
         },
