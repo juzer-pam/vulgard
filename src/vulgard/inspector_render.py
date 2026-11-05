@@ -75,8 +75,12 @@ def report_text(report: InspectorReport, cfg: InspectorConfig) -> str:
 
 def _attribution_json(attribution: FindingAttribution) -> dict[str, Any]:
     match attribution:
-        case Attributed(via=via, deployment=deployment):
-            return {"via": via, "deployment": deployment}
+        case Attributed(via=via, deployment=deployment, runner=runner):
+            return {
+                "via": via,
+                "deployment": deployment,
+                "runner": runner and {"kind": runner.kind, "name": runner.name},
+            }
         case Unattributed():
             return {}
         case _ as unreachable:

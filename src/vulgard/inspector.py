@@ -7,6 +7,8 @@ repo is the first of these that answers:
     1. a repo tag on the resource
     2. the estate deployment the resource belongs to (see `estate.py`), found through its
        CloudFormation stack, SST app and stage, or Amplify app and branch tags
+    3. for an image in a shared asset repository only, the Lambda function or ECS task definition
+       that runs it, attributed by rules 1 and 2 applied to the runner's own tags
 
 All the findings of one package in one repo, across vulnerabilities and resources, are one fix
 item, because a single upgrade fixes them all. Each fix item gets a status that says what it needs
@@ -22,7 +24,7 @@ import fnmatch
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, assert_never
@@ -47,6 +49,10 @@ OS_PACKAGE_MANAGER = "OS"
 # Inspector's package manager -> the SBOM purl type GitHub's dependency graph uses for it.
 SBOM_ECOSYSTEMS = {"NODE": "npm", "JAVA": "maven", "PYTHON": "pypi", "GO": "golang"}
 VERSION_RE = re.compile(r"^v?(\d+(?:\.\d+)*)")
+ECR_IMAGE_RE = re.compile(
+    r"^\d+\.dkr\.ecr(?:-fips)?\.(?P<region>[a-z0-9-]+)\.amazonaws\.com(?:\.cn)?"
+    r"/(?P<repository>[^@:]+)(?::(?P<tag>[^@]+))?(?:@(?P<digest>sha256:[0-9a-f]+))?$"
+)
 
 
 class ResourceType(StrEnum):
@@ -62,6 +68,8 @@ class InspectorResource:
     name: str  # function name, ECR repository name or EC2 instance id
     region: str
     tags: Mapping[str, str]  # ECR images have none
+    image_digest: str | None = None  # ECR images only
+    image_tags: tuple[str, ...] = ()  # ECR images only
 
 
 @dataclass(frozen=True)
@@ -83,10 +91,87 @@ class Finding:
     resource: InspectorResource
 
 
+# --- what runs an image
+
+
+class RunnerKind(StrEnum):
+    LAMBDA = "lambda"
+    ECS_TASK_DEFINITION = "ecs_task_definition"
+
+
+@dataclass(frozen=True)
+class ImageRef:
+    """A container image as a Lambda function or ECS task definition names it. A Lambda function
+    names its image by digest. A task definition names it by digest or by tag, and a tag is how
+    CDK and SST reference the images they push."""
+
+    region: str
+    repository: str
+    digest: str | None
+    tag: str | None
+
+    def __post_init__(self) -> None:
+        assert (self.digest is None) != (self.tag is None)
+
+    @property
+    def reference(self) -> str:
+        return self.digest or self.tag or ""
+
+
+def parse_image(uri: str) -> ImageRef | None:
+    """`<account>.dkr.ecr.<region>.amazonaws.com/<repository>[:tag][@sha256:...]`. None for an
+    image outside ECR. When both are given the digest wins, because it is what runs."""
+    found = ECR_IMAGE_RE.match(uri)
+    if found is None:
+        return None
+    digest = found["digest"]
+    tag = None if digest else found["tag"] or "latest"
+    return ImageRef(found["region"], found["repository"], digest, tag)
+
+
+@dataclass(frozen=True)
+class ImageRunner:
+    """A Lambda function or ECS task definition running one container image. A task definition
+    with several containers is one runner per image."""
+
+    kind: RunnerKind
+    name: str  # function name or task definition family
+    region: str
+    image: ImageRef
+    tags: Mapping[str, str]
+
+
+type ImageKey = tuple[str, str, str]  # (region, repository, digest or tag)
+type RunnerIndex = Mapping[ImageKey, Sequence[ImageRunner]]
+
+
+def index_runners(runners: Iterable[ImageRunner]) -> dict[ImageKey, list[ImageRunner]]:
+    table: defaultdict[ImageKey, list[ImageRunner]] = defaultdict(list)
+    for runner in runners:
+        image = runner.image
+        table[(image.region, image.repository, image.reference)].append(runner)
+    return dict(table)
+
+
+def _running(resource: InspectorResource, runners: RunnerIndex) -> list[ImageRunner]:
+    """The runners of an ECR image, matched by its digest or by any of its tags, in name order."""
+    references = [*resource.image_tags, *([resource.image_digest] if resource.image_digest else [])]
+    found = [
+        runner
+        for reference in references
+        for runner in runners.get((resource.region, resource.name, reference), ())
+    ]
+    return sorted(found, key=lambda runner: (runner.kind, runner.name))
+
+
 class InspectorSource(Protocol):
     """Parses Inspector's ListFindings into findings; nothing raw escapes."""
 
     def findings(self) -> list[Finding]: ...
+
+    def runners(self) -> list[ImageRunner]:
+        """The Lambda functions and ECS task definitions that run container images."""
+        ...
 
 
 # --- attribution
@@ -99,6 +184,7 @@ class Via(StrEnum):
 
 class Reason(StrEnum):
     SHARED_ASSET_REPOSITORY = "shared_asset_repository"
+    RUNNERS_IN_SEVERAL_REPOS = "runners_in_several_repos"
     NO_DEPLOYMENT_TAGS = "no_deployment_tags"
     DEPLOYMENT_NOT_FOUND = "deployment_not_found"
     DEPLOYMENT_UNATTRIBUTED = "deployment_unattributed"
@@ -106,9 +192,13 @@ class Reason(StrEnum):
 
 @dataclass(frozen=True)
 class Attributed:
+    """`via` and `deployment` say how the repo was found, for the resource or, when `runner` is
+    set, for the runner that runs the resource's image."""
+
     repo: str
     via: Via
     deployment: str | None = None
+    runner: ImageRunner | None = None
 
     def __post_init__(self) -> None:
         assert (self.deployment is not None) == (self.via is Via.DEPLOYMENT)
@@ -148,9 +238,8 @@ def index_deployments(deployments: Iterable[Deployment]) -> dict[DeploymentKey, 
     return table
 
 
-def candidate_keys(resource: InspectorResource) -> list[DeploymentKey]:
-    """The deployments a resource says it belongs to, in order of trust."""
-    tags, region = resource.tags, resource.region
+def tag_keys(tags: Mapping[str, str], region: str) -> list[DeploymentKey]:
+    """The deployments a resource's tags say it belongs to, in order of trust."""
     keys: list[DeploymentKey] = []
     if stack := tags.get(STACK_NAME_TAG):
         keys.append(("cfn", region, stack))
@@ -158,11 +247,17 @@ def candidate_keys(resource: InspectorResource) -> list[DeploymentKey]:
         keys.append(("sst", region, app, stage))
     if (app_id := tags.get("amplify:app-id")) and (branch := tags.get("amplify:branch-name")):
         keys.append(("amplify", region, app_id, branch))
+    return keys
+
+
+def candidate_keys(resource: InspectorResource) -> list[DeploymentKey]:
+    """The deployments a resource says it belongs to, in order of trust."""
+    keys = tag_keys(resource.tags, resource.region)
     if resource.type is ResourceType.ECR_IMAGE:
         # ECR images carry no tags. Serverless names its repository `serverless-<service>-<stage>`
         # and the stack `<service>-<stage>`.
         if serverless := SERVERLESS_REPOSITORY_RE.match(resource.name):
-            keys.append(("cfn", region, serverless[1]))
+            keys.append(("cfn", resource.region, serverless[1]))
     return keys
 
 
@@ -171,31 +266,63 @@ def _matches(resource: InspectorResource, pattern: str) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for name in names)
 
 
-def _is_shared_asset_repository(resource: InspectorResource) -> bool:
+def is_shared_asset_image(resource: InspectorResource) -> bool:
     return resource.type is ResourceType.ECR_IMAGE and any(
         fnmatch.fnmatch(resource.name, pattern) for pattern in SHARED_ASSET_REPOSITORIES
     )
 
 
-def attribute(
-    finding: Finding,
+def _by_tags(
+    tags: Mapping[str, str],
+    keys: Sequence[DeploymentKey],
     deployments_by_key: Mapping[DeploymentKey, Deployment],
 ) -> FindingAttribution:
-    """The first rule that answers wins. A deployment found through the resource's tags is final
-    even when it has no repo."""
-    resource = finding.resource
+    """Rules 1 and 2. A deployment found through the tags is final even when it has no repo."""
     for tag in REPO_TAGS:
-        if resource.tags.get(tag):
-            return Attributed(repo_name(resource.tags[tag]), Via.TAG)
-    keys = candidate_keys(resource)
+        if tags.get(tag):
+            return Attributed(repo_name(tags[tag]), Via.TAG)
     deployment = next((deployments_by_key[key] for key in keys if key in deployments_by_key), None)
     if deployment is not None:
         if deployment.repo:
             return Attributed(deployment.repo, Via.DEPLOYMENT, deployment.name)
         return Unattributed(Reason.DEPLOYMENT_UNATTRIBUTED)
-    if _is_shared_asset_repository(resource):
-        return Unattributed(Reason.SHARED_ASSET_REPOSITORY)
     return Unattributed(Reason.DEPLOYMENT_NOT_FOUND if keys else Reason.NO_DEPLOYMENT_TAGS)
+
+
+def _through_runners(
+    resource: InspectorResource,
+    deployments_by_key: Mapping[DeploymentKey, Deployment],
+    runners: RunnerIndex,
+) -> FindingAttribution:
+    """Rule 3. Runners that name no repo are ignored. Runners that name different repos leave the
+    image unattributed, because it is shared and picking one repo would send the fix to the wrong
+    team. When they agree, the first runner by kind and name is the one reported."""
+    resolved: list[Attributed] = []
+    for runner in _running(resource, runners):
+        answer = _by_tags(runner.tags, tag_keys(runner.tags, runner.region), deployments_by_key)
+        if isinstance(answer, Attributed):
+            resolved.append(replace(answer, runner=runner))
+    if not resolved:
+        return Unattributed(Reason.SHARED_ASSET_REPOSITORY)
+    if len({attribution.repo for attribution in resolved}) > 1:
+        return Unattributed(Reason.RUNNERS_IN_SEVERAL_REPOS)
+    return resolved[0]
+
+
+def attribute(
+    finding: Finding,
+    deployments_by_key: Mapping[DeploymentKey, Deployment],
+    runners: RunnerIndex,
+) -> FindingAttribution:
+    """The first rule that answers wins."""
+    resource = finding.resource
+    answer = _by_tags(resource.tags, candidate_keys(resource), deployments_by_key)
+    if is_shared_asset_image(resource) and answer in (
+        Unattributed(Reason.NO_DEPLOYMENT_TAGS),
+        Unattributed(Reason.DEPLOYMENT_NOT_FOUND),
+    ):
+        return _through_runners(resource, deployments_by_key, runners)
+    return answer
 
 
 # --- the dependency graph
@@ -433,12 +560,16 @@ class InspectorReport:
 
 
 def _attribute_wanted(
-    findings: Iterable[Finding], deployments: Iterable[Deployment], cfg: InspectorConfig
+    findings: Iterable[Finding],
+    deployments: Iterable[Deployment],
+    runners: Iterable[ImageRunner],
+    cfg: InspectorConfig,
 ) -> list[tuple[Finding, FindingAttribution]]:
     table = index_deployments(deployments)
+    running = index_runners(runners)
     wanted = severities_at_least(cfg.min_severity)
     return [
-        (finding, attribute(finding, table))
+        (finding, attribute(finding, table, running))
         for finding in findings
         if finding.severity in wanted
         and not any(_matches(finding.resource, pattern) for pattern in cfg.ignore)
@@ -446,12 +577,15 @@ def _attribute_wanted(
 
 
 def attributed_repos(
-    findings: Iterable[Finding], deployments: Iterable[Deployment], cfg: InspectorConfig
+    findings: Iterable[Finding],
+    deployments: Iterable[Deployment],
+    cfg: InspectorConfig,
+    runners: Iterable[ImageRunner] = (),
 ) -> set[str]:
     """The repos `build_report` will list, so their dependency graphs can be read first."""
     return {
         attribution.repo
-        for _, attribution in _attribute_wanted(findings, deployments, cfg)
+        for _, attribution in _attribute_wanted(findings, deployments, runners, cfg)
         if isinstance(attribution, Attributed)
     }
 
@@ -463,13 +597,15 @@ def build_report(
     only: set[str] | None,
     prs: Mapping[str, Sequence[DependabotPR]],
     branches: Mapping[str, BranchDependencies],
+    runners: Iterable[ImageRunner] = (),
 ) -> InspectorReport:
     """Pure. Drops findings below `min_severity` and `ignore` matches, attributes the rest, and
     turns them into fix items. `only` (from --repo) keeps just those repos and the unattributed
     buckets go, as in `stale.survey(scoped=True)`. `prs` are each repo's open Dependabot PRs and
     `branches` its default branch's dependencies. A repo missing from `branches` has no
-    dependency graph, and unattributed findings have neither."""
-    attributed = _attribute_wanted(findings, deployments, cfg)
+    dependency graph, and unattributed findings have neither. `runners` attribute images in
+    shared asset repositories."""
+    attributed = _attribute_wanted(findings, deployments, runners, cfg)
     if only is not None:
         attributed = [
             (finding, attribution)

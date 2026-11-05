@@ -802,7 +802,12 @@
               "region": "us-east-1",
               "details": {
                 "awsEcrContainerImage": {
-                  "repositoryName": "sst-asset"
+                  "repositoryName": "sst-asset",
+                  "imageHash": "sha256:00000000000000000000000000000000e5f6a7b8e5f6a7b8e5f6a7b8e5f6a7b8",
+                  "imageTags": [
+                    "8c1f0e2a9b3d"
+                  ],
+                  "registry": "111122223333"
                 }
               }
             }
@@ -1022,9 +1027,137 @@
               }
             }
           ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000013",
+          "severity": "HIGH",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-9d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2022-3517 - minimatch",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2022-3517",
+            "vulnerablePackages": [
+              {
+                "name": "minimatch",
+                "version": "3.0.4",
+                "packageManager": "NODE",
+                "filePath": "/app/node_modules/minimatch/package.json",
+                "fixedInVersion": "3.0.5"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_ECR_CONTAINER_IMAGE",
+              "id": "arn:aws:ecr:us-east-1:111122223333:repository/cdk-hnb659fds-container-assets-111122223333-us-east-1/sha256:00000000000000000000000000000000c9d0e1f2c9d0e1f2c9d0e1f2c9d0e1f2",
+              "region": "us-east-1",
+              "details": {
+                "awsEcrContainerImage": {
+                  "repositoryName": "cdk-hnb659fds-container-assets-111122223333-us-east-1",
+                  "imageHash": "sha256:00000000000000000000000000000000c9d0e1f2c9d0e1f2c9d0e1f2c9d0e1f2",
+                  "imageTags": [
+                    "d41d8cd98f00"
+                  ],
+                  "registry": "111122223333"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000014",
+          "severity": "HIGH",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-17d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2024-37890 - ws",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2024-37890",
+            "vulnerablePackages": [
+              {
+                "name": "ws",
+                "version": "7.5.9",
+                "packageManager": "NODE",
+                "filePath": "/app/node_modules/ws/package.json",
+                "fixedInVersion": "7.5.10"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_ECR_CONTAINER_IMAGE",
+              "id": "arn:aws:ecr:us-east-1:111122223333:repository/sst-asset/sha256:00000000000000000000000000000000a3b4c5d6a3b4c5d6a3b4c5d6a3b4c5d6",
+              "region": "us-east-1",
+              "details": {
+                "awsEcrContainerImage": {
+                  "repositoryName": "sst-asset",
+                  "imageHash": "sha256:00000000000000000000000000000000a3b4c5d6a3b4c5d6a3b4c5d6a3b4c5d6",
+                  "imageTags": [
+                    "5e2b7c4f1a60"
+                  ],
+                  "registry": "111122223333"
+                }
+              }
+            }
+          ]
         }
       ]
-    }
+    },
+    "lambda_functions": [
+      {
+        "Configuration": {
+          "FunctionName": "inventory-production-ImageWorker",
+          "PackageType": "Image"
+        },
+        "Code": {
+          "RepositoryType": "ECR",
+          "ImageUri": "111122223333.dkr.ecr.us-east-1.amazonaws.com/sst-asset:8c1f0e2a9b3d",
+          "ResolvedImageUri": "111122223333.dkr.ecr.us-east-1.amazonaws.com/sst-asset@sha256:00000000000000000000000000000000e5f6a7b8e5f6a7b8e5f6a7b8e5f6a7b8"
+        },
+        "Tags": {
+          "sst:app": "inventory",
+          "sst:stage": "production"
+        }
+      },
+      {
+        "Configuration": {
+          "FunctionName": "thumbnailer",
+          "PackageType": "Image"
+        },
+        "Code": {
+          "RepositoryType": "ECR",
+          "ImageUri": "111122223333.dkr.ecr.us-east-1.amazonaws.com/thumbnailer:latest",
+          "ResolvedImageUri": "111122223333.dkr.ecr.us-east-1.amazonaws.com/thumbnailer@sha256:00000000000000000000000000000000b7b8b9b0b7b8b9b0b7b8b9b0b7b8b9b0"
+        }
+      }
+    ],
+    "ecs_task_definitions": [
+      {
+        "taskDefinition": {
+          "family": "data-pipeline-worker",
+          "revision": 7,
+          "containerDefinitions": [
+            {
+              "name": "worker",
+              "image": "111122223333.dkr.ecr.us-east-1.amazonaws.com/cdk-hnb659fds-container-assets-111122223333-us-east-1:d41d8cd98f00"
+            },
+            {
+              "name": "proxy",
+              "image": "public.ecr.aws/nginx/nginx:1.27"
+            }
+          ]
+        },
+        "tags": [
+          {
+            "key": "aws:cloudformation:stack-name",
+            "value": "DataPipelineProduction"
+          }
+        ]
+      }
+    ]
   },
   "vercel": {
     "team_id": "team_acme",

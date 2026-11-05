@@ -15,7 +15,7 @@ from .enforce import apply_enforce, plan_enforce
 from .estate import ScanError, discover
 from .fixtures import fixture_clients
 from .github import GitHubError
-from .inspector import attributed_repos, branch_dependencies, build_report
+from .inspector import attributed_repos, branch_dependencies, build_report, is_shared_asset_image
 from .linear import LinearError
 from .plan import ActionKind, Topic
 from .policy import DependabotPR, RepoReport, now_utc
@@ -100,19 +100,21 @@ def report_inspector(clients: Clients, config: Config, args: argparse.Namespace)
     repos = selected_repos(gh, config)
     index = build_index(gh, config, repos)
     deployments = discover(clients.scanners(), index, config.deployments)
-    findings = clients.inspector().findings()
+    source = clients.inspector()
+    findings = source.findings()
+    runners = source.runners() if any(is_shared_asset_image(f.resource) for f in findings) else []
     only = set(args.repo) if args.repo else None
     prs: defaultdict[str, list[DependabotPR]] = defaultdict(list)
     for raw in gh.list_dependabot_prs(config.org):
         pr = DependabotPR.from_api(raw)
         prs[pr.repo].append(pr)
-    in_report = attributed_repos(findings, deployments, config.inspector)
+    in_report = attributed_repos(findings, deployments, config.inspector, runners)
     branches = {
         repo: branch_dependencies(sbom)
         for repo in sorted(in_report & only if only else in_report)
         if (sbom := gh.get_sbom(config.org, repo)) is not None
     }
-    report = build_report(findings, deployments, config.inspector, only, prs, branches)
+    report = build_report(findings, deployments, config.inspector, only, prs, branches, runners)
     if args.format == "json":
         print(json.dumps(inspector_render.report_json(report), indent=2))
     else:
