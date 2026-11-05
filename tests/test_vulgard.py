@@ -15,7 +15,7 @@ from vulgard.cli import main
 from vulgard.config import LinearTarget, parse_config, route
 from vulgard.enforce import STATUS_CHECK_CONTEXT, plan_enforce
 from vulgard.fixtures import FakeLinear, FakeSlack, FixtureGitHub, fixture_clients
-from vulgard.github import GitHub
+from vulgard.github import GitHub, GitHubError
 from vulgard.plan import ActionKind, IssueOp, LinearRef, TrackedIssue, TrackingState
 from vulgard.policy import SlaStatus, evaluate, parse_codeowners_default, summarize_closed
 from vulgard.repos import all_repos, dependabot_repos
@@ -815,6 +815,31 @@ def test_dependabot_pr_search_splits_by_creation_time_past_the_result_cap():
     prs = gh.list_dependabot_prs("acme")
     assert sorted(pr["number"] for pr in prs) == list(range(2500))
     assert all("author:app/dependabot" in query for query in searches)
+
+
+def test_dependabot_pr_search_retries_an_empty_response(monkeypatch):
+    monkeypatch.setattr("vulgard.github.time.sleep", lambda _: None)
+    answers = iter([b"", b""])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = next(answers, None)
+        if body is not None:
+            return httpx.Response(200, content=body)
+        search = {"issueCount": 0, "pageInfo": {"hasNextPage": False}, "nodes": []}
+        return httpx.Response(200, json={"data": {"search": search}})
+
+    gh = GitHub(token="t")
+    gh._http = httpx.Client(base_url="https://api.test", transport=httpx.MockTransport(handler))
+    assert gh.list_dependabot_prs("acme") == []
+
+
+def test_dependabot_pr_search_gives_up_on_repeated_empty_responses(monkeypatch):
+    monkeypatch.setattr("vulgard.github.time.sleep", lambda _: None)
+    gh = GitHub(token="t")
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b""))
+    gh._http = httpx.Client(base_url="https://api.test", transport=transport)
+    with pytest.raises(GitHubError, match="empty response"):
+        gh.list_dependabot_prs("acme")
 
 
 def test_enforce_status_check_targets_enrolled_repos_only():

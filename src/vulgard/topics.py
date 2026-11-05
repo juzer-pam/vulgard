@@ -452,12 +452,15 @@ def _inspector_pass(
             continue
         else:
             try:
-                found = _linear_issue(linear, config, repo, parents)
+                existing = _linear_issue(linear, config, repo, parents)
             except (LinearError, httpx.HTTPError) as e:
                 actions.append(Action(repo.repo, ActionKind.LINEAR_ERROR, str(e)))
                 continue
-            state = TrackingState(InspectorMemory(), linear=_linear_ref(found) if found else None)
-            open_issue = None if found is None else found["state"]["type"] not in CLOSED_STATES
+            linear_ref = _linear_ref(existing) if existing else None
+            state = TrackingState(InspectorMemory(), linear=linear_ref)
+            open_issue = (
+                None if existing is None else existing["state"]["type"] not in CLOSED_STATES
+            )
         plans.append(inspector_plan.plan_repo(repo, config, state, open_issue, ctx.now, parent))
     runs = track(gh, linear, config, plans, issues, ctx.apply)
     if linear is not None and not ctx.only:
