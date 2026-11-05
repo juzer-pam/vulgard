@@ -25,6 +25,14 @@ def selected_repos(gh: Any, config: Config, only: list[str] | None = None) -> li
     return repos
 
 
+def is_public(repo: dict[str, Any]) -> bool:
+    """Public unless GitHub says private or internal, so a repo of unknown visibility counts as
+    public."""
+    if repo.get("private") is True:
+        return False
+    return repo.get("visibility") not in ("private", "internal")
+
+
 def resolve_owners(gh: Any, config: Config, repo: str) -> list[str]:
     if repo in config.owners:
         return config.owners[repo]

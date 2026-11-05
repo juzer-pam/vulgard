@@ -89,8 +89,11 @@ rollout:
   branch: vulgard/rollout
 
 # Amazon Inspector findings on deployed Lambda functions, ECR images and EC2 instances, each
-# attributed to the repo that deployed it. Read-only: `vulgard report --topic inspector`.
+# attributed to the repo that deployed it. `vulgard report --topic inspector` lists them.
 inspector:
+  enabled: false                  # true: nag tracks them. Private repos get a GitHub issue; every
+                                  # repo gets a Linear sub-issue under a parent issue per team
+  report_only: false              # true: the step summary only; no issues, Linear or Slack
   regions: [us-east-1]
   min_severity: high              # the least severe to report: critical | high | medium | low
   ignore: []                      # resource or stack globs never reported

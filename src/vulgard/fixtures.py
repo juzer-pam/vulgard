@@ -237,6 +237,8 @@ class FakeLinear:
             "identifier": f"{key}-{number}",
             "url": f"https://linear.app/acme/issue/{key}-{number}",
             "title": fields["title"],
+            "description": fields.get("description"),
+            "parent": {"id": fields["parentId"]} if fields.get("parentId") else None,
             "state": {"type": STATE_TYPES[fields.get("stateId", ":todo").split(":", 1)[1]]},
             "team": {"key": key},
             "labels": {"nodes": [{"id": i} for i in fields.get("labelIds", [])]},
@@ -249,6 +251,10 @@ class FakeLinear:
     def update_issue(self, issue_id: str, fields: dict[str, Any]) -> None:
         issue = self.issues[issue_id]
         issue["fields"].update(fields)
+        if "description" in fields:
+            issue["description"] = fields["description"]
+        if "parentId" in fields:
+            issue["parent"] = {"id": fields["parentId"]}
         if "stateId" in fields:
             issue["state"] = {"type": STATE_TYPES[fields["stateId"].split(":", 1)[1]]}
         labels = [n["id"] for n in issue["labels"]["nodes"]]
@@ -268,6 +274,9 @@ class FakeLinear:
             if issue["team"]["key"] == team_key and issue["title"] == title:
                 return issue
         return None
+
+    def sub_issues(self, issue_id: str) -> list[dict[str, Any]]:
+        return [i for i in self.issues.values() if (i.get("parent") or {}).get("id") == issue_id]
 
 
 class FixtureScanner:

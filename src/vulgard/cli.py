@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import asdict
 from typing import Any
 
@@ -12,13 +12,12 @@ from . import inspector_render, stale_render
 from .clients import Clients, live_clients
 from .config import SEVERITIES, Config, load_config
 from .enforce import apply_enforce, plan_enforce
-from .estate import ScanError, discover
+from .estate import ScanError
 from .fixtures import fixture_clients
 from .github import GitHubError
-from .inspector import attributed_repos, branch_dependencies, build_report, is_shared_asset_image
 from .linear import LinearError
 from .plan import ActionKind, Topic
-from .policy import DependabotPR, RepoReport, now_utc
+from .policy import RepoReport, now_utc
 from .render import format_table, render_org_summary
 from .repos import build_index, resolve_owners, selected_repos
 from .rollout import apply_rollout, merge_open_rollout_prs, plan_lifecycle_rollout, plan_rollout
@@ -32,7 +31,7 @@ from .slack import (
     send_leaderboard,
 )
 from .stale import survey
-from .topics import RUNNERS, NagContext, load_kev
+from .topics import RUNNERS, NagContext, inspector_report, load_kev
 from .vulns import collect
 
 
@@ -96,25 +95,7 @@ def report_stale(clients: Clients, config: Config, args: argparse.Namespace) -> 
 
 
 def report_inspector(clients: Clients, config: Config, args: argparse.Namespace) -> int:
-    gh = clients.github
-    repos = selected_repos(gh, config)
-    index = build_index(gh, config, repos)
-    deployments = discover(clients.scanners(), index, config.deployments)
-    source = clients.inspector()
-    findings = source.findings()
-    runners = source.runners() if any(is_shared_asset_image(f.resource) for f in findings) else []
-    only = set(args.repo) if args.repo else None
-    prs: defaultdict[str, list[DependabotPR]] = defaultdict(list)
-    for raw in gh.list_dependabot_prs(config.org):
-        pr = DependabotPR.from_api(raw)
-        prs[pr.repo].append(pr)
-    in_report = attributed_repos(findings, deployments, config.inspector, runners)
-    branches = {
-        repo: branch_dependencies(sbom)
-        for repo in sorted(in_report & only if only else in_report)
-        if (sbom := gh.get_sbom(config.org, repo)) is not None
-    }
-    report = build_report(findings, deployments, config.inspector, only, prs, branches, runners)
+    _, report = inspector_report(clients, config, args.repo)
     if args.format == "json":
         print(json.dumps(inspector_render.report_json(report), indent=2))
     else:
@@ -140,13 +121,17 @@ def cmd_report(clients: Clients, config: Config, args: argparse.Namespace) -> in
 def nag_topics(config: Config, args: argparse.Namespace) -> list[Topic]:
     if args.topic:
         return [Topic(t) for t in dict.fromkeys(args.topic)]
-    return [Topic.VULNS] + ([Topic.STALE] if config.deployments.enabled else [])
+    enabled = {Topic.STALE: config.deployments.enabled, Topic.INSPECTOR: config.inspector.enabled}
+    return [Topic.VULNS] + [topic for topic, on in enabled.items() if on]
 
 
 def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     topics = nag_topics(config, args)
     if Topic.STALE in topics and not config.deployments.enabled:
         print("error: --topic stale needs deployments.enabled in the config", file=sys.stderr)
+        return 1
+    if Topic.INSPECTOR in topics and not config.inspector.enabled:
+        print("error: --topic inspector needs inspector.enabled in the config", file=sys.stderr)
         return 1
     if args.execute and Topic.STALE not in topics:
         print("error: --execute only applies to the stale topic", file=sys.stderr)
@@ -195,7 +180,8 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
             print(f"{prefix}{kind}: {n}")
     else:
         for a in taken:
-            print(f"{prefix}{a.repo or 'slack'}: {a.kind} ({a.detail})")
+            where = a.repo or ("linear" if a.kind.startswith("linear") else "slack")
+            print(f"{prefix}{where}: {a.kind} ({a.detail})")
         for res in results:
             if res.summary:
                 write_step_summary(res.summary, args.summary_file)
@@ -360,7 +346,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--topic",
         action="append",
         choices=[t.value for t in RUNNERS],
-        help="what to track (repeatable; default: vulns, plus stale when deployments.enabled)",
+        help="what to track (repeatable; default: vulns, plus stale when deployments.enabled "
+        "and inspector when inspector.enabled)",
     )
     p.add_argument(
         "--no-leaderboard", action="store_true", help="with --slack, skip the leaderboard"

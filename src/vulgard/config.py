@@ -306,8 +306,11 @@ class DeploymentsConfig:
 @dataclass
 class InspectorConfig:
     """The Amazon Inspector topic: package vulnerabilities on deployed Lambda functions, ECR
-    images and EC2 instances, attributed to the repo that deployed them."""
+    images and EC2 instances, attributed to the repo that deployed them. Without `enabled`,
+    `nag` skips it."""
 
+    enabled: bool = False
+    report_only: bool = False  # the step summary only: no issues, Linear issues or Slack
     regions: list[str] = field(default_factory=lambda: ["us-east-1"])
     min_severity: str = "high"
     ignore: list[str] = field(default_factory=list)  # resource or stack globs never reported

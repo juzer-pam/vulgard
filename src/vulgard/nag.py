@@ -123,7 +123,8 @@ def _apply(
     issue: TrackedIssue | None,
     apply: bool,
 ) -> RepoRun:
-    """One repo. A GitHub or Linear failure is recorded on its run and doesn't stop the others."""
+    """One repo. A GitHub or Linear failure is recorded on its run and doesn't stop the others.
+    A plan without `github` stops after Linear."""
     run = RepoRun(plan, issue.html_url if issue else None, plan.actions())
     created_in_linear = False
     if linear is not None:
@@ -135,7 +136,7 @@ def _apply(
             run.actions += result.actions
             plan.state = replace(plan.state, linear=result.ref)
             created_in_linear = result.created
-    if not apply:
+    if not apply or not plan.github:
         return run
     try:
         written = _write_issue(gh, config, plan, issue)

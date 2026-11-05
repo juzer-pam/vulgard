@@ -196,7 +196,7 @@ def plan_repo(
 ) -> RepoPlan[VulnMemory]:
     topic = spec(config)
     prev = TrackingState.from_body(issue.body if issue else None, VulnMemory)
-    op = issue_op(issue, report.needs_tracking)
+    op = issue_op(None if issue is None else issue.open, report.needs_tracking)
 
     def render(state: VulnState) -> str:
         return render_issue_body(report, config, state, now)

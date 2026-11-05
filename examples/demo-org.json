@@ -3,42 +3,56 @@
     {
       "id": 101,
       "name": "payments-api",
+      "private": true,
+      "visibility": "private",
       "default_branch": "main",
       "archived": false
     },
     {
       "id": 102,
       "name": "web-storefront",
+      "private": true,
+      "visibility": "private",
       "default_branch": "main",
       "archived": false
     },
     {
       "id": 103,
       "name": "inventory-service",
+      "private": false,
+      "visibility": "public",
       "default_branch": "main",
       "archived": false
     },
     {
       "id": 104,
       "name": "data-pipeline",
+      "private": true,
+      "visibility": "private",
       "default_branch": "master",
       "archived": false
     },
     {
       "id": 105,
       "name": "sandbox-experiments",
+      "private": true,
+      "visibility": "private",
       "default_branch": "main",
       "archived": false
     },
     {
       "id": 106,
       "name": "legacy-billing",
+      "private": true,
+      "visibility": "private",
       "default_branch": "main",
       "archived": true
     },
     {
       "id": 107,
       "name": "vulgard",
+      "private": false,
+      "visibility": "public",
       "default_branch": "main",
       "created_at": "@-120d",
       "archived": false
