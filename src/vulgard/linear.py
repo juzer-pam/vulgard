@@ -15,9 +15,10 @@ PRIORITY = {"critical": 1, "high": 2, "medium": 3, "low": 4}  # Linear: 1 urgent
 CLOSED_STATES = ("completed", "canceled")
 
 ISSUE_FIELDS = (
-    "id identifier url title state { type } team { key } labels { nodes { id } } "
+    "id identifier url title description state { type } team { key } labels { nodes { id } } "
     "attachments { nodes { url title } }"
 )
+SUB_ISSUE_PAGE = 250
 
 
 class LinearError(RuntimeError):
@@ -35,6 +36,7 @@ class LinearClient(Protocol):
     def comment(self, issue_id: str, body: str) -> None: ...
     def attach_url(self, issue_id: str, url: str, title: str) -> None: ...
     def find_issue(self, team_key: str, title: str) -> dict[str, Any] | None: ...
+    def sub_issues(self, issue_id: str) -> list[dict[str, Any]]: ...
 
 
 class Linear:
@@ -173,6 +175,15 @@ class Linear:
         nodes = data["issues"]["nodes"]
         return nodes[0] if nodes else None
 
+    def sub_issues(self, issue_id: str) -> list[dict[str, Any]]:
+        """The first SUB_ISSUE_PAGE children: one per repo, so a team rarely has more."""
+        data = self._gql(
+            f"query($id: String!, $first: Int!) {{ issue(id: $id) {{ children(first: $first) "
+            f"{{ nodes {{ {ISSUE_FIELDS} }} }} }} }}",
+            {"id": issue_id, "first": SUB_ISSUE_PAGE},
+        )
+        return data["issue"]["children"]["nodes"]
+
 
 def state_id(team: dict[str, Any], state_type: str) -> str:
     states = sorted(
@@ -191,8 +202,8 @@ def state_named(team: dict[str, Any], name: str) -> str:
     raise LinearError(f"Linear team {team['key']} has no '{name}' state (has: {names})")
 
 
-def _open_state(team: dict[str, Any], target: LinearTarget) -> str:
-    return state_named(team, target.state) if target.state else state_id(team, "unstarted")
+def _open_state(team: dict[str, Any], state: str | None) -> str:
+    return state_named(team, state) if state else state_id(team, "unstarted")
 
 
 def _target(config: Config, plan: RepoPlan[Any]) -> LinearTarget | None:
@@ -356,7 +367,7 @@ def _update(
         team = client.team(team_key)
         target = _issue_target(config, plan, team_key)
         if reopened:
-            update["stateId"] = _open_state(team, target)
+            update["stateId"] = _open_state(team, target.state)
         current = {n["id"] for n in (issue.get("labels") or {}).get("nodes", [])}
         update |= _severity_label_changes(
             client, target, team["id"], content.worst_severity, current
@@ -365,6 +376,61 @@ def _update(
     for comment in comments:
         client.comment(ref.id, comment)
     return LinearResult(LinearRef(ref.id, ref.identifier, ref.url, digest), [action])
+
+
+def sync_team_issue(
+    client: LinearClient,
+    config: Config,
+    team_key: str,
+    title: str,
+    description: str | None,
+    closed: str,
+    existing: dict[str, Any] | None,
+    apply: bool,
+) -> LinearResult:
+    """A Linear issue that belongs to a team rather than a repo, found by its title. It's
+    created, reopened or updated to `description`, and closed with `closed` once that's None."""
+    if existing is None:
+        if description is None:
+            return LinearResult(None)
+        if not apply:
+            action = Action(None, ActionKind.LINEAR_CREATE, f"{title} in team {team_key}")
+            return LinearResult(None, [action])
+        team = client.team(team_key)
+        payload: dict[str, Any] = {
+            "title": title,
+            "description": description,
+            "teamId": team["id"],
+            "labelIds": [client.label_id(name, team["id"]) for name in config.linear.labels],
+        }
+        if config.linear.state:
+            payload["stateId"] = state_named(team, config.linear.state)
+        assignee = _assignee_id(client, config, [], team_key)
+        if assignee:
+            payload["assigneeId"] = assignee
+        created = client.create_issue(payload)
+        ref = LinearRef(created["id"], created["identifier"], created["url"])
+        return LinearResult(ref, [Action(None, ActionKind.LINEAR_CREATE, ref.identifier)], True)
+    ref = LinearRef(existing["id"], existing["identifier"], existing["url"])
+    was_closed = existing["state"]["type"] in CLOSED_STATES
+    if description is None:
+        if was_closed:
+            return LinearResult(ref)
+        if apply:
+            client.comment(ref.id, closed)
+            done = state_id(client.team(existing["team"]["key"]), "completed")
+            client.update_issue(ref.id, {"stateId": done})
+        return LinearResult(ref, [Action(None, ActionKind.LINEAR_CLOSE, ref.identifier)])
+    if not was_closed and existing.get("description") == description:
+        return LinearResult(ref)
+    if apply:
+        update: dict[str, Any] = {"description": description}
+        if was_closed:
+            team = client.team(existing["team"]["key"])
+            update["stateId"] = _open_state(team, config.linear.state)
+        client.update_issue(ref.id, update)
+    detail = ref.identifier + (" (reopened)" if was_closed else "")
+    return LinearResult(ref, [Action(None, ActionKind.LINEAR_UPDATE, detail)])
 
 
 def sync_linear(
