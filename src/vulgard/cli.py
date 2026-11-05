@@ -157,7 +157,9 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
         return 1
     linear = clients.linear if args.linear else None
     if args.linear and linear is None:
-        print(f"Skipping Linear: ${config.linear.api_key_env} is not set.", file=sys.stderr)
+        print(
+            "Skipping Linear: no Linear API key is set (see linear.api_key_env).", file=sys.stderr
+        )
 
     now = now_utc()
     ctx = NagContext(
@@ -259,7 +261,7 @@ def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> i
         linear = clients.linear
         if linear is None:
             print(
-                f"Skipping Linear onboarding: ${config.linear.api_key_env} is not set.",
+                "Skipping Linear onboarding: no Linear API key is set (see linear.api_key_env).",
                 file=sys.stderr,
             )
         else:
