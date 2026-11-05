@@ -58,3 +58,5 @@ deployments:
     team_id: team_acme
   auto:
     repos: ["payments-*"]
+inspector:
+  linear_labels: [security]

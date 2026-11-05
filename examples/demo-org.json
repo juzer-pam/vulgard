@@ -341,6 +341,42 @@
       }
     }
   ],
+  "fixed_alerts": [
+    {
+      "number": 9,
+      "state": "fixed",
+      "repository": {
+        "name": "inventory-service"
+      },
+      "created_at": "@-60d",
+      "updated_at": "@-5d",
+      "fixed_at": "@-5d",
+      "html_url": "https://github.com/acme/inventory-service/security/dependabot/9",
+      "dependency": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "word-wrap"
+        },
+        "manifest_path": "package-lock.json"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-j8xg-fqg3-53r7",
+        "cve_id": "CVE-2023-26115",
+        "summary": "Regular expression denial of service",
+        "severity": "high"
+      },
+      "security_vulnerability": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "word-wrap"
+        },
+        "severity": "high",
+        "first_patched_version": {
+          "identifier": "1.2.4"
+        }
+      }
+    }
+  ],
   "dependabot_prs": [
     {
       "number": 88,
@@ -910,6 +946,80 @@
               }
             }
           ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000010",
+          "severity": "HIGH",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-12d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2024-21534 - eslint",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2024-21534",
+            "vulnerablePackages": [
+              {
+                "name": "eslint",
+                "version": "8.56.0",
+                "packageManager": "NODE",
+                "filePath": "/var/task/node_modules/eslint/package.json",
+                "fixedInVersion": "8.57.0"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_LAMBDA_FUNCTION",
+              "id": "arn:aws:lambda:us-east-1:111122223333:function:inventory-production-ReorderFunction",
+              "region": "us-east-1",
+              "details": {
+                "awsLambdaFunction": {
+                  "functionName": "inventory-production-ReorderFunction"
+                }
+              },
+              "tags": {
+                "sst:app": "inventory",
+                "sst:stage": "production"
+              }
+            }
+          ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000011",
+          "severity": "HIGH",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-12d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2023-26115 - word-wrap",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2023-26115",
+            "vulnerablePackages": [
+              {
+                "name": "word-wrap",
+                "version": "1.2.3",
+                "packageManager": "NODE",
+                "filePath": "/var/task/node_modules/word-wrap/package.json",
+                "fixedInVersion": "1.2.4"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_LAMBDA_FUNCTION",
+              "id": "arn:aws:lambda:us-east-1:111122223333:function:inventory-production-ReorderFunction",
+              "region": "us-east-1",
+              "details": {
+                "awsLambdaFunction": {
+                  "functionName": "inventory-production-ReorderFunction"
+                }
+              },
+              "tags": {
+                "sst:app": "inventory",
+                "sst:stage": "production"
+              }
+            }
+          ]
         }
       ]
     }
@@ -990,5 +1100,34 @@
         "login": "dependabot[bot]"
       }
     ]
-  }
+  },
+  "linear_issues": [
+    {
+      "identifier": "SEC-201",
+      "title": "Patch vulnerable packages in inventory-service Lambdas",
+      "url": "https://linear.app/acme/issue/SEC-201",
+      "state": "doing",
+      "labels": [
+        "security"
+      ]
+    },
+    {
+      "identifier": "SEC-202",
+      "title": "Triage payments-api Lambda findings",
+      "url": "https://linear.app/acme/issue/SEC-202",
+      "state": "todo",
+      "labels": [
+        "infra"
+      ]
+    },
+    {
+      "identifier": "SEC-203",
+      "title": "Patch payments-api Lambda packages",
+      "url": "https://linear.app/acme/issue/SEC-203",
+      "state": "done",
+      "labels": [
+        "security"
+      ]
+    }
+  ]
 }
