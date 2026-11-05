@@ -169,7 +169,7 @@ def plan_repo(
     """Pure. Announce what's new, remind, announce automatic ops, escalate."""
     topic = spec(config)
     prev = TrackingState.from_body(issue.body if issue else None, StaleMemory)
-    op = issue_op(issue, report.needs_tracking)
+    op = issue_op(None if issue is None else issue.open, report.needs_tracking)
     baselined = _baselined(prev.memory, report, now)
     seen = _seen(prev.memory, report)
 

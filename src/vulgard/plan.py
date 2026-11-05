@@ -42,6 +42,7 @@ class TopicSpec:
     linear_closed: str  # Linear comment when the topic goes clean
     memory_type: type[Memory]  # parses the topic's part of the state comment
     reads_commands: bool = False  # the engine loads issue comments only for these topics
+    links_linear: bool = False  # Slack lines link the Linear issue, when there is one
     linear: LinearOverride = field(default_factory=LinearOverride)  # replaces routed settings
 
 
@@ -147,12 +148,13 @@ class IssueOp(StrEnum):
     NONE = "none"
 
 
-def issue_op(issue: TrackedIssue | None, needs_tracking: bool) -> IssueOp:
+def issue_op(open_issue: bool | None, needs_tracking: bool) -> IssueOp:
+    """`open_issue` is None when there is no tracking issue yet."""
     if needs_tracking:
-        if issue is None:
+        if open_issue is None:
             return IssueOp.CREATE
-        return IssueOp.UPDATE if issue.open else IssueOp.REOPEN
-    return IssueOp.CLOSE if issue is not None and issue.open else IssueOp.NONE
+        return IssueOp.UPDATE if open_issue else IssueOp.REOPEN
+    return IssueOp.CLOSE if open_issue else IssueOp.NONE
 
 
 @dataclass(frozen=True)
@@ -214,6 +216,7 @@ class RepoPlan[M: Memory]:
     escalation: Escalation | None = None
     digest: str | None = None  # Slack line after the repo link; None means not pinged
     dm: tuple[str, ...] = ()  # handles to DM besides owners
+    github: bool = True  # False: tracked in Linear only, and `comments` are never posted
 
     def __post_init__(self) -> None:
         live = self.op in (IssueOp.CREATE, IssueOp.REOPEN, IssueOp.UPDATE)
@@ -224,6 +227,10 @@ class RepoPlan[M: Memory]:
         return self.digest is not None
 
     def actions(self) -> list[Action]:
+        if not self.github:
+            if self.escalation is None:
+                return []
+            return [Action(self.repo, ActionKind.ESCALATE, self.escalation.detail)]
         match self.op:
             case IssueOp.NONE:
                 return [Action(self.repo, ActionKind.NOOP, "clean")]

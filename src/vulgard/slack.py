@@ -70,9 +70,10 @@ def _post(target: str, detail: str, send: Callable[[], None], apply: bool) -> Ac
     return Action(None, ActionKind.SLACK, f"{target}: {detail}")
 
 
-def _repo_link(org: str, repo: str, issue_url: str | None) -> str:
-    url = issue_url or f"https://github.com/{org}/{repo}/issues"
-    return f"<{url}|{repo}>"
+def _repo_link(org: str, run: RepoRun) -> str:
+    linear = run.plan.state.linear
+    url = linear.url if run.plan.spec.links_linear and linear else run.issue_url
+    return f"<{url or f'https://github.com/{org}/{run.repo}/issues'}|{run.repo}>"
 
 
 def _owner_mentions(owners: list[str], config: Config) -> str:
@@ -93,14 +94,14 @@ def _repo_line(run: RepoRun, config: Config) -> str:
     if plan.digest:
         parts.append(plan.digest)
     owners = _owner_mentions(plan.owners, config)
-    line = f"• *{_repo_link(config.org, plan.repo, run.issue_url)}*: {', '.join(parts)}"
+    line = f"• *{_repo_link(config.org, run)}*: {', '.join(parts)}"
     return line + (f" · {owners}" if owners else "")
 
 
 def _escalation_line(run: RepoRun, config: Config) -> str:
     assert run.plan.escalation is not None
     owners = _owner_mentions(run.plan.owners, config)
-    link = _repo_link(config.org, run.repo, run.issue_url)
+    link = _repo_link(config.org, run)
     detail = run.plan.escalation.slack_detail
     return f"• *{link}*: {detail}" + (f" · owners {owners}" if owners else "")
 
