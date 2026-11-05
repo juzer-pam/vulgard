@@ -241,8 +241,14 @@ def branch_dependencies(sbom: Mapping[str, Any]) -> BranchDependencies:
 
 
 def _version(text: str) -> tuple[int, ...] | None:
+    """`2`, `2.0` and `2.0.0` compare equal, so trailing zero parts are dropped."""
     found = VERSION_RE.match(text.strip())
-    return tuple(int(part) for part in found.group(1).split(".")) if found else None
+    if not found:
+        return None
+    parts = [int(part) for part in found.group(1).split(".")]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
 
 
 # --- fix items

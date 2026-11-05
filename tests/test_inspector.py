@@ -393,6 +393,10 @@ STATUS_CASES = [
         [("npm", "axios", "1.0.1")], "axios", "1.0.1", [], FixStatus.NEEDS_DEPLOY, id="at-fix"
     ),
     pytest.param(
+        [("npm", "axios", "2")], "axios", "2.0.0", [], FixStatus.NEEDS_DEPLOY,
+        id="at-fix-written-shorter",
+    ),
+    pytest.param(
         [("npm", "axios", "1.20.0"), ("npm", "axios", "1.0.1")],
         "axios", "1.0.1", [], FixStatus.NEEDS_DEPLOY, id="every-copy-at-or-past-fix",
     ),
