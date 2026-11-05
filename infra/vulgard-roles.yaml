@@ -143,6 +143,15 @@ Resources:
                 Effect: Allow
                 Action: inspector2:ListFindings
                 Resource: "*"
+              - Sid: ReadImageRunners
+                Effect: Allow
+                Action:
+                  - lambda:ListFunctions
+                  - lambda:GetFunction
+                  - lambda:ListTags
+                  - ecs:ListTaskDefinitions
+                  - ecs:DescribeTaskDefinition
+                Resource: "*"
         - !If
           - GrantWrites
           - PolicyName: vulgard-write
