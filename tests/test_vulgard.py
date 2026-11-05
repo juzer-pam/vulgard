@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -748,6 +749,49 @@ def test_create_pr_falls_back_to_the_pr_a_retried_post_already_opened():
     gh._http = httpx.Client(base_url="https://api.test", transport=httpx.MockTransport(handler))
     pr = gh.create_pr("acme", "api", "title", "body", "vulgard/rollout", "main")
     assert pr["html_url"].endswith("/pull/7")
+
+
+def test_dependabot_pr_search_splits_by_creation_time_past_the_result_cap():
+    start = datetime(2026, 11, 3, 14, tzinfo=UTC)
+    created = [start + timedelta(seconds=10 * n) for n in range(2500)]
+    searches: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        variables = json.loads(request.content)["variables"]
+        searches.append(variables["q"])
+        low, high = re.search(r"created:(\S+)\.\.(\S+)", variables["q"]).groups()
+        stamps = [f"{when:%Y-%m-%dT%H:%M:%SZ}" for when in created]
+        in_range = [n for n, stamp in enumerate(stamps) if low <= stamp <= high]
+        offset = int(variables["after"] or 0)
+        visible = in_range[:1000]  # GitHub search never returns more than 1,000 results
+        page = visible[offset : offset + 50]
+        nodes = [
+            {
+                "number": n,
+                "title": f"Bump p{n} from 1.0.0 to 1.0.1",
+                "body": "",
+                "url": f"https://github.com/acme/api/pull/{n}",
+                "createdAt": f"{created[n]:%Y-%m-%dT%H:%M:%SZ}",
+                "isDraft": False,
+                "mergeable": "MERGEABLE",
+                "repository": {"name": "api"},
+                "commits": {"nodes": []},
+            }
+            for n in page
+        ]
+        more = offset + 50 < len(visible)
+        search = {
+            "issueCount": len(in_range),
+            "pageInfo": {"hasNextPage": more, "endCursor": str(offset + 50)},
+            "nodes": nodes,
+        }
+        return httpx.Response(200, json={"data": {"search": search}})
+
+    gh = GitHub(token="t")
+    gh._http = httpx.Client(base_url="https://api.test", transport=httpx.MockTransport(handler))
+    prs = gh.list_dependabot_prs("acme")
+    assert sorted(pr["number"] for pr in prs) == list(range(2500))
+    assert all("author:app/dependabot" in query for query in searches)
 
 
 def test_enforce_status_check_targets_enrolled_repos_only():

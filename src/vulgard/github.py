@@ -4,16 +4,20 @@ import base64
 import os
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 
 API_URL = "https://api.github.com"
 
+SEARCH_RESULT_CAP = 1000  # GitHub search returns at most this many results for one query
+SEARCH_START = datetime(2008, 1, 1, tzinfo=UTC)  # before any PR on GitHub was created
+
 DEPENDABOT_PRS_QUERY = """
 query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 50, after: $after) {
+    issueCount
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
@@ -31,6 +35,22 @@ class GitHubError(RuntimeError):
     def __init__(self, status: int, message: str, url: str):
         super().__init__(f"GitHub API {status} on {url}: {message}")
         self.status = status
+
+
+def _pr_from_node(org: str, node: dict[str, Any]) -> dict[str, Any]:
+    commits = node["commits"]["nodes"]
+    rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
+    return {
+        "number": node["number"],
+        "title": node["title"],
+        "body": node["body"],
+        "html_url": node["url"],
+        "repository_url": f"{API_URL}/repos/{org}/{node['repository']['name']}",
+        "created_at": node["createdAt"],
+        "draft": node["isDraft"],
+        "mergeable": node["mergeable"],
+        "ci_state": rollup["state"] if rollup else None,
+    }
 
 
 class GitHub:
@@ -122,38 +142,38 @@ class GitHub:
 
     def list_dependabot_prs(self, org: str) -> list[dict[str, Any]]:
         search = f"org:{org} is:pr is:open author:app/dependabot archived:false"
+        return self._search_prs(org, search, SEARCH_START, datetime.now(UTC).replace(microsecond=0))
+
+    def _search_prs(
+        self, org: str, search: str, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
+        """Every PR created in [start, end]. A range with more PRs than search returns is split
+        in half by creation time until each half fits."""
+        query = f"{search} created:{start:%Y-%m-%dT%H:%M:%SZ}..{end:%Y-%m-%dT%H:%M:%SZ}"
         prs: list[dict[str, Any]] = []
         after: str | None = None
         while True:
-            variables = {"q": search, "after": after}
-            data = self._json(
-                "POST", "/graphql", json={"query": DEPENDABOT_PRS_QUERY, "variables": variables}
-            )
-            if data.get("errors"):
-                messages = "; ".join(e.get("message", "") for e in data["errors"])
-                raise GitHubError(200, messages, "/graphql")
-            result = data["data"]["search"]
-            for node in result["nodes"]:
-                if not node:
-                    continue
-                commits = node["commits"]["nodes"]
-                rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
-                prs.append(
-                    {
-                        "number": node["number"],
-                        "title": node["title"],
-                        "body": node["body"],
-                        "html_url": node["url"],
-                        "repository_url": f"{API_URL}/repos/{org}/{node['repository']['name']}",
-                        "created_at": node["createdAt"],
-                        "draft": node["isDraft"],
-                        "mergeable": node["mergeable"],
-                        "ci_state": rollup["state"] if rollup else None,
-                    }
+            result = self._search_page(query, after)
+            if after is None and result["issueCount"] > SEARCH_RESULT_CAP and end > start:
+                middle = (start + (end - start) / 2).replace(microsecond=0)
+                return self._search_prs(org, search, start, middle) + self._search_prs(
+                    org, search, middle + timedelta(seconds=1), end
                 )
+            prs += [_pr_from_node(org, node) for node in result["nodes"] if node]
             if not result["pageInfo"]["hasNextPage"]:
                 return prs
             after = result["pageInfo"]["endCursor"]
+
+    def _search_page(self, query: str, after: str | None) -> dict[str, Any]:
+        data = self._json(
+            "POST",
+            "/graphql",
+            json={"query": DEPENDABOT_PRS_QUERY, "variables": {"q": query, "after": after}},
+        )
+        if data.get("errors"):
+            messages = "; ".join(e.get("message", "") for e in data["errors"])
+            raise GitHubError(200, messages, "/graphql")
+        return data["data"]["search"]
 
     def get_file(self, org: str, repo: str, path: str, ref: str | None = None) -> str | None:
         try:
