@@ -113,6 +113,15 @@ class GitHub:
     def list_fixed_alerts(self, org: str) -> list[dict[str, Any]]:
         return self._paginate(f"/orgs/{org}/dependabot/alerts", {"state": "fixed"})
 
+    def get_sbom(self, org: str, repo: str) -> dict[str, Any] | None:
+        """The default branch's dependency graph as SPDX, or None when the repo has none."""
+        try:
+            return self._json("GET", f"/repos/{org}/{repo}/dependency-graph/sbom")
+        except GitHubError as e:
+            if e.status == 404:
+                return None
+            raise
+
     def list_closed_alerts(self, org: str, since: datetime) -> list[dict[str, Any]]:
         return self._paginate(
             f"/orgs/{org}/dependabot/alerts",

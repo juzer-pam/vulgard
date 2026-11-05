@@ -119,6 +119,7 @@ def _coverage_json(match: CoverageMatch) -> dict[str, Any]:
             "url": alert.html_url,
         },
         "pr": pr and {"number": pr.number, "url": pr.html_url},
+        "branch_fix": match.branch_fix and {"default_branch_version": match.branch_fix.version},
         "linear_issues": [
             {"identifier": issue.identifier, "url": issue.url} for issue in match.linear_issues
         ],

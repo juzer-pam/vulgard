@@ -15,7 +15,7 @@ from .enforce import apply_enforce, plan_enforce
 from .estate import ScanError, discover
 from .fixtures import fixture_clients
 from .github import GitHubError
-from .inspector import build_report, build_tracking
+from .inspector import attributed_repos, branch_dependencies, build_report, build_tracking
 from .linear import LinearError
 from .plan import ActionKind, Topic
 from .policy import Alert, RepoReport, evaluate, now_utc
@@ -111,7 +111,13 @@ def report_inspector(clients: Clients, config: Config, args: argparse.Namespace)
     fixed_alerts = [Alert.from_api(raw) for raw in gh.list_fixed_alerts(config.org)]
     linear = clients.linear if config.inspector.linear_labels else None
     issues = linear.open_issues_with_labels(config.inspector.linear_labels) if linear else []
-    tracking = build_tracking(reports, fixed_alerts, issues)
+    in_report = attributed_repos(findings, deployments, config.inspector)
+    branches = {
+        repo: branch_dependencies(sbom)
+        for repo in sorted(in_report & only if only else in_report)
+        if (sbom := gh.get_sbom(config.org, repo)) is not None
+    }
+    tracking = build_tracking(reports, fixed_alerts, issues, branches)
     report = build_report(findings, deployments, config.inspector, only, tracking)
     if args.format == "json":
         print(json.dumps(inspector_render.report_json(report), indent=2))

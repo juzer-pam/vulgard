@@ -65,6 +65,9 @@ class FixtureGitHub:
     def list_fixed_alerts(self, org: str) -> list[dict[str, Any]]:
         return self.data.get("fixed_alerts", [])
 
+    def get_sbom(self, org: str, repo: str) -> dict[str, Any] | None:
+        return self.data.get("sboms", {}).get(repo)
+
     def list_closed_alerts(self, org: str, since: datetime) -> list[dict[str, Any]]:
         return self.data.get("closed_alerts", [])
 

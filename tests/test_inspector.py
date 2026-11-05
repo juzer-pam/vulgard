@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from vulgard.fixtures import FakeLinear, FixtureInspector
 from vulgard.inspector import (
     NO_TRACKING,
     Attributed,
+    BranchFix,
     Coverage,
     CoverageMatch,
     Finding,
@@ -38,6 +40,7 @@ from vulgard.inspector import (
     Tracking,
     Unattributed,
     Via,
+    branch_dependencies,
     build_report,
     build_tracking,
     cover,
@@ -411,11 +414,116 @@ def test_a_linear_issue_covers_every_group_nothing_stronger_covers():
         pytest.param(
             lambda: CoverageMatch(Coverage.UNTRACKED, linear_issues=(issue(),)), id="issues"
         ),
+        pytest.param(lambda: CoverageMatch(Coverage.FIXED_NOT_DEPLOYED), id="fixed-no-evidence"),
+        pytest.param(
+            lambda: CoverageMatch(
+                Coverage.FIXED_NOT_DEPLOYED, alert=alert(), branch_fix=BranchFix("2.0.0")
+            ),
+            id="fixed-both",
+        ),
+        pytest.param(
+            lambda: CoverageMatch(Coverage.UNTRACKED, branch_fix=BranchFix(None)), id="branch-fix"
+        ),
     ],
 )
 def test_a_coverage_match_only_carries_what_its_status_has(bad):
     with pytest.raises(AssertionError):
         bad()
+
+
+def sbom(*packages):
+    """An SPDX dependency graph: the repo itself, then (purl type, name, version) packages."""
+    return {
+        "sbom": {
+            "packages": [
+                {"name": "com.github.acme/api", "versionInfo": "main"},
+                *(
+                    {
+                        "name": name,
+                        "versionInfo": version,
+                        "externalRefs": [
+                            {"referenceType": "purl", "referenceLocator": f"pkg:{kind}/x@{version}"}
+                        ],
+                    }
+                    for kind, name, version in packages
+                ),
+            ]
+        }
+    }
+
+
+def branch_tracking(*packages, fixed_alerts=()):
+    return replace(
+        tracking(fixed_alerts=fixed_alerts), branch=branch_dependencies(sbom(*packages))
+    )
+
+
+BRANCH_CASES = [
+    pytest.param(
+        [("npm", "axios", "1.20.0")], "NODE", "axios", "1.0.1", BranchFix("1.20.0"), id="newer"
+    ),
+    pytest.param(
+        [("npm", "axios", "1.0.1")], "NODE", "axios", "1.0.1", BranchFix("1.0.1"), id="at-fix"
+    ),
+    pytest.param(
+        [("npm", "react", "18.0.0")], "NODE", "axios", "1.0.1", BranchFix(None), id="removed"
+    ),
+    pytest.param(
+        [("npm", "axios", "1.20.0"), ("npm", "axios", "0.21.4")], "NODE", "axios", "1.0.1", None,
+        id="an-old-copy-remains",
+    ),
+    pytest.param([("npm", "axios", "1.0.0")], "NODE", "axios", "1.0.1", None, id="older"),
+    pytest.param([("npm", "axios", "2.0.0")], "NODE", "axios", None, None, id="no-fixed-version"),
+    pytest.param(
+        [("npm", "react", "18.0.0")], "NODE", "axios", None, BranchFix(None), id="removed-no-fix"
+    ),
+    pytest.param(
+        [("npm", "react", "18.0.0")], "JAVA", "com.example:core", "2.0.0", None,
+        id="ecosystem-not-on-branch",
+    ),
+    pytest.param([("npm", "react", "18.0.0")], "OS", "openssl", "3.0.9", None, id="os-package"),
+    pytest.param(
+        [("pypi", "Python_Dateutil", "2.9.0")], "PYTHON", "python-dateutil", "2.8.1",
+        BranchFix("2.9.0"), id="pypi-names-normalize",
+    ),
+]
+
+
+@pytest.mark.parametrize(("packages", "manager", "package", "fixed_in", "expected"), BRANCH_CASES)
+def test_the_default_branch_dependency_graph_shows_a_fix_not_yet_deployed(
+    packages, manager, package, fixed_in, expected
+):
+    on = function(tags={STACK: "api-dev"})
+    finding = make_finding(on, package=package, package_manager=manager, fixed_in=fixed_in)
+    group = group_findings([finding], NO_TRACKING)[0]
+    match = cover(group, branch_tracking(*packages))
+    if expected is None:
+        assert match.status in (Coverage.UNTRACKED, Coverage.UNTRACKED_OS_PACKAGE)
+    else:
+        assert (match.status, match.branch_fix, match.alert) == (
+            Coverage.FIXED_NOT_DEPLOYED,
+            expected,
+            None,
+        )
+
+
+def test_a_fixed_alert_is_preferred_over_the_dependency_graph_because_it_links_the_fix():
+    fixed = alert()
+    match = cover(a_group(), branch_tracking(("npm", "axios", "9.0.0"), fixed_alerts=[fixed]))
+    assert (match.status, match.alert, match.branch_fix) == (
+        Coverage.FIXED_NOT_DEPLOYED,
+        fixed,
+        None,
+    )
+
+
+def test_branch_dependencies_reads_purl_types_and_skips_packages_without_one():
+    got = branch_dependencies(sbom(("npm", "@acme/ui", "1.2.3"), ("maven", "org.x:core", "2.0")))
+    assert got.versions == {
+        ("npm", "@acme/ui"): frozenset({"1.2.3"}),
+        ("maven", "org.x:core"): frozenset({"2.0"}),
+    }
+    assert got.ecosystems == {"npm", "maven"}
 
 
 def test_a_linear_issue_naming_a_longer_repo_does_not_cover_the_shorter_one():
@@ -741,11 +849,12 @@ def vulnerabilities(groups):
 
 def test_report_attributes_the_demo_findings_to_repos(tmp_path, capsys):
     report = report_json(tmp_path, capsys)
-    assert report["via"] == {"tag": 0, "deployment": 7}
+    assert report["via"] == {"tag": 0, "deployment": 8}
     assert {repo: vulnerabilities(groups) for repo, groups in report["repos"].items()} == {
         "inventory-service": [
             ("CVE-2023-26115", ["inventory-production-ReorderFunction"]),
             ("CVE-2024-21534", ["inventory-production-ReorderFunction"]),
+            ("CVE-2024-28849", ["inventory-production-ReorderFunction"]),
             ("CVE-2024-45296", ["inventory-production-ReorderFunction"]),
         ],
         "payments-api": [
@@ -804,7 +913,7 @@ def test_repo_scope_keeps_only_that_repo(tmp_path, capsys):
     report = report_json(tmp_path, capsys, None, "--repo", "inventory-service")
     assert list(report["repos"]) == ["inventory-service"]
     assert report["unattributed"] == {}
-    assert report["via"] == {"tag": 0, "deployment": 3}
+    assert report["via"] == {"tag": 0, "deployment": 4}
 
 
 def test_report_table_lists_repos_worst_first_then_the_unattributed(capsys):
@@ -812,12 +921,12 @@ def test_report_table_lists_repos_worst_first_then_the_unattributed(capsys):
     out = capsys.readouterr().out
     rows = [line.split() for line in out.splitlines()]
     assert ["payments-api", "1", "2", "0", "0", "1", "3", "4"] in rows
-    assert ["inventory-service", "0", "3", "0", "0", "0", "3", "1"] in rows
+    assert ["inventory-service", "0", "4", "0", "0", "0", "4", "1"] in rows
     assert ["unattributed:", "shared_asset_repository", "0", "1", "0", "0", "0", "1", "1"] in rows
     assert ["unattributed:", "no_deployment_tags", "0", "1", "0", "0", "0", "1", "1"] in rows
     order = [out.index(name) for name in ("payments-api", "inventory-service", "unattributed")]
     assert order == sorted(order)
-    assert "9 finding(s) in 8 group(s) at high or above" in out
+    assert "10 finding(s) in 9 group(s) at high or above" in out
 
 
 def test_report_table_says_so_when_nothing_matches(capsys):
@@ -846,7 +955,7 @@ def test_report_json_gives_every_demo_status_with_what_covers_it(tmp_path, capsy
     assert report["coverage"] == {
         "dependabot_alert": 2,
         "dependabot_pr": 1,
-        "fixed_not_deployed": 1,
+        "fixed_not_deployed": 2,
         "linear_issue": 1,
         "untracked_os_package": 1,
         "untracked": 2,
@@ -867,6 +976,10 @@ def test_report_json_gives_every_demo_status_with_what_covers_it(tmp_path, capsy
     }
     assert groups["CVE-2023-26115"]["coverage"] == "fixed_not_deployed"
     assert groups["CVE-2023-26115"]["alert"]["state"] == "fixed"
+    assert groups["CVE-2023-26115"]["branch_fix"] is None
+    assert groups["CVE-2024-28849"]["coverage"] == "fixed_not_deployed"
+    assert groups["CVE-2024-28849"]["alert"] is None
+    assert groups["CVE-2024-28849"]["branch_fix"] == {"default_branch_version": "1.15.9"}
     assert groups["CVE-2024-21534"]["coverage"] == "dependabot_pr"
     assert groups["CVE-2024-45296"]["linear_issues"] == [
         {"identifier": "SEC-201", "url": "https://linear.app/acme/issue/SEC-201"}
@@ -882,7 +995,7 @@ def test_report_table_counts_groups_by_coverage_status(capsys):
     rows = [line.split() for line in out.splitlines()]
     assert ["repo", *(status.value for status in Coverage)] in rows
     assert ["payments-api", "2", "0", "0", "0", "1", "0"] in rows
-    assert ["inventory-service", "0", "1", "1", "1", "0", "0"] in rows
+    assert ["inventory-service", "0", "1", "2", "1", "0", "0"] in rows
     assert ["unattributed:", "no_deployment_tags", "0", "0", "0", "0", "0", "1"] in rows
     assert "Linear issues were not checked" not in out
 
@@ -893,6 +1006,6 @@ def test_without_linear_labels_the_table_says_linear_was_not_checked(tmp_path, c
     assert main([*fixtures, "report", "--topic", "inspector"]) == 0
     out = capsys.readouterr().out
     assert "Linear issues were not checked" in out
-    assert ["inventory-service", "0", "1", "1", "0", "0", "1"] in [
+    assert ["inventory-service", "0", "1", "2", "0", "0", "1"] in [
         line.split() for line in out.splitlines()
     ]

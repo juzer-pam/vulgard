@@ -24,7 +24,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol, assert_never
+from typing import Any, Protocol, assert_never
 
 from .config import SEVERITIES, InspectorConfig, severities_at_least
 from .estate import (
@@ -44,6 +44,9 @@ STACK_NAME_TAG = "aws:cloudformation:stack-name"
 SERVERLESS_REPOSITORY_RE = re.compile(r"^serverless-(.+)$")
 SHARED_ASSET_REPOSITORIES = ("sst-asset", "cdk-*-container-assets-*")  # one per account, all apps
 OS_PACKAGE_MANAGER = "OS"
+# Inspector's package manager -> the SBOM purl type GitHub's dependency graph uses for it.
+SBOM_ECOSYSTEMS = {"NODE": "npm", "JAVA": "maven", "PYTHON": "pypi", "GO": "golang"}
+VERSION_RE = re.compile(r"^v?(\d+(?:\.\d+)*)")
 
 
 class ResourceType(StrEnum):
@@ -208,13 +211,93 @@ class Coverage(StrEnum):
 
 
 @dataclass(frozen=True)
+class BranchDependencies:
+    """Every package version on a repo's default branch, from GitHub's dependency graph,
+    keyed by (purl type, normalized name)."""
+
+    versions: Mapping[tuple[str, str], frozenset[str]]
+
+    @property
+    def ecosystems(self) -> frozenset[str]:
+        return frozenset(ecosystem for ecosystem, _ in self.versions)
+
+
+def _package_key(ecosystem: str, name: str) -> tuple[str, str]:
+    name = name.lower()
+    if ecosystem == "pypi":
+        name = re.sub(r"[-_.]+", "-", name)
+    return ecosystem, name
+
+
+def branch_dependencies(sbom: Mapping[str, Any]) -> BranchDependencies:
+    """Parses `GET /repos/{org}/{repo}/dependency-graph/sbom`. Packages without a purl, such as
+    the repo itself, are skipped."""
+    versions: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
+    for package in sbom.get("sbom", {}).get("packages", []):
+        purl = next(
+            (
+                ref["referenceLocator"]
+                for ref in package.get("externalRefs", [])
+                if ref.get("referenceType") == "purl"
+            ),
+            None,
+        )
+        if not purl or not purl.startswith("pkg:") or not package.get("versionInfo"):
+            continue
+        ecosystem = purl[len("pkg:") :].split("/", 1)[0]
+        versions[_package_key(ecosystem, package["name"])].add(package["versionInfo"])
+    return BranchDependencies({key: frozenset(found) for key, found in versions.items()})
+
+
+def _version(text: str) -> tuple[int, ...] | None:
+    found = VERSION_RE.match(text.strip())
+    return tuple(int(part) for part in found.group(1).split(".")) if found else None
+
+
+@dataclass(frozen=True)
+class BranchFix:
+    """The default branch no longer has the vulnerable version: `version` is the lowest it has,
+    already at or past the fix, or None when the package is gone from the branch."""
+
+    version: str | None
+
+
+def fixed_on_branch(group: FindingGroup, branch: BranchDependencies) -> BranchFix | None:
+    """Only for ecosystems the branch declares at all: a package missing from a repo with no
+    manifest for its ecosystem (a Java JAR in a Node repo) says nothing about a fix."""
+    ecosystem = next(
+        (
+            SBOM_ECOSYSTEMS[finding.package_manager]
+            for finding in group.findings
+            if finding.package_manager in SBOM_ECOSYSTEMS
+        ),
+        None,
+    )
+    if ecosystem is None or ecosystem not in branch.ecosystems:
+        return None
+    present = branch.versions.get(_package_key(ecosystem, group.package))
+    if not present:
+        return BranchFix(None)
+    fixed = _version(group.fixed_in) if group.fixed_in else None
+    parsed = [_version(version) for version in present]
+    if fixed is None or any(version is None for version in parsed):
+        return None
+    if all(version is not None and version >= fixed for version in parsed):
+        lowest = min(present, key=lambda version: _version(version) or ())
+        return BranchFix(lowest)
+    return None
+
+
+@dataclass(frozen=True)
 class Tracking:
-    """What vulgard found for one repo."""
+    """What vulgard found for one repo. `branch` is None when the repo has no dependency
+    graph to read."""
 
     open_alerts: tuple[Alert, ...]
     fixed_alerts: tuple[Alert, ...]
     prs: tuple[DependabotPR, ...]
     linear_issues: tuple[LinearIssue, ...]  # open, labelled, and naming the repo in the title
+    branch: BranchDependencies | None = None
 
 
 NO_TRACKING = Tracking((), (), (), ())
@@ -223,14 +306,17 @@ NO_TRACKING = Tracking((), (), (), ())
 @dataclass(frozen=True)
 class CoverageMatch:
     status: Coverage
-    alert: Alert | None = None  # DEPENDABOT_ALERT and FIXED_NOT_DEPLOYED only
+    alert: Alert | None = None  # DEPENDABOT_ALERT, or the fixed alert of FIXED_NOT_DEPLOYED
     pr: DependabotPR | None = None  # DEPENDABOT_PR, or the DEPENDABOT_ALERT's fix PR
     linear_issues: tuple[LinearIssue, ...] = ()  # LINEAR_ISSUE only
+    branch_fix: BranchFix | None = None  # FIXED_NOT_DEPLOYED with no fixed alert
 
     def __post_init__(self) -> None:
-        assert (self.alert is not None) == (
-            self.status in (Coverage.DEPENDABOT_ALERT, Coverage.FIXED_NOT_DEPLOYED)
-        )
+        if self.status is Coverage.FIXED_NOT_DEPLOYED:
+            assert (self.alert is None) != (self.branch_fix is None)
+        else:
+            assert self.branch_fix is None
+            assert (self.alert is not None) == (self.status is Coverage.DEPENDABOT_ALERT)
         assert self.pr is not None or self.status is not Coverage.DEPENDABOT_PR
         assert self.pr is None or self.status in (Coverage.DEPENDABOT_PR, Coverage.DEPENDABOT_ALERT)
         assert bool(self.linear_issues) == (self.status is Coverage.LINEAR_ISSUE)
@@ -248,6 +334,7 @@ def build_tracking(
     reports: Mapping[str, RepoReport],
     fixed_alerts: Iterable[Alert],
     issues: Iterable[LinearIssue],
+    branches: Mapping[str, BranchDependencies] | None = None,
 ) -> dict[str, Tracking]:
     """Pure. `reports` are from `policy.evaluate`, with Dependabot PRs already linked to alerts.
     An open alert accepted under `exceptions` still counts: someone has decided about it."""
@@ -260,6 +347,7 @@ def build_tracking(
             fixed_alerts=tuple(fixed[repo]),
             prs=tuple(report.dependabot_prs),
             linear_issues=tuple(issue for issue in issues if names_repo(issue.title, repo)),
+            branch=(branches or {}).get(repo),
         )
         for repo, report in reports.items()
     }
@@ -281,6 +369,9 @@ def cover(group: FindingGroup, tracking: Tracking) -> CoverageMatch:
     for alert in tracking.fixed_alerts:
         if _names_vulnerability(alert, group.vulnerability_id):
             return CoverageMatch(Coverage.FIXED_NOT_DEPLOYED, alert=alert)
+    fix = fixed_on_branch(group, tracking.branch) if tracking.branch else None
+    if fix is not None:
+        return CoverageMatch(Coverage.FIXED_NOT_DEPLOYED, branch_fix=fix)
     if tracking.linear_issues:
         return CoverageMatch(Coverage.LINEAR_ISSUE, linear_issues=tracking.linear_issues)
     if any(finding.package_manager == OS_PACKAGE_MANAGER for finding in group.findings):
@@ -363,6 +454,30 @@ class InspectorReport:
         )
 
 
+def _attribute_wanted(
+    findings: Iterable[Finding], deployments: Iterable[Deployment], cfg: InspectorConfig
+) -> list[tuple[Finding, FindingAttribution]]:
+    table = index_deployments(deployments)
+    wanted = severities_at_least(cfg.min_severity)
+    return [
+        (finding, attribute(finding, table))
+        for finding in findings
+        if finding.severity in wanted
+        and not any(_matches(finding.resource, pattern) for pattern in cfg.ignore)
+    ]
+
+
+def attributed_repos(
+    findings: Iterable[Finding], deployments: Iterable[Deployment], cfg: InspectorConfig
+) -> set[str]:
+    """The repos `build_report` will list, so their dependency graphs can be read first."""
+    return {
+        attribution.repo
+        for _, attribution in _attribute_wanted(findings, deployments, cfg)
+        if isinstance(attribution, Attributed)
+    }
+
+
 def build_report(
     findings: Iterable[Finding],
     deployments: Iterable[Deployment],
@@ -374,14 +489,7 @@ def build_report(
     groups them. `only` (from --repo) keeps just those repos and the unattributed buckets go,
     as in `stale.survey(scoped=True)`. `tracking` is by repo; unattributed groups and repos missing
     from it are checked against nothing."""
-    table = index_deployments(deployments)
-    wanted = severities_at_least(cfg.min_severity)
-    attributed = [
-        (finding, attribute(finding, table))
-        for finding in findings
-        if finding.severity in wanted
-        and not any(_matches(finding.resource, pattern) for pattern in cfg.ignore)
-    ]
+    attributed = _attribute_wanted(findings, deployments, cfg)
     if only is not None:
         attributed = [
             (finding, attribution)

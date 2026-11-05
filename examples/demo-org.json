@@ -1020,6 +1020,43 @@
               }
             }
           ]
+        },
+        {
+          "findingArn": "arn:aws:inspector2:us-east-1:111122223333:finding/00000000000000000000000000000012",
+          "severity": "HIGH",
+          "type": "PACKAGE_VULNERABILITY",
+          "firstObservedAt": "@-12d",
+          "fixAvailable": "YES",
+          "exploitAvailable": "NO",
+          "title": "CVE-2024-28849 - follow-redirects",
+          "packageVulnerabilityDetails": {
+            "vulnerabilityId": "CVE-2024-28849",
+            "vulnerablePackages": [
+              {
+                "name": "follow-redirects",
+                "version": "1.15.4",
+                "packageManager": "NODE",
+                "filePath": "/var/task/node_modules/follow-redirects/package.json",
+                "fixedInVersion": "1.15.6"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "AWS_LAMBDA_FUNCTION",
+              "id": "arn:aws:lambda:us-east-1:111122223333:function:inventory-production-ReorderFunction",
+              "region": "us-east-1",
+              "details": {
+                "awsLambdaFunction": {
+                  "functionName": "inventory-production-ReorderFunction"
+                }
+              },
+              "tags": {
+                "sst:app": "inventory",
+                "sst:stage": "production"
+              }
+            }
+          ]
         }
       ]
     }
@@ -1129,5 +1166,51 @@
         "security"
       ]
     }
-  ]
+  ],
+  "sboms": {
+    "inventory-service": {
+      "sbom": {
+        "name": "com.github.acme/inventory-service",
+        "packages": [
+          {
+            "name": "com.github.acme/inventory-service",
+            "versionInfo": "main"
+          },
+          {
+            "name": "follow-redirects",
+            "versionInfo": "1.15.9",
+            "externalRefs": [
+              {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": "pkg:npm/follow-redirects@1.15.9"
+              }
+            ]
+          },
+          {
+            "name": "path-to-regexp",
+            "versionInfo": "0.1.7",
+            "externalRefs": [
+              {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": "pkg:npm/path-to-regexp@0.1.7"
+              }
+            ]
+          },
+          {
+            "name": "eslint",
+            "versionInfo": "8.56.0",
+            "externalRefs": [
+              {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": "pkg:npm/eslint@8.56.0"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
 }
