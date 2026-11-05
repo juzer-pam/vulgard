@@ -105,120 +105,87 @@ DEPLOYMENTS = [API_DEV, INVENTORY, STOREFRONT, LEGACY, DOCS]
 ATTRIBUTION_CASES = [
     pytest.param(
         function(tags={STACK: "api-dev"}),
-        {},
         Attributed("api", Via.DEPLOYMENT, "api-dev"),
         id="cloudformation-stack-tag",
     ),
     pytest.param(
         function(tags={"sst:app": "inventory", "sst:stage": "prod"}),
-        {},
         Attributed("inventory", Via.DEPLOYMENT, "inventory/prod"),
         id="sst-app-and-stage-tags",
     ),
     pytest.param(
         function(tags={"amplify:app-id": "d1abc", "amplify:branch-name": "main"}),
-        {},
         Attributed("storefront", Via.DEPLOYMENT, "site/main"),
         id="amplify-app-and-branch-tags",
     ),
     pytest.param(
         instance(tags={STACK: "api-dev"}),
-        {},
         Attributed("api", Via.DEPLOYMENT, "api-dev"),
         id="ec2-instance",
     ),
     pytest.param(
         image("serverless-api-dev"),
-        {},
         Attributed("api", Via.DEPLOYMENT, "api-dev"),
         id="serverless-ecr-repository-names-the-stack",
     ),
     pytest.param(
         function(tags={STACK: "api-dev", "sst:app": "inventory", "sst:stage": "prod"}),
-        {},
         Attributed("api", Via.DEPLOYMENT, "api-dev"),
         id="first-candidate-found-wins",
     ),
     pytest.param(
         function(tags={STACK: "gone", "sst:app": "inventory", "sst:stage": "prod"}),
-        {},
         Attributed("inventory", Via.DEPLOYMENT, "inventory/prod"),
         id="later-candidate-when-the-first-is-not-found",
     ),
     pytest.param(
         function(tags={STACK: "api-dev", "github:repo": "https://github.com/acme/payments.git"}),
-        {},
         Attributed("payments", Via.TAG),
         id="repo-tag-beats-deployment",
     ),
     pytest.param(
-        function("api-dev-handler", {"repository": "acme/payments"}),
-        {"attribution": {"api-dev-*": "billing"}},
-        Attributed("billing", Via.CONFIG),
-        id="config-glob-on-function-name-beats-tag",
-    ),
-    pytest.param(
-        function("handler", {STACK: "api-dev"}),
-        {"attribution": {"api-*": "billing"}},
-        Attributed("billing", Via.CONFIG),
-        id="config-glob-on-stack-tag-beats-deployment",
-    ),
-    pytest.param(
-        image("sst-asset"),
-        {"attribution": {"sst-asset": "platform"}},
-        Attributed("platform", Via.CONFIG),
-        id="config-attributes-a-shared-asset-repository",
-    ),
-    pytest.param(
         function(tags={STACK: "legacy-staging"}),
-        {},
         Unattributed(Reason.DEPLOYMENT_UNATTRIBUTED),
         id="deployment-without-a-repo",
     ),
     pytest.param(
         function(tags={STACK: "gone"}),
-        {},
         Unattributed(Reason.DEPLOYMENT_NOT_FOUND),
         id="stack-not-in-the-estate",
     ),
     pytest.param(
         function(tags={STACK: "docs-site"}),
-        {},
         Unattributed(Reason.DEPLOYMENT_NOT_FOUND),
         id="vercel-projects-are-not-looked-up",
     ),
     pytest.param(
         image("serverless-gone-dev"),
-        {},
         Unattributed(Reason.DEPLOYMENT_NOT_FOUND),
         id="serverless-ecr-repository-without-a-stack",
     ),
     pytest.param(
         image("sst-asset"),
-        {},
         Unattributed(Reason.SHARED_ASSET_REPOSITORY),
         id="sst-asset-repository",
     ),
     pytest.param(
         image("cdk-hnb659fds-container-assets-111122223333-us-east-1"),
-        {},
         Unattributed(Reason.SHARED_ASSET_REPOSITORY),
         id="cdk-asset-repository",
     ),
-    pytest.param(function(), {}, Unattributed(Reason.NO_DEPLOYMENT_TAGS), id="no-tags"),
+    pytest.param(function(), Unattributed(Reason.NO_DEPLOYMENT_TAGS), id="no-tags"),
     pytest.param(
         function(tags={"sst:app": "inventory"}),
-        {},
         Unattributed(Reason.NO_DEPLOYMENT_TAGS),
         id="sst-app-without-a-stage",
     ),
 ]
 
 
-@pytest.mark.parametrize(("on", "inspector", "expected"), ATTRIBUTION_CASES)
-def test_attribution_rules(on, inspector, expected):
+@pytest.mark.parametrize(("on", "expected"), ATTRIBUTION_CASES)
+def test_attribution_rules(on, expected):
     finding = make_finding(on)
-    report = build_report([finding], DEPLOYMENTS, InspectorConfig(**inspector), None)
+    report = build_report([finding], DEPLOYMENTS, InspectorConfig(), None)
     assert report.attributions == {finding.arn: expected}
     if isinstance(expected, Attributed):
         placed = report.by_repo[expected.repo]
@@ -242,11 +209,9 @@ def test_via_counts_how_findings_were_attributed():
         make_finding(function("a", {STACK: "api-dev"})),
         make_finding(function("b", {"repo": "payments"})),
         make_finding(function("c", {"Repo": "payments"})),
-        make_finding(function("billing-d")),
     ]
-    cfg = InspectorConfig(attribution={"billing-*": "billing"})
-    report = build_report(found, DEPLOYMENTS, cfg, None)
-    assert report.via == Counter({Via.DEPLOYMENT: 1, Via.TAG: 2, Via.CONFIG: 1})
+    report = build_report(found, DEPLOYMENTS, InspectorConfig(), None)
+    assert report.via == Counter({Via.DEPLOYMENT: 1, Via.TAG: 2})
 
 
 # --- grouping, severity, ignore and scope
@@ -548,7 +513,7 @@ def vulnerabilities(groups):
 
 def test_report_attributes_the_demo_findings_to_repos(tmp_path, capsys):
     report = report_json(tmp_path, capsys)
-    assert report["via"] == {"config": 0, "tag": 0, "deployment": 5}
+    assert report["via"] == {"tag": 0, "deployment": 5}
     assert {repo: vulnerabilities(groups) for repo, groups in report["repos"].items()} == {
         "inventory-service": [("CVE-2024-45296", ["inventory-production-ReorderFunction"])],
         "payments-api": [
@@ -597,24 +562,6 @@ def test_min_severity_low_adds_the_low_finding_but_never_the_informational_one(t
     assert report["repos"]["payments-api"][-1]["severity"] == "low"
 
 
-def test_inspector_attribution_config_overrides_the_deployment(tmp_path, capsys):
-    inspector = """
-inspector:
-  attribution:
-    "payments-api-dev-*": web-storefront
-    sst-asset: platform
-"""
-    report = report_json(tmp_path, capsys, inspector)
-    assert report["via"] == {"config": 2, "tag": 0, "deployment": 4}
-    assert vulnerabilities(report["repos"]["web-storefront"]) == [
-        ("CVE-2023-45857", ["payments-api-dev-createOrder"])
-    ]
-    assert vulnerabilities(report["repos"]["platform"]) == [("CVE-2024-21538", ["sst-asset"])]
-    assert list(report["unattributed"]) == ["no_deployment_tags"]
-    finding = report["repos"]["platform"][0]["findings"][0]
-    assert (finding["via"], finding["deployment"]) == ("config", None)
-
-
 def test_inspector_ignore_config_drops_matching_resources(tmp_path, capsys):
     inspector = '\ninspector:\n  ignore: ["payments-api-production-*"]\n'
     report = report_json(tmp_path, capsys, inspector)
@@ -626,7 +573,7 @@ def test_repo_scope_keeps_only_that_repo(tmp_path, capsys):
     report = report_json(tmp_path, capsys, "", "--repo", "inventory-service")
     assert list(report["repos"]) == ["inventory-service"]
     assert report["unattributed"] == {}
-    assert report["via"] == {"config": 0, "tag": 0, "deployment": 1}
+    assert report["via"] == {"tag": 0, "deployment": 1}
 
 
 def test_report_table_lists_repos_worst_first_then_the_unattributed(capsys):

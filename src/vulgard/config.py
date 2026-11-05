@@ -310,7 +310,6 @@ class InspectorConfig:
 
     regions: list[str] = field(default_factory=lambda: ["us-east-1"])
     min_severity: str = "high"
-    attribution: dict[str, str] = field(default_factory=dict)  # resource or stack glob -> repo
     ignore: list[str] = field(default_factory=list)  # resource or stack globs never reported
 
     def __post_init__(self) -> None:

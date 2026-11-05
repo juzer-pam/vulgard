@@ -229,8 +229,6 @@ The table has one row per repo, worst first, then one row per reason a finding h
 inspector:
   regions: [us-east-1]
   min_severity: high
-  attribution:
-    "legacy-reports-*": payments-api   # resources or stacks with this name belong to payments-api
   ignore:
     - "scratch-*"                      # never reported
 ```
@@ -239,33 +237,31 @@ inspector:
 |---|---|---|---|
 | `regions` | list | `[us-east-1]` | Regions to read findings from. Credentials come from the environment, through GitHub OIDC in CI. The role needs `inspector2:ListFindings`, which the `VulgardLifecycle` role in `infra/` grants. |
 | `min_severity` | `critical`, `high`, `medium` or `low` | `high` | The least severe findings to report. Anything more severe is included too. See below for why it defaults to `high`. |
-| `attribution` | map of glob to repo | `{}` | Which repo a resource belongs to. The glob is matched against the resource name (a Lambda function name, an ECR repository name or an EC2 instance id) and against its CloudFormation stack name. Wins over everything else. |
-| `ignore` | list of globs | `[]` | Resources never reported. Matched the same way as `attribution`. |
+| `ignore` | list of globs | `[]` | Resources never reported. Each glob is matched against the resource name (a Lambda function name, an ECR repository name or an EC2 instance id) and against its CloudFormation stack name. |
 
 **Why `min_severity` defaults to `high`.** An AWS account can hold a very large number of findings. In one account we checked, about 62,000 findings were active and about 22,600 of them were high or critical. Reading all of them is slow, and the report would bury the ones that need action first. Lower it to `medium` or `low` when you want the long tail. Inspector's `INFORMATIONAL` and `UNTRIAGED` findings are never reported, and only package vulnerabilities are, not code or network findings.
 
 ### How a finding gets a repo
 
-vulgard tries these in order and uses the first that answers:
+There is no repo map to maintain for Inspector. vulgard tries these in order and uses the first that answers:
 
-1. **`inspector.attribution`**, described above.
-2. **A repo tag on the resource.** A tag is a key and value label on an AWS resource. vulgard reads `vulgard:repo`, `github:repo`, `repository`, `Repository`, `repo` and `Repo`, the same tags the stale topic reads. The value can be `repo`, `org/repo` or a GitHub URL.
-3. **The deployment the resource belongs to.** vulgard already finds your deployments for the stale topic (CloudFormation stacks, SST stages and Amplify branches) and knows which repo each came from. A resource says which deployment it belongs to through its tags:
+1. **A repo tag on the resource.** A tag is a key and value label on an AWS resource. vulgard reads `vulgard:repo`, `github:repo`, `repository`, `Repository`, `repo` and `Repo`, the same tags the stale topic reads. The value can be `repo`, `org/repo` or a GitHub URL.
+2. **The deployment the resource belongs to.** vulgard already finds your deployments for the stale topic (CloudFormation stacks, SST stages and Amplify branches) and knows which repo each came from. A resource says which deployment it belongs to through its tags:
    - `aws:cloudformation:stack-name`, which AWS adds to everything a CloudFormation stack (a group of resources AWS creates and deletes together) creates. Serverless Framework and CDK both deploy this way.
    - `sst:app` and `sst:stage`, which SST adds.
    - `amplify:app-id` and `amplify:branch-name`, which Amplify Gen2 adds.
    - For ECR images only, the repository name. ECR images have no tags, but Serverless names its repository `serverless-<service>-<stage>`, and the stack is `<service>-<stage>`.
 
-The JSON output records which rule was used for each finding (`via` is `config`, `tag` or `deployment`) and, for `deployment`, the deployment's name.
+The JSON output records which rule was used for each finding (`via` is `tag` or `deployment`) and, for `deployment`, the deployment's name.
 
 ### Findings with no repo
 
 These land in rows labelled `unattributed: <reason>`. Each reason says what to fix:
 
-- `shared_asset_repository`: the image is in `sst-asset` or a `cdk-*-container-assets-*` repository. Every app in the account shares these, so the repository name can't say whose image it is. Map the repository in `attribution` only if one repo really owns it.
-- `no_deployment_tags`: the resource has none of the tags above, so there is nothing to look up. Tag the resource `vulgard:repo=<repo>`, or map its name in `attribution`.
+- `shared_asset_repository`: the image is in `sst-asset` or a `cdk-*-container-assets-*` repository. Every app in the account shares these, so the repository name can't say whose image it is.
+- `no_deployment_tags`: the resource has none of the tags above, so there is nothing to look up. Tag the resource `vulgard:repo=<repo>`, or tag the stack that creates it, since CloudFormation copies stack tags onto the resources it creates.
 - `deployment_not_found`: the resource's tags name a deployment, but vulgard's scan didn't find one with that name. For example, the stack is nested inside another stack, or lives in a region outside `deployments.aws.regions`.
-- `deployment_unattributed`: vulgard found the deployment, but no repo is known for it either. Fix it the way you would for a stale deployment: tag the stack with `vulgard:repo` or add it to `deployments.attribution`.
+- `deployment_unattributed`: vulgard found the deployment, but no repo is known for it either. Fix it the way you would for a stale deployment. Tag the stack with `github:repo` when it deploys, for example `Tags.of(app).add("github:repo", "<org>/<repo>")` in a CDK app. `deployments.attribution` also works, but it's a map someone has to keep up to date.
 
 ## Errors you may see
 

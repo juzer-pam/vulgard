@@ -4,9 +4,8 @@ attributed to the repo that deployed the vulnerable resource.
 Inspector names a resource (a Lambda function, an ECR image, an EC2 instance), never a repo. The
 repo is the first of these that answers:
 
-    1. `inspector.attribution`, an admin override matched against the resource and stack names
-    2. a repo tag on the resource
-    3. the estate deployment the resource belongs to (see `estate.py`), found through its
+    1. a repo tag on the resource
+    2. the estate deployment the resource belongs to (see `estate.py`), found through its
        CloudFormation stack, SST app and stage, or Amplify app and branch tags
 
 Findings of one vulnerability in one package, across resources, are reported as one group.
@@ -87,7 +86,6 @@ class InspectorSource(Protocol):
 
 
 class Via(StrEnum):
-    CONFIG = "config"
     TAG = "tag"
     DEPLOYMENT = "deployment"
 
@@ -175,14 +173,10 @@ def _is_shared_asset_repository(resource: InspectorResource) -> bool:
 def attribute(
     finding: Finding,
     deployments_by_key: Mapping[DeploymentKey, Deployment],
-    cfg: InspectorConfig,
 ) -> FindingAttribution:
     """The first rule that answers wins. A deployment found through the resource's tags is final
     even when it has no repo."""
     resource = finding.resource
-    for pattern, repo in cfg.attribution.items():
-        if _matches(resource, pattern):
-            return Attributed(repo, Via.CONFIG)
     for tag in REPO_TAGS:
         if resource.tags.get(tag):
             return Attributed(repo_name(resource.tags[tag]), Via.TAG)
@@ -276,7 +270,7 @@ def build_report(
     table = index_deployments(deployments)
     wanted = severities_at_least(cfg.min_severity)
     attributed = [
-        (finding, attribute(finding, table, cfg))
+        (finding, attribute(finding, table))
         for finding in findings
         if finding.severity in wanted
         and not any(_matches(finding.resource, pattern) for pattern in cfg.ignore)
