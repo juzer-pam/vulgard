@@ -19,7 +19,6 @@ from .inspector import (
 )
 from .render import format_table
 
-
 LINEAR_SKIPPED = (
     "Linear issues were not checked: they need inspector.linear_labels and a Linear API key."
 )

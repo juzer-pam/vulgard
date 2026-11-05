@@ -432,7 +432,10 @@ def test_a_linear_issue_naming_a_longer_repo_does_not_cover_the_shorter_one():
 
 def test_a_linear_title_names_the_repo_in_any_case_and_before_a_full_stop():
     reports = {"payments-api": RepoReport("payments-api")}
-    titles = [issue("Patch Payments-API images", "SEC-1"), issue("Remediate payments-api.", "SEC-2")]
+    titles = [
+        issue("Patch Payments-API images", "SEC-1"),
+        issue("Remediate payments-api.", "SEC-2"),
+    ]
     got = build_tracking(reports, [], titles)
     assert [i.identifier for i in got["payments-api"].linear_issues] == ["SEC-1", "SEC-2"]
 
