@@ -215,12 +215,13 @@ this table is the reference. With `enabled: false`, vulgard builds no AWS or Ver
 
 Dependabot only knows the dependencies a repo declares. Inspector sees what is actually running. The catch is that a finding names a resource, such as a Lambda function, and says nothing about the repo that deployed it. vulgard works out the repo, so a finding can reach the team that can fix it.
 
-So far this topic is read-only. `vulgard report --topic inspector` prints the findings grouped by repo, and says what each fix still needs. It opens no issues and sends no messages, and `nag` doesn't accept `--topic inspector`.
+`vulgard report --topic inspector` prints the findings grouped by repo, and says what each fix still needs. It writes nothing. With `enabled: true`, `vulgard nag` also tracks them: it opens issues, sets deadlines and pings owners, as described in [What `nag` writes](#what-nag-writes).
 
 ```bash
 vulgard report --topic inspector                       # a table: one row per repo
 vulgard report --topic inspector --format json         # every fix item and resource, and how each got its repo
 vulgard report --topic inspector --repo payments-api   # only that repo; unattributed rows are left out
+vulgard nag --topic inspector --linear --slack         # a dry run: what nag would write
 ```
 
 **Fix items.** One upgrade of a package fixes every vulnerability that package has in a repo, so vulgard reports a **fix item** per package, not per vulnerability. A fix item holds all the findings for one package in one repo, whichever vulnerabilities and resources they come from. For example, two vulnerabilities in `axios` found on three Lambda functions are one fix item. Its severity is the worst of its findings, and its **required version** (`fixed_in` in the JSON) is the highest fixed version any finding names.
@@ -231,6 +232,7 @@ The second table has the same rows and counts items by [fix status](#fix-status)
 
 ```yaml
 inspector:
+  enabled: true                        # nag tracks the findings
   regions: [us-east-1]
   min_severity: high
   ignore:
@@ -239,6 +241,8 @@ inspector:
 
 | Key | Type | Default | What it does |
 |---|---|---|---|
+| `enabled` | bool | `false` | `nag` tracks the findings. Without it, `nag` skips this topic and `nag --topic inspector` stops with an error. `report` works either way. |
+| `report_only` | bool | `false` | `nag` writes the job summary only: no issues, Linear issues or Slack messages. |
 | `regions` | list | `[us-east-1]` | Regions to read findings from. Credentials come from the environment, through GitHub OIDC in CI. The role needs `inspector2:ListFindings`, which the `VulgardLifecycle` role in `infra/` grants. |
 | `min_severity` | `critical`, `high`, `medium` or `low` | `high` | The least severe findings to report. Anything more severe is included too. See below for why it defaults to `high`. |
 | `ignore` | list of globs | `[]` | Resources never reported. Each glob is matched against the resource name (a Lambda function name, an ECR repository name or an EC2 instance id) and against its CloudFormation stack name. |
@@ -283,6 +287,31 @@ These land in rows labelled `unattributed: <reason>`. Each reason says what to f
 - `deployment_not_found`: the resource's tags name a deployment, but vulgard's scan didn't find one with that name. For example, the stack is nested inside another stack, or lives in a region outside `deployments.aws.regions`.
 - `deployment_unattributed`: vulgard found the deployment, but no repo is known for it either. Fix it the way you would for a stale deployment. Tag the stack with `github:repo` when it deploys, for example `Tags.of(app).add("github:repo", "<org>/<repo>")` in a CDK app. `deployments.attribution` also works, but it's a map someone has to keep up to date.
 
+### What `nag` writes
+
+Three terms first. A **public repo** is one anyone on the internet can read. A **parent issue** in Linear is an issue that groups other issues under it, which Linear calls **sub-issues**. A repo's **team** is the Linear team its issues go to, found from `linear.teams` and `linear.default_team` the same way as for the other topics.
+
+Inspector data says which packages are vulnerable in what you run in AWS, and on which resources. That is useful to an attacker, so vulgard never writes it anywhere the public can read. A public repo gets no GitHub issue. vulgard reads each repo's visibility from GitHub, and treats a repo as public unless GitHub says it is private or internal.
+
+For each repo with at least one fix item, `nag` writes:
+
+- **A GitHub tracking issue**, for private repos only. It is labelled `vulgard-inspector`, titled "Security: vulnerable packages running in AWS", and lists the fix items worst first. Each item shows its package, its fix status and what to do next, the versions on the default branch, the version that fixes it, its vulnerability IDs, the first five resources it runs on, the Dependabot pull request to merge when there is one, and its deadline. The owners are pinged in a comment when items are new or newly overdue, and reminded every `reminder_interval_days` while something is overdue.
+- **A Linear sub-issue** in the repo's team, with the same list. Public repos get one too, because Linear is private to your workspace.
+- **A Linear parent issue** per team, titled "Security: vulnerable packages running in AWS". Every repo sub-issue of that team sits under it. Its description has a row per repo with the number of items, how many are overdue, and how many have each fix status.
+- **A Slack line** in the repo's channel (from `slack.channels`, else `slack.default_channel`) when the issue opens, when items are new or newly overdue, and with reminders. It links the Linear sub-issue and counts the items that are overdue, due soon, `needs_fix` and `needs_deploy`.
+
+Findings with no repo get one Linear issue in `linear.default_team`, titled "No repo: Security: vulnerable packages running in AWS". It lists their items grouped by the [reason](#findings-with-no-repo) they have no repo, with the resources each runs on. It is never written to GitHub.
+
+When every item of a repo clears, its GitHub issue and Linear sub-issue close. A team's parent issue closes when none of its repos have items, and the issue for findings with no repo closes when it is empty. A run with `--repo` only sees some repos, so it never writes the parent issues or the issue for findings with no repo.
+
+**Deadlines.** Each fix item is due `sla_days` days after a vulgard issue first listed it, by the item's severity. With the default `sla_days`, a critical item is due 7 days after it first appears and a high one 30 days after. vulgard keeps the date each item was first listed in the GitHub issue, so the deadline doesn't move when the item's fix status changes, for example from `needs_fix` to `needs_deploy`. An item is due soon within `due_soon_days` of its deadline. An overdue item escalates the same way an overdue Dependabot alert does: once it is `escalation.after_days_overdue` days late and its severity is in `escalation.severities`, vulgard mentions `escalation.mentions` on the issue, comments on the Linear issue and posts in `slack.escalation_channel`. When an issue closes, its dates are forgotten, so items that come back later start a new deadline.
+
+**Public repos have no deadlines yet.** A public repo has no GitHub issue to keep the dates in, so every run lists its items as new. Their deadlines are always a full `sla_days` away, they never go overdue or escalate, and Slack only hears about them when their Linear issue opens or reopens. The same holds for a repo vulgard doesn't select (excluded in `repos`, archived, or not in the org) that Inspector findings are attributed to.
+
+**Linear is needed for public repos.** Without `--linear`, public repos and findings with no repo are skipped, and `nag` says how many repos it skipped.
+
+**Logs.** The scheduled workflow runs `nag --redact`, which prints only how many actions of each kind were taken, never repo, package or resource names.
+
 ## Errors you may see
 
 | Message | Fix |
@@ -301,4 +330,5 @@ These land in rows labelled `unattributed: <reason>`. Each reason says what to f
 | `deployments.people values are GitHub handles starting with @` | Add the `@`. |
 | `deployments.severity: unknown tiers` | Use `production`, `shared` or `personal`. |
 | `inspector.min_severity must be one of` | Use `critical`, `high`, `medium` or `low`. |
+| `--topic inspector needs inspector.enabled in the config` | Set `inspector.enabled: true`, or leave out `--topic inspector`. |
 | `Inspector scan failed` | Inspector couldn't be read. The message has AWS's reason, for example missing `inspector2:ListFindings` permission or expired credentials. |

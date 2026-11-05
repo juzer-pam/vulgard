@@ -91,8 +91,9 @@ vulgard is a Python command-line tool. Every command reads `vulgard.yml` for set
 `rollout`, `enforce`, and `nag` are dry runs unless you add `--apply`. Always look at the dry
 run first.
 
-`nag` handles one or more **topics**: vulnerabilities, and, when `deployments.enabled` is on,
-stale deployments. Each topic has its own tracking issue per repo, and they all share the same
+`nag` handles one or more **topics**: vulnerabilities; stale deployments, when
+`deployments.enabled` is on; and Amazon Inspector findings, when `inspector.enabled` is on
+([details](configuration.md#what-nag-writes)). Each topic has its own tracking issue per repo, and they all share the same
 machinery for issues, reminders, escalation, Slack and Linear. This guide follows the
 vulnerabilities topic.
 
