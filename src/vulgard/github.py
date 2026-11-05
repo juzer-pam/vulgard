@@ -226,6 +226,15 @@ class GitHub:
         issues = [i for i in issues if "pull_request" not in i]
         return next((i for i in issues if i["state"] == "open"), issues[0] if issues else None)
 
+    def repos_with_open_issues(self, org: str, label: str) -> list[str]:
+        """Names of the org's unarchived repos that have an open issue with this label, found
+        with one search instead of a lookup per repo."""
+        found = self._paginate(
+            "/search/issues",
+            {"q": f'org:{org} is:issue is:open archived:false label:"{label}"'},
+        )
+        return sorted({i["repository_url"].rstrip("/").rsplit("/", 1)[-1] for i in found})
+
     def find_workflow_run(
         self, org: str, repo: str, workflow: str, marker: str
     ) -> dict[str, Any] | None:

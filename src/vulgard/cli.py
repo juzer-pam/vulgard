@@ -19,7 +19,7 @@ from .linear import LinearError
 from .plan import ActionKind, Topic
 from .policy import RepoReport, now_utc
 from .render import format_table, render_org_summary
-from .repos import build_index, resolve_owners, selected_repos
+from .repos import all_repos, build_index, dependabot_repos, resolve_owners
 from .rollout import apply_rollout, merge_open_rollout_prs, plan_lifecycle_rollout, plan_rollout
 from .rollout_onboarding import collect_open_rollout_prs, sync_rollout_onboarding
 from .slack import (
@@ -85,7 +85,7 @@ def write_step_summary(markdown: str, path: str | None) -> None:
 
 
 def report_stale(clients: Clients, config: Config, args: argparse.Namespace) -> int:
-    repos = selected_repos(clients.github, config, args.repo)
+    repos = all_repos(clients.github, config, args.repo)
     found = survey(clients.github, config, repos, clients.scanners(), scoped=bool(args.repo))
     if args.format == "json":
         print(json.dumps(stale_render.survey_json(found), indent=2))
@@ -108,7 +108,8 @@ def cmd_report(clients: Clients, config: Config, args: argparse.Namespace) -> in
         return report_stale(clients, config, args)
     if args.topic == Topic.INSPECTOR:
         return report_inspector(clients, config, args)
-    reports = collect(clients.github, config, args.repo, load_kev(clients, config))
+    repos = dependabot_repos(config, all_repos(clients.github, config, args.repo))
+    reports = collect(clients.github, config, repos, load_kev(clients, config))
     if args.format == "json":
         print(report_json(reports))
     elif args.format == "markdown":
@@ -195,7 +196,7 @@ def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> i
     gh = clients.github
     prefix = "" if args.apply else "[dry-run] "
     own = config.rollout.workflow_repo
-    repos = [r for r in selected_repos(gh, config, args.repo) if r["name"] != own]
+    repos = [r for r in all_repos(gh, config, args.repo) if r["name"] != own]
     if args.lifecycle:
         frameworks = build_index(gh, config, repos).frameworks
         plans = [
@@ -259,7 +260,7 @@ def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> i
         for a in notify_leads(slack, config, rollout_prs, args.apply, team_tickets):
             report(a.kind, f"{a.repo or 'slack'}: {a.kind} ({a.detail})", a.kind.is_error)
     if args.merge:
-        merge_repos = [r for r in selected_repos(gh, config, args.repo) if r["name"] != own]
+        merge_repos = [r for r in all_repos(gh, config, args.repo) if r["name"] != own]
         if not args.apply:
             for repo in merge_repos:
                 pr = gh.find_open_pr(config.org, repo["name"], config.rollout.branch)
@@ -279,7 +280,7 @@ def cmd_rollout(clients: Clients, config: Config, args: argparse.Namespace) -> i
 
 def cmd_enforce(clients: Clients, config: Config, args: argparse.Namespace) -> int:
     gh = clients.github
-    repos = selected_repos(gh, config)
+    repos = all_repos(gh, config)
     try:
         plan = plan_enforce(gh, config, args.mode, repos)
     except ValueError as e:

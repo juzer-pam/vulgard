@@ -23,7 +23,7 @@ from __future__ import annotations
 import fnmatch
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
@@ -552,20 +552,32 @@ class InspectorReport:
         )
 
 
+def _nothing_excluded(repo: str) -> bool:
+    return False
+
+
 def _attribute_wanted(
     findings: Iterable[Finding],
     deployments: Iterable[Deployment],
     runners: Iterable[ImageRunner],
     cfg: InspectorConfig,
+    excluded: Callable[[str], bool],
 ) -> list[tuple[Finding, FindingAttribution]]:
+    """Findings at `min_severity` or worse, not ignored, with their attribution. A finding
+    attributed to an excluded repo is dropped like an ignored one."""
     table = index_deployments(deployments)
     running = index_runners(runners)
     wanted = severities_at_least(cfg.min_severity)
-    return [
+    attributed = [
         (finding, attribute(finding, table, running))
         for finding in findings
         if finding.severity in wanted
         and not any(_matches(finding.resource, pattern) for pattern in cfg.ignore)
+    ]
+    return [
+        (finding, attribution)
+        for finding, attribution in attributed
+        if not (isinstance(attribution, Attributed) and excluded(attribution.repo))
     ]
 
 
@@ -574,11 +586,12 @@ def attributed_repos(
     deployments: Iterable[Deployment],
     cfg: InspectorConfig,
     runners: Iterable[ImageRunner] = (),
+    excluded: Callable[[str], bool] = _nothing_excluded,
 ) -> set[str]:
     """The repos `build_report` will list, so their dependency graphs can be read first."""
     return {
         attribution.repo
-        for _, attribution in _attribute_wanted(findings, deployments, runners, cfg)
+        for _, attribution in _attribute_wanted(findings, deployments, runners, cfg, excluded)
         if isinstance(attribution, Attributed)
     }
 
@@ -591,14 +604,16 @@ def build_report(
     prs: Mapping[str, Sequence[DependabotPR]],
     branches: Mapping[str, BranchDependencies],
     runners: Iterable[ImageRunner] = (),
+    excluded: Callable[[str], bool] = _nothing_excluded,
 ) -> InspectorReport:
-    """Pure. Drops findings below `min_severity` and `ignore` matches, attributes the rest, and
-    turns them into fix items. `only` (from --repo) keeps just those repos and the unattributed
-    buckets go, as in `stale.survey(scoped=True)`. `prs` are each repo's open Dependabot PRs and
-    `branches` its default branch's dependencies. A repo missing from `branches` has no
+    """Pure. Drops findings below `min_severity`, `ignore` matches and findings attributed to a
+    repo `excluded` names, attributes the rest, and turns them into fix items. `only` (from
+    --repo) keeps just those repos and the unattributed buckets go, as in
+    `stale.survey(scoped=True)`. `prs` are each repo's open Dependabot PRs and `branches` its
+    default branch's dependencies. A repo missing from `branches` has no
     dependency graph, and unattributed findings have neither. `runners` attribute images in
     shared asset repositories."""
-    attributed = _attribute_wanted(findings, deployments, runners, cfg)
+    attributed = _attribute_wanted(findings, deployments, runners, cfg, excluded)
     if only is not None:
         attributed = [
             (finding, attribution)

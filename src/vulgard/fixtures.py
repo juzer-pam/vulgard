@@ -91,6 +91,13 @@ class FixtureGitHub:
     def find_issue(self, org: str, repo: str, label: str) -> dict[str, Any] | None:
         return self.data.get("issues", {}).get(issue_key(repo, label))
 
+    def repos_with_open_issues(self, org: str, label: str) -> list[str]:
+        return sorted(
+            key.split("#")[0]
+            for key, issue in self.data.get("issues", {}).items()
+            if issue.get("state", "open") == "open" and key == issue_key(key.split("#")[0], label)
+        )
+
     def list_issue_comments(self, org: str, repo: str, number: int) -> list[dict[str, Any]]:
         return self.data.get("comments", {}).get(f"{repo}#{number}", [])
 

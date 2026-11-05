@@ -56,7 +56,7 @@ from .plan import (
 )
 from .policy import DependabotPR, RepoReport, summarize_closed
 from .render import render_org_summary
-from .repos import build_index, is_public, resolve_owners, selected_repos
+from .repos import all_repos, build_index, dependabot_repos, is_public, resolve_owners
 from .slack import Block
 from .stale import StaleMemory, StaleReport, evaluate, spec, survey
 from .stale_plan import plan_repo
@@ -87,10 +87,16 @@ class NagContext:
     linear: LinearClient | None
 
     @cached_property
+    def repos(self) -> list[dict[str, Any]]:
+        """Every repo vulgard works on, listed once however many topics need them."""
+        return all_repos(self.clients.github, self.config, self.only)
+
+    @cached_property
     def reports(self) -> dict[str, RepoReport]:
-        """Open alerts per repo, collected once however many topics need them."""
+        """Open alerts in every repo, collected once however many topics need them. Stale
+        deployments read them for every repo, the vulns topic for its own."""
         kev = load_kev(self.clients, self.config)
-        return collect(self.clients.github, self.config, self.only, kev)
+        return collect(self.clients.github, self.config, self.repos, kev)
 
 
 @dataclass
@@ -105,7 +111,7 @@ class TopicResult:
 
 def run_vulns(ctx: NagContext) -> TopicResult:
     gh, config = ctx.clients.github, ctx.config
-    reports = ctx.reports
+    reports = {r["name"]: ctx.reports[r["name"]] for r in dependabot_repos(config, ctx.repos)}
     runs = nag(gh, config, reports, apply=ctx.apply, now=ctx.now, linear=ctx.linear)
     since = ctx.now - timedelta(days=7)
     closed = summarize_closed(gh.list_closed_alerts(config.org, since), set(reports), since)
@@ -128,7 +134,7 @@ def _stale_pass(ctx: NagContext) -> tuple[dict[str, StaleReport], list[RepoRun]]
     `deployments.report_only` nothing is written and no runs are returned."""
     gh, config = ctx.clients.github, ctx.config
     cfg, topic = config.deployments, spec(config)
-    repos = selected_repos(gh, config, ctx.only)
+    repos = ctx.repos
     tracked = {r["name"] for r in repos}
     found = survey(gh, config, repos, ctx.clients.scanners(), scoped=bool(ctx.only))
     home = {cfg.unattributed_repo} if cfg.unattributed_repo else set()
@@ -235,10 +241,11 @@ def run_stale(ctx: NagContext) -> TopicResult:
 def inspector_report(
     clients: Clients, config: Config, only: list[str] | None
 ) -> tuple[list[dict[str, Any]], InspectorReport]:
-    """Inspector's findings as fix items, for `report` and `nag`, with the selected repos.
-    `only` (from --repo) keeps just those repos and drops the unattributed buckets."""
+    """Inspector's findings as fix items, for `report` and `nag`, with every repo. Findings
+    attributed to an excluded repo are dropped. `only` (from --repo) keeps just those repos and
+    drops the unattributed buckets."""
     gh = clients.github
-    repos = selected_repos(gh, config)
+    repos = all_repos(gh, config)
     deployments = discover(clients.scanners(), build_index(gh, config, repos), config.deployments)
     source = clients.inspector()
     findings = source.findings()
@@ -248,13 +255,15 @@ def inspector_report(
     for raw in gh.list_dependabot_prs(config.org):
         pr = DependabotPR.from_api(raw)
         prs[pr.repo].append(pr)
-    in_report = attributed_repos(findings, deployments, config.inspector, runners)
+    in_report = attributed_repos(findings, deployments, config.inspector, runners, config.excludes)
     branches = {
         repo: branch_dependencies(sbom)
         for repo in sorted(in_report & scope if scope else in_report)
         if (sbom := gh.get_sbom(config.org, repo)) is not None
     }
-    report = build_report(findings, deployments, config.inspector, scope, prs, branches, runners)
+    report = build_report(
+        findings, deployments, config.inspector, scope, prs, branches, runners, config.excludes
+    )
     return repos, report
 
 

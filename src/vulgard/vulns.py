@@ -43,7 +43,7 @@ from .render import (
     render_issue_body,
     severity_summary,
 )
-from .repos import resolve_owners, selected_repos
+from .repos import resolve_owners
 from .slack import (
     DIVIDER,
     LEADERBOARD_ROWS,
@@ -94,18 +94,14 @@ def spec(config: Config) -> TopicSpec:
 
 
 def collect(
-    gh: Any,
-    config: Config,
-    only: list[str] | None = None,
-    kev: frozenset[str] = frozenset(),
+    gh: Any, config: Config, repos: list[dict[str, Any]], kev: frozenset[str] = frozenset()
 ) -> dict[str, RepoReport]:
-    """Open alerts and Dependabot PRs for every selected repo, with owners where there is work."""
-    repos = [r["name"] for r in selected_repos(gh, config, only)]
+    """Open alerts and Dependabot PRs for each of the repos, with owners where there is work."""
     reports = evaluate(
         config,
         gh.list_open_alerts(config.org),
         gh.list_dependabot_prs(config.org),
-        repos,
+        [r["name"] for r in repos],
         kev=kev,
     )
     for report in reports.values():

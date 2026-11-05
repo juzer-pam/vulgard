@@ -115,12 +115,12 @@ def sync_rollout_onboarding(
 
 
 def collect_open_rollout_prs(gh: Any, config: Config, prs: list[RolloutPR]) -> list[RolloutPR]:
-    """Every open rollout PR in selected repos, for onboarding and lead DMs after a rollout run."""
-    from .repos import resolve_owners, selected_repos
+    """Every open rollout PR in the org, for onboarding and lead DMs after a rollout run."""
+    from .repos import all_repos, resolve_owners
 
     own = config.rollout.workflow_repo
     seen = {p.repo: p for p in prs if p.url}
-    for repo in selected_repos(gh, config):
+    for repo in all_repos(gh, config):
         name = repo["name"]
         if name == own:
             continue

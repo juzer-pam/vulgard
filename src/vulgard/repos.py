@@ -3,6 +3,7 @@ how active they are. Wire parsing for the cloud control planes lives with their 
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -14,15 +15,27 @@ from .policy import parse_codeowners_default, parse_time
 CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")
 
 
-def selected_repos(gh: Any, config: Config, only: list[str] | None = None) -> list[dict]:
+def all_repos(gh: Any, config: Config, only: list[str] | None = None) -> list[dict]:
+    """Every repo in the org that isn't archived or in `exclude`: the scope of rollout, stale
+    deployments and the Inspector topic. `only` (from --repo) narrows it."""
     repos = [
         r
         for r in gh.list_repos(config.org)
-        if not r.get("archived") and config.repo_selected(r["name"])
+        if not r.get("archived") and not config.excludes(r["name"])
     ]
     if only:
         repos = [r for r in repos if r["name"] in only]
     return repos
+
+
+def dependabot_repos(
+    config: Config, repos: list[dict], tracked_by_inspector: Collection[str] = ()
+) -> list[dict]:
+    """The repos, from `all_repos`, whose Dependabot alerts get tracking issues: those matching
+    `include`, except the ones the Inspector topic already tracks."""
+    return [
+        r for r in repos if config.includes(r["name"]) and r["name"] not in tracked_by_inspector
+    ]
 
 
 def is_public(repo: dict[str, Any]) -> bool:

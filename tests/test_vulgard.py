@@ -10,13 +10,15 @@ import httpx
 import pytest
 import yaml
 
-from vulgard.cli import collect, main
+from vulgard import vulns
+from vulgard.cli import main
 from vulgard.config import LinearTarget, parse_config, route
 from vulgard.enforce import STATUS_CHECK_CONTEXT, plan_enforce
 from vulgard.fixtures import FakeLinear, FakeSlack, FixtureGitHub, fixture_clients
 from vulgard.github import GitHub
 from vulgard.plan import ActionKind, IssueOp, LinearRef, TrackedIssue, TrackingState
 from vulgard.policy import SlaStatus, evaluate, parse_codeowners_default, summarize_closed
+from vulgard.repos import all_repos, dependabot_repos
 from vulgard.rollout import (
     DEPENDABOT_PATH,
     DOCS_ONLY_SKIP,
@@ -361,6 +363,11 @@ def test_exception_requires_reason_and_expiry():
         parse_config({"org": "acme", "exceptions": [{"package": "lodash", "reason": "x"}]})
     with pytest.raises(ValueError, match="advisory"):
         parse_config({"org": "acme", "exceptions": [{"reason": "x", "expires": "2027-01-01"}]})
+
+
+def collect(gh, config, kev=frozenset()):
+    repos = dependabot_repos(config, all_repos(gh, config))
+    return vulns.collect(gh, config, repos, kev)
 
 
 def example_config():
@@ -854,3 +861,87 @@ def test_cli_report_json(capsys):
     assert code == 0
     data = json.loads(capsys.readouterr().out)
     assert data["payments-api"]["alerts"][0]["severity"] == "critical"
+
+
+SCOPE_REPOS = [
+    ("docs-site", False),
+    ("api", False),
+    ("tools", False),
+    ("sandbox-x", False),
+    ("old", True),
+]
+
+
+def scope_org():
+    return {
+        "repos": [
+            {"name": name, "private": True, "default_branch": "main", "archived": archived}
+            for name, archived in SCOPE_REPOS
+        ],
+        "trees": {name: ["package.json"] for name, _ in SCOPE_REPOS},
+    }
+
+
+def scope_config(**repos):
+    return parse_config({"org": "acme", "repos": {"exclude": ["sandbox-*"], **repos}})
+
+
+def names(repos):
+    return [r["name"] for r in repos]
+
+
+def test_every_repo_is_in_scope_except_excluded_and_archived_ones():
+    gh = FixtureGitHub(scope_org(), NOW)
+    config = scope_config(include=["docs-*"])
+    assert names(all_repos(gh, config)) == ["docs-site", "api", "tools"]
+
+
+def test_dependabot_scope_is_include_without_the_repos_inspector_tracks():
+    gh = FixtureGitHub(scope_org(), NOW)
+    narrow = scope_config(include=["docs-*", "api"])
+    assert names(dependabot_repos(narrow, all_repos(gh, narrow))) == ["docs-site", "api"]
+    assert names(dependabot_repos(narrow, all_repos(gh, narrow), {"api"})) == ["docs-site"]
+    everything = scope_config()
+    repos = all_repos(gh, everything)
+    assert names(dependabot_repos(everything, repos, {"api"})) == ["docs-site", "tools"]
+
+
+def test_repo_narrows_every_scope():
+    gh = FixtureGitHub(scope_org(), NOW)
+    config = scope_config(include=["docs-*"])
+    assert names(all_repos(gh, config, ["api", "sandbox-x"])) == ["api"]
+    assert dependabot_repos(config, all_repos(gh, config, ["api"])) == []
+    assert names(dependabot_repos(config, all_repos(gh, config, ["docs-site"]))) == ["docs-site"]
+
+
+def scope_args(tmp_path):
+    fixtures, config = tmp_path / "org.json", tmp_path / "vulgard.yml"
+    fixtures.write_text(json.dumps(scope_org()))
+    raw = {"org": "acme", "repos": {"include": ["docs-*"], "exclude": ["sandbox-*"]}}
+    config.write_text(yaml.safe_dump(raw))
+    return ["--config", str(config), "--fixtures", str(fixtures)]
+
+
+def test_rollout_covers_every_repo_even_when_include_is_narrow(tmp_path, capsys):
+    args = [*scope_args(tmp_path), "rollout"]
+    assert main(args) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert [line.split(":")[0] for line in lines] == [
+        "[dry-run] docs-site",
+        "[dry-run] api",
+        "[dry-run] tools",
+    ]
+    assert main([*args, "--repo", "tools", "--repo", "sandbox-x"]) == 0
+    assert capsys.readouterr().out.count("would write") == 1
+
+
+def test_stale_deployments_survey_every_repo_even_when_include_is_narrow(tmp_path, capsys):
+    args = [*scope_args(tmp_path), "report", "--topic", "stale", "--format", "json"]
+    assert main(args) == 0
+    assert sorted(json.loads(capsys.readouterr().out)["repos"]) == ["api", "docs-site", "tools"]
+
+
+def test_report_covers_the_include_scope_only(tmp_path, capsys):
+    args = [*scope_args(tmp_path), "report", "--format", "json"]
+    assert main(args) == 0
+    assert list(json.loads(capsys.readouterr().out)) == ["docs-site"]

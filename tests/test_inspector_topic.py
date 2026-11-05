@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -160,6 +161,20 @@ def test_a_repo_of_unknown_visibility_is_treated_as_public():
     world = Org(data)
     world.run()
     assert world.github_issue("api") is None and world.sub_issue("api") is not None
+
+
+def test_findings_attributed_to_an_excluded_repo_are_dropped():
+    data = org(
+        finding("api"),
+        finding("legacy-app"),
+        repos=(("api", "private"), ("legacy-app", "private")),
+    )
+    world = Org(data, replace(config(), exclude=["legacy-*"]))
+    result = world.run()
+    assert world.github_issue("api") is not None and world.sub_issue("api") is not None
+    assert world.github_issue("legacy-app") is None and world.sub_issue("legacy-app") is None
+    assert {run.repo for run in result.runs} == {"api"}
+    assert result.repos == {"api"}
 
 
 def test_two_repos_routed_to_one_team_share_one_parent():

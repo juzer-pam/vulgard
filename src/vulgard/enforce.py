@@ -43,7 +43,7 @@ def build_ruleset(
         if workflow_repo_id is None:
             raise ValueError("workflow mode needs the id of the vulgard repository")
         repo_condition = {
-            "include": ["~ALL"] if config.include == ["*"] else config.include,
+            "include": ["~ALL"],
             "exclude": config.exclude + [config.rollout.workflow_repo],
             "protected": False,
         }

@@ -345,10 +345,11 @@ class Config:
     deployments: DeploymentsConfig = field(default_factory=DeploymentsConfig)
     inspector: InspectorConfig = field(default_factory=InspectorConfig)
 
-    def repo_selected(self, name: str) -> bool:
-        if any(fnmatch.fnmatch(name, pat) for pat in self.exclude):
-            return False
-        return any(fnmatch.fnmatch(name, pat) for pat in self.include)
+    def excludes(self, repo: str) -> bool:
+        return any(fnmatch.fnmatch(repo, pat) for pat in self.exclude)
+
+    def includes(self, repo: str) -> bool:
+        return any(fnmatch.fnmatch(repo, pat) for pat in self.include)
 
     def auto_merges(self, repo: str) -> bool:
         return any(fnmatch.fnmatch(repo, pat) for pat in self.rollout.auto_merge)
