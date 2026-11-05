@@ -215,7 +215,7 @@ this table is the reference. With `enabled: false`, vulgard builds no AWS or Ver
 
 Dependabot only knows the dependencies a repo declares. Inspector sees what is actually running. The catch is that a finding names a resource, such as a Lambda function, and says nothing about the repo that deployed it. vulgard works out the repo, so a finding can reach the team that can fix it.
 
-So far this topic is read-only. `vulgard report --topic inspector` prints the findings grouped by repo. It opens no issues and sends no messages, and `nag` doesn't accept `--topic inspector`.
+So far this topic is read-only. `vulgard report --topic inspector` prints the findings grouped by repo, and says which of them something already tracks. It opens no issues and sends no messages, and `nag` doesn't accept `--topic inspector`.
 
 ```bash
 vulgard report --topic inspector                       # a table: one row per repo
@@ -223,7 +223,9 @@ vulgard report --topic inspector --format json         # every group and resourc
 vulgard report --topic inspector --repo payments-api   # only that repo; unattributed rows are left out
 ```
 
-The table has one row per repo, worst first, then one row per reason a finding has no repo (see [Findings with no repo](#findings-with-no-repo)). The severity columns, `exploitable` and `fixable` count **groups**. A group is one vulnerability in one package, however many resources have it, so ten Lambda functions with the same vulnerable `axios` count once. `resources` counts the distinct resources affected.
+The first table has one row per repo, worst first, then one row per reason a finding has no repo (see [Findings with no repo](#findings-with-no-repo)). The severity columns, `exploitable` and `fixable` count **groups**. A group is one vulnerability in one package, however many resources have it, so ten Lambda functions with the same vulnerable `axios` count once. `resources` counts the distinct resources affected.
+
+The second table has the same rows and counts groups by [coverage status](#coverage). In the JSON, each group has its `coverage`, the matching `alert` (`number`, `state`, `url`), `pr` (`number`, `url`) and `linear_issues` (a list of `identifier` and `url`), and the top level has a `coverage` object with the number of groups per status.
 
 ```yaml
 inspector:
@@ -231,6 +233,7 @@ inspector:
   min_severity: high
   ignore:
     - "scratch-*"                      # never reported
+  linear_labels: [security]            # Linear issues with this label count as coverage
 ```
 
 | Key | Type | Default | What it does |
@@ -238,6 +241,7 @@ inspector:
 | `regions` | list | `[us-east-1]` | Regions to read findings from. Credentials come from the environment, through GitHub OIDC in CI. The role needs `inspector2:ListFindings`, which the `VulgardLifecycle` role in `infra/` grants. |
 | `min_severity` | `critical`, `high`, `medium` or `low` | `high` | The least severe findings to report. Anything more severe is included too. See below for why it defaults to `high`. |
 | `ignore` | list of globs | `[]` | Resources never reported. Each glob is matched against the resource name (a Lambda function name, an ECR repository name or an EC2 instance id) and against its CloudFormation stack name. |
+| `linear_labels` | list of label names | `[]` | Open Linear issues carrying one of these labels can cover a repo's findings (see [Coverage](#coverage)). Leave it empty to skip the Linear check. It also needs the Linear API key (`linear.api_key_env`) to be set. |
 
 **Why `min_severity` defaults to `high`.** An AWS account can hold a very large number of findings. In one account we checked, about 62,000 findings were active and about 22,600 of them were high or critical. Reading all of them is slow, and the report would bury the ones that need action first. Lower it to `medium` or `low` when you want the long tail. Inspector's `INFORMATIONAL` and `UNTRIAGED` findings are never reported, and only package vulnerabilities are, not code or network findings.
 
@@ -253,6 +257,21 @@ There is no repo map to maintain for Inspector. vulgard tries these in order and
    - For ECR images only, the repository name. ECR images have no tags, but Serverless names its repository `serverless-<service>-<stage>`, and the stack is `<service>-<stage>`.
 
 The JSON output records which rule was used for each finding (`via` is `tag` or `deployment`) and, for `deployment`, the deployment's name.
+
+### Coverage
+
+Inspector finds a problem, but a team may already be working on it. For each group, vulgard checks what already tracks it, so the report separates findings someone owns from findings nobody does. It only reads GitHub and Linear. It never writes to either.
+
+A group gets the first status below that matches. They are checked in this order, from the strongest sign that someone is on it to none:
+
+1. `dependabot_alert`: the repo has an open **Dependabot alert** (GitHub's notice that a dependency has a known vulnerability) for the same vulnerability. vulgard compares the finding's vulnerability ID with the alert's CVE or GHSA ID, ignoring case. A **CVE** is the public ID of a vulnerability, such as `CVE-2024-45296`, and a **GHSA** is GitHub's own advisory ID. If Dependabot already opened a pull request that fixes the alert, the JSON links it as `pr`.
+2. `dependabot_pr`: no alert matches, but an open Dependabot pull request in the repo bumps the vulnerable package. Dependabot alerts only cover what a repo declares, so Inspector can find a package an alert never named.
+3. `fixed_not_deployed`: the repo has a Dependabot alert for the vulnerability that is already **fixed**. The code is fixed on GitHub but Inspector still finds the old version running, so the fix hasn't been deployed yet (or the old resource is still running). Open alerts and pull requests are checked first because they show the work is still in progress.
+4. `linear_issue`: an open Linear issue with one of the `linear_labels` names the repo in its title. The match is on the whole name, so an issue about `payments-api` covers `payments-api` but not `payments`, and an issue about `payments` doesn't cover `payments-api`. Such an issue is a note that someone is looking at the repo, not at one vulnerability, so one issue covers all the repo's groups that are not covered by a stronger status. Completed and canceled issues are ignored.
+5. `untracked_os_package`: nothing tracks it, and the vulnerable package comes from the operating system (Inspector reports its package manager as `OS`). Dependabot can't see these because they aren't in any repo's dependency files. The usual fix is a newer base image or runtime.
+6. `untracked`: nothing tracks it, and it is an application package. This is the status to work through first.
+
+Groups with no repo (see below) can only be `untracked_os_package` or `untracked`, because there is no repo to look up.
 
 ### Findings with no repo
 

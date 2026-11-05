@@ -94,6 +94,7 @@ inspector:
   regions: [us-east-1]
   min_severity: high              # the least severe to report: critical | high | medium | low
   ignore: []                      # resource or stack globs never reported
+  linear_labels: []               # open Linear issues with one of these labels count as coverage
 
 # Stale deployments: every stack needs a deploy every `stale_days`, every repo a human commit
 # every `repo_inactive_days`. Anything older needs a baseline within `baseline_days`: redeploy,
