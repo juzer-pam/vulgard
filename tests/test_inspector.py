@@ -287,7 +287,10 @@ def test_an_os_package_and_an_application_package_of_one_name_are_separate_items
 )
 def test_min_severity_keeps_that_severity_and_worse(minimum, kept):
     on = function(tags={STACK: "api-dev"})
-    found = [make_finding(on, f"CVE-{severity}", severity=severity) for severity in SEVERITIES]
+    found = [
+        make_finding(on, f"CVE-{severity}", f"pkg-{severity}", severity=severity)
+        for severity in SEVERITIES
+    ]
     report = build_report(found, DEPLOYMENTS, InspectorConfig(min_severity=minimum), None, {}, {})
     assert [item.severity for item in report.by_repo["api"]] == kept
 
