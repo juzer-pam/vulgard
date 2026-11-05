@@ -118,7 +118,7 @@ Resources:
             Statement:
               - Sid: ReadStacks
                 Effect: Allow
-                Action: [cloudformation:DescribeStacks, cloudformation:DescribeStackEvents]
+                Action: [cloudformation:DescribeStacks, cloudformation:ListStacks, cloudformation:DescribeStackEvents]
                 Resource: "*"
               - Sid: FindSstState
                 Effect: Allow
