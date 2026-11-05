@@ -8,27 +8,49 @@ step summary, and the leaderboard blocks.
 from __future__ import annotations
 
 import sys
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from functools import cache, cached_property, partial
+from typing import Any
 
 import httpx
 
-from . import stale_render
+from . import inspector_plan, inspector_sla, stale_render
 from .baseline import Decisions, fold
 from .clients import Clients
 from .config import Config
-from .estate import Deployment, ScanError
+from .estate import Deployment, ScanError, discover
 from .execute import Outcome, execute, result_comment
 from .github import GitHubError
+from .inspector import InspectorReport, attributed_repos, branch_dependencies, build_report
+from .inspector_render import parent_description, render_summary, unattributed_description
+from .inspector_sla import (
+    PARENT_CLOSED,
+    SPEC,
+    TITLE,
+    UNATTRIBUTED_CLOSED,
+    UNATTRIBUTED_TITLE,
+    InspectorMemory,
+    InspectorRepo,
+)
 from .lifecycle import Finished, Notice, describe, finished_from, notices_from
-from .linear import LinearClient
+from .linear import CLOSED_STATES, LinearClient, LinearError, sync_team_issue
 from .nag import load_issues, track
-from .plan import Action, ActionKind, RepoRun, Topic, TrackingState
-from .policy import RepoReport, summarize_closed
+from .plan import (
+    Action,
+    ActionKind,
+    LinearRef,
+    RepoPlan,
+    RepoRun,
+    Topic,
+    TrackedIssue,
+    TrackingState,
+)
+from .policy import DependabotPR, RepoReport, summarize_closed
 from .render import render_org_summary
-from .repos import resolve_owners, selected_repos
+from .repos import build_index, is_public, resolve_owners, selected_repos
 from .slack import Block
 from .stale import StaleMemory, StaleReport, evaluate, spec, survey
 from .stale_plan import plan_repo
@@ -204,7 +226,217 @@ def run_stale(ctx: NagContext) -> TopicResult:
     )
 
 
+def inspector_report(
+    clients: Clients, config: Config, only: list[str] | None
+) -> tuple[list[dict[str, Any]], InspectorReport]:
+    """Inspector's findings as fix items, for `report` and `nag`, with the selected repos.
+    `only` (from --repo) keeps just those repos and drops the unattributed buckets."""
+    gh = clients.github
+    repos = selected_repos(gh, config)
+    deployments = discover(clients.scanners(), build_index(gh, config, repos), config.deployments)
+    findings = clients.inspector().findings()
+    scope = set(only) if only else None
+    prs: defaultdict[str, list[DependabotPR]] = defaultdict(list)
+    for raw in gh.list_dependabot_prs(config.org):
+        pr = DependabotPR.from_api(raw)
+        prs[pr.repo].append(pr)
+    in_report = attributed_repos(findings, deployments, config.inspector)
+    branches = {
+        repo: branch_dependencies(sbom)
+        for repo in sorted(in_report & scope if scope else in_report)
+        if (sbom := gh.get_sbom(config.org, repo)) is not None
+    }
+    return repos, build_report(findings, deployments, config.inspector, scope, prs, branches)
+
+
+def _linear_team(config: Config, repo: InspectorRepo) -> str | None:
+    target = config.linear.target(repo.repo, repo.owners)
+    return target.team if target else None
+
+
+def _linear_ref(issue: dict[str, Any]) -> LinearRef:
+    return LinearRef(issue["id"], issue["identifier"], issue["url"])
+
+
+def _sub_issue_repo(title: str) -> str | None:
+    suffix = f": {TITLE}"
+    return title.removesuffix(suffix) if title.endswith(suffix) else None
+
+
+@dataclass
+class _Parents:
+    """Each team's parent issue id, and the repo sub-issues already under the parents."""
+
+    ids: dict[str, str] = field(default_factory=dict)
+    sub_issues: dict[str, dict[str, Any]] = field(default_factory=dict)
+    actions: list[Action] = field(default_factory=list)
+
+
+def _sync_parents(ctx: NagContext, linear: LinearClient, repos: list[InspectorRepo]) -> _Parents:
+    """One parent issue per team that has repos with items. A --repo run sees only some repos,
+    so it reads the parents but never writes them."""
+    config = ctx.config
+    by_team: defaultdict[str, list[InspectorRepo]] = defaultdict(list)
+    for repo in repos:
+        if repo.items and (team := _linear_team(config, repo)):
+            by_team[team].append(repo)
+    teams = {route.team for route in config.linear.teams.values()} | set(by_team)
+    if config.linear.default_team:
+        teams.add(config.linear.default_team)
+    found = _Parents()
+    for team in sorted(teams):
+        try:
+            parent = linear.find_issue(team, TITLE)
+            for child in linear.sub_issues(parent["id"]) if parent else []:
+                if (name := _sub_issue_repo(child["title"])) is not None:
+                    found.sub_issues[name] = child
+            ref = _linear_ref(parent) if parent else None
+            if not ctx.only:
+                description = parent_description(by_team[team]) if by_team[team] else None
+                result = sync_team_issue(
+                    linear, config, team, TITLE, description, PARENT_CLOSED, parent, ctx.apply
+                )
+                found.actions += result.actions
+                ref = result.ref
+        except (LinearError, httpx.HTTPError) as e:
+            found.actions.append(Action(None, ActionKind.LINEAR_ERROR, f"team {team}: {e}"))
+            continue
+        if ref is not None:
+            found.ids[team] = ref.id
+    return found
+
+
+def _sync_unattributed(
+    ctx: NagContext, linear: LinearClient, report: InspectorReport
+) -> list[Action]:
+    """One issue in `linear.default_team` for the findings with no repo. Never on GitHub."""
+    config = ctx.config
+    team = config.linear.default_team
+    if team is None:
+        why = "findings with no repo: set linear.default_team"
+        return [Action(None, ActionKind.LINEAR_SKIP, why)] if report.unattributed else []
+    description = unattributed_description(report.unattributed) if report.unattributed else None
+    try:
+        existing = linear.find_issue(team, UNATTRIBUTED_TITLE)
+        result = sync_team_issue(
+            linear,
+            config,
+            team,
+            UNATTRIBUTED_TITLE,
+            description,
+            UNATTRIBUTED_CLOSED,
+            existing,
+            ctx.apply,
+        )
+    except (LinearError, httpx.HTTPError) as e:
+        return [Action(None, ActionKind.LINEAR_ERROR, f"team {team}: {e}")]
+    return result.actions
+
+
+def _linear_issue(
+    linear: LinearClient, config: Config, repo: InspectorRepo, parents: _Parents
+) -> dict[str, Any] | None:
+    """A repo's Linear issue: the sub-issue under its team's parent, else the issue with its
+    title in its team, which a --repo run may have created without a parent."""
+    issue = parents.sub_issues.get(repo.repo)
+    if issue is None and repo.items and (team := _linear_team(config, repo)):
+        issue = linear.find_issue(team, f"{repo.repo}: {TITLE}")
+    return issue
+
+
+def _inspector_pass(
+    ctx: NagContext,
+) -> tuple[list[InspectorRepo], InspectorReport, list[RepoRun], list[Action]]:
+    """A GitHub issue per selected private repo with items, a Linear sub-issue per repo under
+    a parent issue per team, and one Linear issue for findings with no repo. Public repos, and
+    repos vulgard doesn't select, are tracked in Linear only, so only with --linear. With
+    `inspector.report_only` nothing is written and no runs are returned."""
+    gh, config, linear = ctx.clients.github, ctx.config, ctx.linear
+    selected, report = inspector_report(ctx.clients, config, ctx.only)
+    private = {r["name"] for r in selected if not is_public(r)}
+    if ctx.only:
+        private &= set(ctx.only)
+    issues = load_issues(gh, config, SPEC, sorted(private))
+    states = {
+        repo: TrackingState.from_body(issue.body if issue else None, InspectorMemory)
+        for repo, issue in issues.items()
+    }
+    owners = {repo: resolve_owners(gh, config, repo) for repo in report.by_repo}
+
+    def assess(repo: str) -> InspectorRepo:
+        memory = states[repo].memory if repo in states else InspectorMemory()
+        items = report.by_repo.get(repo, [])
+        return inspector_sla.evaluate(
+            repo, items, memory, config, ctx.now, repo in private, owners.get(repo, [])
+        )
+
+    assessed = {repo: assess(repo) for repo in sorted(private | set(report.by_repo))}
+    if config.inspector.report_only:
+        return list(assessed.values()), report, [], []
+    actions: list[Action] = []
+    parents = _Parents()
+    if linear is None:
+        skipped = sum(1 for r in assessed.values() if r.items and not r.github)
+        if skipped:
+            print(
+                f"Skipping {skipped} repo(s) that are tracked in Linear only: pass --linear.",
+                file=sys.stderr,
+            )
+    else:
+        parents = _sync_parents(ctx, linear, list(assessed.values()))
+        actions += parents.actions
+        for name in sorted(parents.sub_issues.keys() - assessed.keys()):
+            if not ctx.only or name in ctx.only:
+                assessed[name] = assess(name)
+    plans: list[RepoPlan[InspectorMemory]] = []
+    for repo in assessed.values():
+        team = _linear_team(config, repo)
+        parent = parents.ids.get(team) if team else None
+        if repo.github:
+            state, open_issue = states[repo.repo], _open(issues[repo.repo])
+            if state.linear is None and repo.repo in parents.sub_issues:
+                state = replace(state, linear=_linear_ref(parents.sub_issues[repo.repo]))
+        elif linear is None:
+            continue
+        else:
+            try:
+                found = _linear_issue(linear, config, repo, parents)
+            except (LinearError, httpx.HTTPError) as e:
+                actions.append(Action(repo.repo, ActionKind.LINEAR_ERROR, str(e)))
+                continue
+            state = TrackingState(InspectorMemory(), linear=_linear_ref(found) if found else None)
+            open_issue = None if found is None else found["state"]["type"] not in CLOSED_STATES
+        plans.append(inspector_plan.plan_repo(repo, config, state, open_issue, ctx.now, parent))
+    runs = track(gh, linear, config, plans, issues, ctx.apply)
+    if linear is not None and not ctx.only:
+        actions += _sync_unattributed(ctx, linear, report)
+    return list(assessed.values()), report, runs, actions
+
+
+def _open(issue: TrackedIssue | None) -> bool | None:
+    return None if issue is None else issue.open
+
+
+def run_inspector(ctx: NagContext) -> TopicResult:
+    cfg = ctx.config.inspector
+    try:
+        repos, report, runs, actions = _inspector_pass(ctx)
+    except SCAN_ERRORS as e:
+        print(f"error: skipped Inspector findings: {e}", file=sys.stderr)
+        return TopicResult(failed=True)
+    if cfg.report_only:
+        n = sum(1 for r in repos if r.items)
+        print(f"Inspector findings are report-only: {n} repo(s) have fix items.")
+    return TopicResult(
+        runs=runs,
+        actions=actions,
+        summary=render_summary(repos, report.unattributed, cfg),
+        repos={r.repo for r in repos},
+    )
+
+
 RUNNERS: dict[Topic, Callable[[NagContext], TopicResult]] = {
     Topic.VULNS: run_vulns,
     Topic.STALE: run_stale,
+    Topic.INSPECTOR: run_inspector,
 }

@@ -817,11 +817,11 @@ def test_aws_inspector_wraps_aws_errors_in_scan_error():
 
 def test_inspector_config_defaults_and_validation():
     config = parse_config({"org": "acme"}).inspector
-    assert config == InspectorConfig(["us-east-1"], "high", [])
+    assert config == InspectorConfig(
+        enabled=False, report_only=False, regions=["us-east-1"], min_severity="high", ignore=[]
+    )
     with pytest.raises(ValueError, match="inspector.min_severity must be one of"):
         parse_config({"org": "acme", "inspector": {"min_severity": "urgent"}})
-    with pytest.raises(ValueError, match="Unknown keys in 'inspector': enabled"):
-        parse_config({"org": "acme", "inspector": {"enabled": True}})
     with pytest.raises(ValueError, match="Unknown keys in 'inspector': linear_labels"):
         parse_config({"org": "acme", "inspector": {"linear_labels": ["security"]}})
 
@@ -941,13 +941,6 @@ def test_report_table_lists_repos_worst_first_then_the_unattributed(capsys):
 def test_report_table_says_so_when_nothing_matches(capsys):
     assert main([*FIXTURE_ARGS, "report", "--topic", "inspector", "--repo", "nope"]) == 0
     assert capsys.readouterr().out.strip() == "No Inspector findings at high or above."
-
-
-def test_nag_has_no_inspector_topic(capsys):
-    with pytest.raises(SystemExit) as stopped:
-        main([*FIXTURE_ARGS, "nag", "--topic", "inspector"])
-    assert stopped.value.code == 2
-    assert "invalid choice: 'inspector'" in capsys.readouterr().err
 
 
 def test_a_failing_inspector_scan_is_a_one_line_error(monkeypatch, capsys):

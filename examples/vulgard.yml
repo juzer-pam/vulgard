@@ -59,4 +59,5 @@ deployments:
   auto:
     repos: ["payments-*"]
 inspector:
+  enabled: true
   min_severity: high
