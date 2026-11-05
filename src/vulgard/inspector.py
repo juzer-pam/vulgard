@@ -237,9 +237,11 @@ class CoverageMatch:
 
 
 def names_repo(title: str, repo: str) -> bool:
-    """Whether `title` names `repo` as a whole word. Repo names contain hyphens and dots, so
-    `payments` is not named by a title that says `payments-api`."""
-    return re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(repo)}(?![A-Za-z0-9_.-])", title) is not None
+    """Whether `title` names `repo` as a whole word, ignoring case as GitHub does. Repo names
+    contain hyphens and dots, so `payments` is not named by a title that says `payments-api`,
+    but a sentence may end right after the name."""
+    pattern = rf"(?<![\w.-]){re.escape(repo)}(?![\w-]|\.\w)"
+    return re.search(pattern, title, re.IGNORECASE) is not None
 
 
 def build_tracking(
@@ -247,13 +249,14 @@ def build_tracking(
     fixed_alerts: Iterable[Alert],
     issues: Iterable[LinearIssue],
 ) -> dict[str, Tracking]:
-    """Pure. `reports` are from `vulns.collect`, with Dependabot PRs already linked to alerts."""
+    """Pure. `reports` are from `policy.evaluate`, with Dependabot PRs already linked to alerts.
+    An open alert accepted under `exceptions` still counts: someone has decided about it."""
     fixed: defaultdict[str, list[Alert]] = defaultdict(list)
     for alert in fixed_alerts:
         fixed[alert.repo].append(alert)
     return {
         repo: Tracking(
-            open_alerts=tuple(report.alerts),
+            open_alerts=(*report.alerts, *report.accepted),
             fixed_alerts=tuple(fixed[repo]),
             prs=tuple(report.dependabot_prs),
             linear_issues=tuple(issue for issue in issues if names_repo(issue.title, repo)),

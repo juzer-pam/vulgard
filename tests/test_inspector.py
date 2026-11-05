@@ -7,6 +7,7 @@ from pathlib import Path
 
 import boto3
 import pytest
+import yaml
 from botocore.stub import Stubber
 
 from vulgard.aws import AwsInspector, sight_finding
@@ -429,6 +430,20 @@ def test_a_linear_issue_naming_a_longer_repo_does_not_cover_the_shorter_one():
     assert [i.identifier for i in got["payments-api"].linear_issues] == ["SEC-1"]
 
 
+def test_a_linear_title_names_the_repo_in_any_case_and_before_a_full_stop():
+    reports = {"payments-api": RepoReport("payments-api")}
+    titles = [issue("Patch Payments-API images", "SEC-1"), issue("Remediate payments-api.", "SEC-2")]
+    got = build_tracking(reports, [], titles)
+    assert [i.identifier for i in got["payments-api"].linear_issues] == ["SEC-1", "SEC-2"]
+
+
+def test_an_alert_accepted_under_exceptions_still_covers_its_vulnerability():
+    accepted = alert()
+    report = RepoReport("api", accepted=[accepted])
+    got = build_tracking({"api": report}, [], [])
+    assert got["api"].open_alerts == (accepted,)
+
+
 def test_build_tracking_keeps_open_alerts_prs_and_fixed_alerts_per_repo():
     open_one, fix = alert(), bump()
     report = RepoReport("api", alerts=[open_one], dependabot_prs=[fix])
@@ -702,9 +717,16 @@ def test_inspector_config_defaults_and_validation():
 # --- CLI
 
 
-def report_json(tmp_path, capsys, inspector="", *extra):
-    config = tmp_path / "vulgard.yml"
-    config.write_text((EXAMPLES / "vulgard.yml").read_text() + inspector)
+def example_config(tmp_path, inspector=None):
+    config = yaml.safe_load((EXAMPLES / "vulgard.yml").read_text())
+    config["inspector"] = {**config.get("inspector", {}), **(inspector or {})}
+    path = tmp_path / "vulgard.yml"
+    path.write_text(yaml.safe_dump(config))
+    return path
+
+
+def report_json(tmp_path, capsys, inspector=None, *extra):
+    config = example_config(tmp_path, inspector)
     fixtures = ["--fixtures", str(EXAMPLES / "demo-org.json"), "--config", str(config)]
     assert main([*fixtures, "report", "--topic", "inspector", "--format", "json", *extra]) == 0
     return json.loads(capsys.readouterr().out)
@@ -763,21 +785,20 @@ def test_report_drops_findings_below_min_severity_and_informational_ones(tmp_pat
 
 
 def test_min_severity_low_adds_the_low_finding_but_never_the_informational_one(tmp_path, capsys):
-    report = report_json(tmp_path, capsys, "\ninspector:\n  min_severity: low\n")
+    report = report_json(tmp_path, capsys, {"min_severity": "low"})
     seen = {group["vulnerability_id"] for groups in report["repos"].values() for group in groups}
     assert "CVE-2021-23566" in seen and "CVE-2023-26136" not in seen
     assert report["repos"]["payments-api"][-1]["severity"] == "low"
 
 
 def test_inspector_ignore_config_drops_matching_resources(tmp_path, capsys):
-    inspector = '\ninspector:\n  ignore: ["payments-api-production-*"]\n'
-    report = report_json(tmp_path, capsys, inspector)
+    report = report_json(tmp_path, capsys, {"ignore": ["payments-api-production-*"]})
     seen = {group["vulnerability_id"] for groups in report["repos"].values() for group in groups}
     assert "CVE-2022-23539" not in seen and "CVE-2023-45857" in seen
 
 
 def test_repo_scope_keeps_only_that_repo(tmp_path, capsys):
-    report = report_json(tmp_path, capsys, "", "--repo", "inventory-service")
+    report = report_json(tmp_path, capsys, None, "--repo", "inventory-service")
     assert list(report["repos"]) == ["inventory-service"]
     assert report["unattributed"] == {}
     assert report["via"] == {"tag": 0, "deployment": 3}
@@ -864,8 +885,7 @@ def test_report_table_counts_groups_by_coverage_status(capsys):
 
 
 def test_without_linear_labels_the_table_says_linear_was_not_checked(tmp_path, capsys):
-    config = tmp_path / "vulgard.yml"
-    config.write_text((EXAMPLES / "vulgard.yml").read_text().replace("[security]", "[]"))
+    config = example_config(tmp_path, {"linear_labels": []})
     fixtures = ["--fixtures", str(EXAMPLES / "demo-org.json"), "--config", str(config)]
     assert main([*fixtures, "report", "--topic", "inspector"]) == 0
     out = capsys.readouterr().out
