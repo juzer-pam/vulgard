@@ -153,6 +153,7 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
         leaderboard=args.slack and not args.no_leaderboard and config.slack.leaderboard_due(now),
         now=now,
         linear=linear,
+        topics=tuple(topics),
     )
     results = [RUNNERS[topic](ctx) for topic in topics]
     runs = [run for res in results for run in res.runs]

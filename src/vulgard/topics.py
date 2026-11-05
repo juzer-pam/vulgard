@@ -85,6 +85,22 @@ class NagContext:
     leaderboard: bool  # build leaderboard blocks, which costs extra lookups
     now: datetime
     linear: LinearClient | None
+    topics: tuple[Topic, ...] = ()  # the topics this run covers
+
+    @property
+    def inspector_tracks_repos(self) -> bool:
+        """Whether this run's Inspector topic writes tickets for the repos it lists, which the
+        vulns topic then leaves to it."""
+        return Topic.INSPECTOR in self.topics and not self.config.inspector.report_only
+
+    @cached_property
+    def inspector(self) -> tuple[list[dict[str, Any]], InspectorReport] | Exception:
+        """Inspector's report, built once however many topics need it because it takes minutes,
+        or the error that stopped it."""
+        try:
+            return inspector_report(self.clients, self.config, self.only)
+        except SCAN_ERRORS as e:
+            return e
 
     @cached_property
     def repos(self) -> list[dict[str, Any]]:
@@ -111,7 +127,18 @@ class TopicResult:
 
 def run_vulns(ctx: NagContext) -> TopicResult:
     gh, config = ctx.clients.github, ctx.config
-    reports = {r["name"]: ctx.reports[r["name"]] for r in dependabot_repos(config, ctx.repos)}
+    tracked_by_inspector: frozenset[str] = frozenset()
+    if ctx.inspector_tracks_repos:
+        found = ctx.inspector
+        if isinstance(found, Exception):
+            print(
+                f"error: skipped vulnerable dependencies, which need Inspector's repos: {found}",
+                file=sys.stderr,
+            )
+            return TopicResult(failed=True)
+        tracked_by_inspector = frozenset(repo for repo, items in found[1].by_repo.items() if items)
+    repos = dependabot_repos(config, ctx.repos, tracked_by_inspector)
+    reports = {r["name"]: ctx.reports[r["name"]] for r in repos}
     runs = nag(gh, config, reports, apply=ctx.apply, now=ctx.now, linear=ctx.linear)
     since = ctx.now - timedelta(days=7)
     closed = summarize_closed(gh.list_closed_alerts(config.org, since), set(reports), since)
@@ -370,7 +397,10 @@ def _inspector_pass(
     repos vulgard doesn't select, are tracked in Linear only, so only with --linear. With
     `inspector.report_only` nothing is written and no runs are returned."""
     gh, config, linear = ctx.clients.github, ctx.config, ctx.linear
-    selected, report = inspector_report(ctx.clients, config, ctx.only)
+    found = ctx.inspector
+    if isinstance(found, Exception):
+        raise found
+    selected, report = found
     private = {r["name"] for r in selected if not is_public(r)}
     if ctx.only:
         private &= set(ctx.only)
