@@ -14,7 +14,6 @@ from vulgard.aws import (
     AwsInspector,
     latest_revisions,
     sight_finding,
-    sight_lambda_runner,
     sight_task_definition_runners,
 )
 from vulgard.cli import main
@@ -42,7 +41,6 @@ from vulgard.inspector import (
     InspectorResource,
     Reason,
     ResourceType,
-    RunnerKind,
     Unattributed,
     Via,
     branch_dependencies,
@@ -95,19 +93,8 @@ def shared_image(repository="sst-asset", digest="sha256:aa", image_tags=()):
     )
 
 
-def lambda_runner(name="worker", tags=None, repository="sst-asset", digest="sha256:aa"):
-    return ImageRunner(
-        RunnerKind.LAMBDA,
-        name,
-        "us-east-1",
-        ImageRef("us-east-1", repository, digest, None),
-        tags or {},
-    )
-
-
 def task_runner(family="web", tags=None, repository="sst-asset", digest=None, tag="v1"):
     return ImageRunner(
-        RunnerKind.ECS_TASK_DEFINITION,
         family,
         "us-east-1",
         ImageRef("us-east-1", repository, digest, None if digest else tag),
@@ -368,24 +355,24 @@ def attributed_through(on, *runners):
     return report.attributions[finding.arn]
 
 
-def test_an_image_a_lambda_function_runs_takes_the_functions_repo_tag():
-    runner = lambda_runner(tags={"github:repo": "acme/payments"})
+def test_an_image_a_task_definition_runs_takes_its_repo_tag():
+    runner = task_runner(tags={"github:repo": "acme/payments"}, digest="sha256:aa")
     assert attributed_through(shared_image(), runner) == Attributed(
         "payments", Via.TAG, runner=runner
     )
 
 
-def test_an_image_a_lambda_function_runs_takes_the_repo_of_the_functions_stack():
-    runner = lambda_runner(tags={STACK: "api-dev"})
+def test_an_image_a_task_definition_runs_takes_the_repo_of_its_stack():
+    runner = task_runner(tags={STACK: "api-dev"}, digest="sha256:aa")
     assert attributed_through(shared_image(), runner) == Attributed(
         "api", Via.DEPLOYMENT, "api-dev", runner
     )
 
 
-def test_an_image_in_a_cdk_repository_takes_the_repo_of_the_runner_found_by_sst_tags():
+def test_an_image_in_a_cdk_repository_takes_the_repo_of_the_task_definition_found_by_sst_tags():
     repository = "cdk-hnb659fds-container-assets-111122223333-us-east-1"
     tags = {"sst:app": "inventory", "sst:stage": "prod"}
-    runner = lambda_runner(tags=tags, repository=repository)
+    runner = task_runner(tags=tags, repository=repository, digest="sha256:aa")
     assert attributed_through(shared_image(repository), runner) == Attributed(
         "inventory", Via.DEPLOYMENT, "inventory/prod", runner
     )
@@ -406,9 +393,9 @@ def test_an_image_a_task_definition_names_by_tag_is_found_by_any_of_its_tags():
 
 def test_an_image_nothing_runs_stays_in_the_shared_asset_repository():
     runners = [
-        lambda_runner(tags={STACK: "api-dev"}, digest="sha256:other"),
+        task_runner(tags={STACK: "api-dev"}, digest="sha256:other"),
         task_runner(tags={STACK: "api-dev"}, tag="other"),
-        lambda_runner(tags={STACK: "api-dev"}, repository="cdk-assets"),
+        task_runner(tags={STACK: "api-dev"}, repository="cdk-assets", digest="sha256:aa"),
     ]
     on = shared_image(digest="sha256:aa", image_tags=("v2",))
     assert attributed_through(on, *runners) == Unattributed(Reason.SHARED_ASSET_REPOSITORY)
@@ -417,7 +404,6 @@ def test_an_image_nothing_runs_stays_in_the_shared_asset_repository():
 
 def test_a_runner_in_another_region_does_not_run_the_image():
     elsewhere = ImageRunner(
-        RunnerKind.LAMBDA,
         "worker",
         "eu-west-1",
         ImageRef("eu-west-1", "sst-asset", "sha256:aa", None),
@@ -429,17 +415,17 @@ def test_a_runner_in_another_region_does_not_run_the_image():
 
 
 def test_an_image_in_a_repository_that_is_not_shared_is_not_traced():
-    runner = lambda_runner(tags={STACK: "api-dev"}, repository="my-service")
+    runner = task_runner(tags={STACK: "api-dev"}, repository="my-service", digest="sha256:aa")
     assert attributed_through(shared_image("my-service"), runner) == Unattributed(
         Reason.NO_DEPLOYMENT_TAGS
     )
 
 
 def test_a_runner_that_names_no_repo_is_ignored_when_another_does():
-    nameless = lambda_runner("a-untagged")
-    unknown = lambda_runner("b-gone", {STACK: "gone"})
-    unowned = lambda_runner("c-legacy", {STACK: "legacy-staging"})
-    named = lambda_runner("d-api", {STACK: "api-dev"})
+    nameless = task_runner("a-untagged", digest="sha256:aa")
+    unknown = task_runner("b-gone", {STACK: "gone"}, digest="sha256:aa")
+    unowned = task_runner("c-legacy", {STACK: "legacy-staging"}, digest="sha256:aa")
+    named = task_runner("d-api", {STACK: "api-dev"}, digest="sha256:aa")
     assert attributed_through(shared_image(), nameless, unknown, unowned, named) == Attributed(
         "api", Via.DEPLOYMENT, "api-dev", named
     )
@@ -449,7 +435,7 @@ def test_a_runner_that_names_no_repo_is_ignored_when_another_does():
 
 
 def test_runners_in_different_repos_leave_the_image_unattributed():
-    in_api = lambda_runner("a", {STACK: "api-dev"})
+    in_api = task_runner("a", {STACK: "api-dev"}, digest="sha256:aa")
     in_inventory = task_runner(
         "b", {"sst:app": "inventory", "sst:stage": "prod"}, digest="sha256:aa"
     )
@@ -458,20 +444,19 @@ def test_runners_in_different_repos_leave_the_image_unattributed():
     )
 
 
-def test_runners_in_one_repo_report_the_first_by_kind_then_name():
-    function_b = lambda_runner("b", {STACK: "api-dev"})
-    function_a = lambda_runner("a", {"github:repo": "api"})
-    task = task_runner("z", {STACK: "api-dev"}, digest="sha256:aa")
-    assert attributed_through(shared_image(), function_b, function_a) == Attributed(
-        "api", Via.TAG, runner=function_a
+def test_runners_in_one_repo_report_the_first_by_name():
+    second = task_runner("b", {STACK: "api-dev"}, digest="sha256:aa")
+    first = task_runner("a", {"github:repo": "api"}, digest="sha256:aa")
+    assert attributed_through(shared_image(), second, first) == Attributed(
+        "api", Via.TAG, runner=first
     )
-    assert attributed_through(shared_image(), function_b, function_a, task) == Attributed(
-        "api", Via.DEPLOYMENT, "api-dev", task
+    assert attributed_through(shared_image(), first, second) == Attributed(
+        "api", Via.TAG, runner=first
     )
 
 
 def test_a_runner_is_only_used_for_images_in_shared_repositories():
-    runner = lambda_runner(tags={STACK: "api-dev"})
+    runner = task_runner(tags={STACK: "api-dev"}, digest="sha256:aa")
     on = function(tags={"sst:app": "inventory", "sst:stage": "prod"})
     got = attributed_through(on, runner)
     assert got == Attributed("inventory", Via.DEPLOYMENT, "inventory/prod")
@@ -924,18 +909,6 @@ def test_sight_finding_keeps_the_digest_and_tags_of_an_ecr_image():
 REGISTRY = "111122223333.dkr.ecr.us-east-1.amazonaws.com"
 
 
-def get_function(name="worker", package_type="Image", resolved=None, tags=None):
-    response = {
-        "Configuration": {"FunctionName": name, "PackageType": package_type},
-        "Code": {
-            "RepositoryType": "ECR",
-            "ImageUri": f"{REGISTRY}/sst-asset:abc",
-            "ResolvedImageUri": resolved or f"{REGISTRY}/sst-asset@sha256:aa",
-        },
-    }
-    return {**response, "Tags": tags} if tags is not None else response
-
-
 def describe_task_definition(family="web", images=(), tags=None):
     return {
         "taskDefinition": {
@@ -946,21 +919,6 @@ def describe_task_definition(family="web", images=(), tags=None):
         },
         "tags": [{"key": key, "value": value} for key, value in (tags or {}).items()],
     }
-
-
-def test_sight_lambda_runner_reads_the_resolved_digest_and_tags():
-    got = sight_lambda_runner(get_function(tags={STACK: "api-dev"}), "us-east-1")
-    assert got == lambda_runner("worker", {STACK: "api-dev"})
-
-
-def test_sight_lambda_runner_has_no_tags_when_the_response_has_none():
-    assert sight_lambda_runner(get_function(), "us-east-1") == lambda_runner("worker", {})
-
-
-def test_sight_lambda_runner_skips_zip_functions_and_images_outside_ecr():
-    assert sight_lambda_runner(get_function(package_type="Zip"), "us-east-1") is None
-    elsewhere = get_function(resolved="docker.io/app@sha256:aa")
-    assert sight_lambda_runner(elsewhere, "us-east-1") is None
 
 
 def test_sight_task_definition_runners_make_one_runner_per_ecr_image():
@@ -1096,21 +1054,10 @@ def client_for(service):
     return session.client(service)
 
 
-def test_aws_inspector_reads_runners_from_lambda_and_ecs():
-    lambda_client, ecs_client = client_for("lambda"), client_for("ecs")
+def test_aws_inspector_reads_runners_from_ecs():
+    ecs_client = client_for("ecs")
     family = "arn:aws:ecs:us-east-1:111122223333:task-definition/web"
-    configuration = {"FunctionName": "worker", "PackageType": "Image"}
-    zipped = {"FunctionName": "plain", "PackageType": "Zip"}
-    with Stubber(lambda_client) as lambda_stub, Stubber(ecs_client) as ecs_stub:
-        lambda_stub.add_response(
-            "list_functions", {"Functions": [configuration], "NextMarker": "page-2"}, {}
-        )
-        lambda_stub.add_response("list_functions", {"Functions": [zipped]}, {"Marker": "page-2"})
-        lambda_stub.add_response(
-            "get_function",
-            {**get_function(tags={STACK: "api-dev"}), "Configuration": configuration},
-            {"FunctionName": "worker"},
-        )
+    with Stubber(ecs_client) as ecs_stub:
         ecs_stub.add_response(
             "list_task_definitions",
             {"taskDefinitionArns": [f"{family}:1"], "nextToken": "page-2"},
@@ -1126,41 +1073,28 @@ def test_aws_inspector_reads_runners_from_lambda_and_ecs():
             describe_task_definition("web", [f"{REGISTRY}/sst-asset:abc"], {STACK: "api-dev"}),
             {"taskDefinition": f"{family}:2", "include": ["TAGS"]},
         )
-        session = StubClients(**{"lambda": lambda_client, "ecs": ecs_client})
+        session = StubClients(ecs=ecs_client)
         found = AwsInspector(session, ["us-east-1"], "high").runners()
-        lambda_stub.assert_no_pending_responses()
         ecs_stub.assert_no_pending_responses()
-    assert found == [
-        lambda_runner("worker", {STACK: "api-dev"}),
-        task_runner("web", {STACK: "api-dev"}, tag="abc"),
-    ]
+    assert found == [task_runner("web", {STACK: "api-dev"}, tag="abc")]
 
 
 def test_aws_inspector_wraps_runner_errors_in_scan_error():
-    lambda_client = client_for("lambda")
-    with Stubber(lambda_client) as stubber:
-        stubber.add_client_error("list_functions", "ThrottlingException")
-        session = StubClients(**{"lambda": lambda_client})
+    ecs_client = client_for("ecs")
+    with Stubber(ecs_client) as stubber:
+        stubber.add_client_error("list_task_definitions", "ThrottlingException")
+        session = StubClients(ecs=ecs_client)
         with pytest.raises(ScanError, match="Image runner scan failed"):
             AwsInspector(session, ["us-east-1"], "high").runners()
 
 
-def test_a_role_without_runner_permissions_warns_and_still_reads_the_rest(capsys):
-    lambda_client, ecs_client = client_for("lambda"), client_for("ecs")
-    family = "arn:aws:ecs:us-east-1:111122223333:task-definition/web"
-    with Stubber(lambda_client) as lambda_stub, Stubber(ecs_client) as ecs_stub:
-        lambda_stub.add_client_error("list_functions", "AccessDeniedException")
-        ecs_stub.add_response(
-            "list_task_definitions", {"taskDefinitionArns": [f"{family}:1"]}, {"status": "ACTIVE"}
-        )
-        ecs_stub.add_response(
-            "describe_task_definition",
-            describe_task_definition("web", [f"{REGISTRY}/sst-asset:abc"], {STACK: "api-dev"}),
-            {"taskDefinition": f"{family}:1", "include": ["TAGS"]},
-        )
-        session = StubClients(**{"lambda": lambda_client, "ecs": ecs_client})
+def test_a_role_without_runner_permissions_warns_and_finds_no_runners(capsys):
+    ecs_client = client_for("ecs")
+    with Stubber(ecs_client) as ecs_stub:
+        ecs_stub.add_client_error("list_task_definitions", "AccessDeniedException")
+        session = StubClients(ecs=ecs_client)
         found = AwsInspector(session, ["us-east-1"], "high").runners()
-    assert found == [task_runner("web", {STACK: "api-dev"}, tag="abc")]
+    assert found == []
     assert "can't trace shared-repository images" in capsys.readouterr().err
 
 
@@ -1393,15 +1327,15 @@ def test_report_table_counts_items_by_status(capsys):
     assert ["unattributed:", "no_deployment_tags", "0", "0", "0", "0", "1"] in rows
 
 
-def test_report_attributes_demo_images_through_the_lambda_or_task_definition_that_runs_them(
+def test_report_attributes_demo_images_through_the_task_definition_that_runs_them(
     tmp_path, capsys
 ):
     items = demo_items(report_json(tmp_path, capsys))
     cross_spawn, minimatch = items["cross-spawn"]["findings"][0], items["minimatch"]["findings"][0]
     assert (cross_spawn["via"], cross_spawn["deployment"]) == ("deployment", "inventory/production")
-    assert cross_spawn["runner"] == {"kind": "lambda", "name": "inventory-production-ImageWorker"}
+    assert cross_spawn["runner"] == {"name": "inventory-production-image-worker"}
     assert (minimatch["via"], minimatch["deployment"]) == ("deployment", "DataPipelineProduction")
-    assert minimatch["runner"] == {"kind": "ecs_task_definition", "name": "data-pipeline-worker"}
+    assert minimatch["runner"] == {"name": "data-pipeline-worker"}
     assert "runner" not in items["ws"]["findings"][0]
     assert items["eslint"]["findings"][0]["runner"] is None
 

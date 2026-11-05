@@ -146,9 +146,6 @@ Resources:
               - Sid: ReadImageRunners
                 Effect: Allow
                 Action:
-                  - lambda:ListFunctions
-                  - lambda:GetFunction
-                  - lambda:ListTags
                   - ecs:ListTaskDefinitions
                   - ecs:DescribeTaskDefinition
                 Resource: "*"

@@ -304,8 +304,8 @@ for the options.
   - Reads: `cloudformation:DescribeStacks`, `DescribeStackEvents`; `ssm:GetParameter` on
     `/sst/bootstrap`; `s3:ListBucket` and `s3:GetObject` on the SST state bucket;
     `amplify:ListApps`, `ListBranches`, `ListJobs`, `GetApp`, `GetBranch`;
-    `inspector2:ListFindings`, `lambda:ListFunctions`, `lambda:GetFunction`, `lambda:ListTags`,
-    `ecs:ListTaskDefinitions`, `ecs:DescribeTaskDefinition`, for `report --topic inspector`.
+    `inspector2:ListFindings`, `ecs:ListTaskDefinitions`, `ecs:DescribeTaskDefinition`, for
+    `report --topic inspector`.
   - Writes: `cloudformation:DeleteStack`; `iam:PassRole` on `VulgardStackDelete` only;
     `s3:ListBucketVersions`, `s3:DeleteObject` and `s3:DeleteObjectVersion` on
     `arn:aws:s3:::*-serverlessdeploymentbucket-*`; `amplify:StartJob`, `amplify:DeleteBranch`.

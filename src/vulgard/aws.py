@@ -31,7 +31,6 @@ from .inspector import (
     ImageRunner,
     InspectorResource,
     ResourceType,
-    RunnerKind,
     parse_image,
 )
 from .policy import parse_time
@@ -207,30 +206,13 @@ def sight_finding(raw: dict[str, Any]) -> Finding | None:
     )
 
 
-def sight_lambda_runner(function: dict[str, Any], region: str) -> ImageRunner | None:
-    """One GetFunction response -> runner, or None if the function isn't a container image in ECR.
-    ListFunctions has no image URI, so the digest comes from `Code.ResolvedImageUri`. The tags
-    are only in the response when the caller may `lambda:ListTags`."""
-    configuration = function["Configuration"]
-    image = parse_image(function.get("Code", {}).get("ResolvedImageUri", ""))
-    if configuration.get("PackageType") != "Image" or image is None:
-        return None
-    return ImageRunner(
-        RunnerKind.LAMBDA,
-        configuration["FunctionName"],
-        region,
-        image,
-        function.get("Tags") or {},
-    )
-
-
 def sight_task_definition_runners(response: dict[str, Any], region: str) -> list[ImageRunner]:
     """One DescribeTaskDefinition response (with `include=["TAGS"]`) -> one runner per container
     image in ECR."""
     definition = response["taskDefinition"]
     tags = {tag["key"]: tag["value"] for tag in response.get("tags") or []}
     return [
-        ImageRunner(RunnerKind.ECS_TASK_DEFINITION, definition["family"], region, image, tags)
+        ImageRunner(definition["family"], region, image, tags)
         for container in definition.get("containerDefinitions") or []
         if (image := parse_image(container.get("image", ""))) is not None
     ]
@@ -361,38 +343,24 @@ class AwsInspector:
         ]
 
     def runners(self) -> list[ImageRunner]:
-        """The Lambda functions and ECS task definitions running container images. Call counts
-        per region: one ListFunctions page per 50 functions, one GetFunction per container-image
-        function, one ListTaskDefinitions page per 100 ACTIVE revisions and one
-        DescribeTaskDefinition per task definition family (its latest ACTIVE revision only)."""
+        """The ECS task definitions running container images. Call counts per region: one
+        ListTaskDefinitions page per 100 ACTIVE revisions and one DescribeTaskDefinition per task
+        definition family (its latest ACTIVE revision only)."""
         found: list[ImageRunner] = []
         for region in self._regions:
-            for read in (self._lambda_runners, self._ecs_runners):
-                try:
-                    found += read(region)
-                except ClientError as e:
-                    if e.response.get("Error", {}).get("Code") not in ACCESS_DENIED:
-                        raise ScanError(f"Image runner scan failed: {e}") from e
-                    print(
-                        f"warning: can't trace shared-repository images ({e}); they stay "
-                        "shared_asset_repository until the role can read them",
-                        file=sys.stderr,
-                    )
-                except BotoCoreError as e:
+            try:
+                found += self._ecs_runners(region)
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") not in ACCESS_DENIED:
                     raise ScanError(f"Image runner scan failed: {e}") from e
+                print(
+                    f"warning: can't trace shared-repository images ({e}); they stay "
+                    "shared_asset_repository until the role can read them",
+                    file=sys.stderr,
+                )
+            except BotoCoreError as e:
+                raise ScanError(f"Image runner scan failed: {e}") from e
         return found
-
-    def _lambda_runners(self, region: str) -> list[ImageRunner]:
-        lambda_ = self._session.client("lambda", region_name=region)
-        names = [
-            function["FunctionName"]
-            for page in lambda_.get_paginator("list_functions").paginate()
-            for function in page["Functions"]
-            if function.get("PackageType") == "Image"
-        ]
-        functions = [lambda_.get_function(FunctionName=name) for name in names]
-        runners = [sight_lambda_runner(function, region) for function in functions]
-        return [runner for runner in runners if runner is not None]
 
     def _ecs_runners(self, region: str) -> list[ImageRunner]:
         ecs = self._session.client("ecs", region_name=region)

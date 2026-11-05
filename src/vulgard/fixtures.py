@@ -11,7 +11,6 @@ from .aws import (
     sight_amplify_branch,
     sight_cfn_stack,
     sight_finding,
-    sight_lambda_runner,
     sight_sst_objects,
     sight_task_definition_runners,
 )
@@ -297,28 +296,22 @@ class FixtureScanner:
 
 
 class FixtureInspector:
-    """Replays raw ListFindings, GetFunction and DescribeTaskDefinition shapes from the fixture
-    through the real parsers."""
+    """Replays raw ListFindings and DescribeTaskDefinition shapes from the fixture through the
+    real parsers."""
 
     def __init__(self, data: dict[str, Any]):
         aws = data.get("aws") or {}
         self._raw = (aws.get("inspector") or {}).get("findings", [])
-        self._functions = aws.get("lambda_functions", [])
         self._task_definitions = aws.get("ecs_task_definitions", [])
 
     def findings(self) -> list[Finding]:
         return [finding for raw in self._raw if (finding := sight_finding(raw))]
 
     def runners(self) -> list[ImageRunner]:
-        region = "us-east-1"
-        functions = [sight_lambda_runner(function, region) for function in self._functions]
         return [
-            *(runner for runner in functions if runner is not None),
-            *(
-                runner
-                for response in self._task_definitions
-                for runner in sight_task_definition_runners(response, region)
-            ),
+            runner
+            for response in self._task_definitions
+            for runner in sight_task_definition_runners(response, "us-east-1")
         ]
 
 

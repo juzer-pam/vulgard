@@ -1106,35 +1106,29 @@
         }
       ]
     },
-    "lambda_functions": [
-      {
-        "Configuration": {
-          "FunctionName": "inventory-production-ImageWorker",
-          "PackageType": "Image"
-        },
-        "Code": {
-          "RepositoryType": "ECR",
-          "ImageUri": "111122223333.dkr.ecr.us-east-1.amazonaws.com/sst-asset:8c1f0e2a9b3d",
-          "ResolvedImageUri": "111122223333.dkr.ecr.us-east-1.amazonaws.com/sst-asset@sha256:00000000000000000000000000000000e5f6a7b8e5f6a7b8e5f6a7b8e5f6a7b8"
-        },
-        "Tags": {
-          "sst:app": "inventory",
-          "sst:stage": "production"
-        }
-      },
-      {
-        "Configuration": {
-          "FunctionName": "thumbnailer",
-          "PackageType": "Image"
-        },
-        "Code": {
-          "RepositoryType": "ECR",
-          "ImageUri": "111122223333.dkr.ecr.us-east-1.amazonaws.com/thumbnailer:latest",
-          "ResolvedImageUri": "111122223333.dkr.ecr.us-east-1.amazonaws.com/thumbnailer@sha256:00000000000000000000000000000000b7b8b9b0b7b8b9b0b7b8b9b0b7b8b9b0"
-        }
-      }
-    ],
     "ecs_task_definitions": [
+      {
+        "taskDefinition": {
+          "family": "inventory-production-image-worker",
+          "revision": 3,
+          "containerDefinitions": [
+            {
+              "name": "worker",
+              "image": "111122223333.dkr.ecr.us-east-1.amazonaws.com/sst-asset:8c1f0e2a9b3d"
+            }
+          ]
+        },
+        "tags": [
+          {
+            "key": "sst:app",
+            "value": "inventory"
+          },
+          {
+            "key": "sst:stage",
+            "value": "production"
+          }
+        ]
+      },
       {
         "taskDefinition": {
           "family": "data-pipeline-worker",

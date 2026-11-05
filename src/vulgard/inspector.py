@@ -7,8 +7,8 @@ repo is the first of these that answers:
     1. a repo tag on the resource
     2. the estate deployment the resource belongs to (see `estate.py`), found through its
        CloudFormation stack, SST app and stage, or Amplify app and branch tags
-    3. for an image in a shared asset repository only, the Lambda function or ECS task definition
-       that runs it, attributed by rules 1 and 2 applied to the runner's own tags
+    3. for an image in a shared asset repository only, the ECS task definition that runs it,
+       attributed by rules 1 and 2 applied to the task definition's own tags
 
 All the findings of one package in one repo, across vulnerabilities and resources, are one fix
 item, because a single upgrade fixes them all. Each fix item gets a status that says what it needs
@@ -94,15 +94,9 @@ class Finding:
 # --- what runs an image
 
 
-class RunnerKind(StrEnum):
-    LAMBDA = "lambda"
-    ECS_TASK_DEFINITION = "ecs_task_definition"
-
-
 @dataclass(frozen=True)
 class ImageRef:
-    """A container image as a Lambda function or ECS task definition names it. A Lambda function
-    names its image by digest. A task definition names it by digest or by tag, and a tag is how
+    """A container image as an ECS task definition names it: by digest or by tag. A tag is how
     CDK and SST reference the images they push."""
 
     region: str
@@ -131,11 +125,10 @@ def parse_image(uri: str) -> ImageRef | None:
 
 @dataclass(frozen=True)
 class ImageRunner:
-    """A Lambda function or ECS task definition running one container image. A task definition
-    with several containers is one runner per image."""
+    """An ECS task definition running one container image. A task definition with several
+    containers is one runner per image."""
 
-    kind: RunnerKind
-    name: str  # function name or task definition family
+    name: str  # task definition family
     region: str
     image: ImageRef
     tags: Mapping[str, str]
@@ -161,7 +154,7 @@ def _running(resource: InspectorResource, runners: RunnerIndex) -> list[ImageRun
         for reference in references
         for runner in runners.get((resource.region, resource.name, reference), ())
     ]
-    return sorted(found, key=lambda runner: (runner.kind, runner.name))
+    return sorted(found, key=lambda runner: runner.name)
 
 
 class InspectorSource(Protocol):
@@ -170,7 +163,7 @@ class InspectorSource(Protocol):
     def findings(self) -> list[Finding]: ...
 
     def runners(self) -> list[ImageRunner]:
-        """The Lambda functions and ECS task definitions that run container images."""
+        """The ECS task definitions that run container images."""
         ...
 
 
@@ -296,7 +289,7 @@ def _through_runners(
 ) -> FindingAttribution:
     """Rule 3. Runners that name no repo are ignored. Runners that name different repos leave the
     image unattributed, because it is shared and picking one repo would send the fix to the wrong
-    team. When they agree, the first runner by kind and name is the one reported."""
+    team. When they agree, the first runner by name is the one reported."""
     resolved: list[Attributed] = []
     for runner in _running(resource, runners):
         answer = _by_tags(runner.tags, tag_keys(runner.tags, runner.region), deployments_by_key)

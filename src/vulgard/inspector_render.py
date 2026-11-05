@@ -79,7 +79,7 @@ def _attribution_json(attribution: FindingAttribution) -> dict[str, Any]:
             return {
                 "via": via,
                 "deployment": deployment,
-                "runner": runner and {"kind": runner.kind, "name": runner.name},
+                "runner": runner and {"name": runner.name},
             }
         case Unattributed():
             return {}
