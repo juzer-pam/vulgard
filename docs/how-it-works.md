@@ -170,7 +170,10 @@ For every alert, vulgard works out:
 - **Its status.** *Overdue* if past the deadline, *due soon* if within 5 days of it,
   otherwise *ok*.
 - **Its fix PR.** If an open Dependabot PR bumps the same package, they're linked, so the
-  issue can say "fix ready in #88".
+  issue can say "fix ready in #88". A single update names its package in the title. A grouped
+  PR ("Bump the npm group with 3 updates") lists its packages in a table in the PR body, and
+  vulgard reads that table, so a grouped PR counts as the fix too. A package the PR removes
+  counts as well, because removing it also clears the alert.
 
 And for every Dependabot PR:
 

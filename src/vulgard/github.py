@@ -13,11 +13,11 @@ API_URL = "https://api.github.com"
 
 DEPENDABOT_PRS_QUERY = """
 query($q: String!, $after: String) {
-  search(query: $q, type: ISSUE, first: 100, after: $after) {
+  search(query: $q, type: ISSUE, first: 50, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        number title url createdAt isDraft mergeable
+        number title body url createdAt isDraft mergeable
         repository { name }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       }
@@ -142,6 +142,7 @@ class GitHub:
                     {
                         "number": node["number"],
                         "title": node["title"],
+                        "body": node["body"],
                         "html_url": node["url"],
                         "repository_url": f"{API_URL}/repos/{org}/{node['repository']['name']}",
                         "created_at": node["createdAt"],

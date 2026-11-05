@@ -81,6 +81,12 @@ class AlertRef:
     package: str
 
 
+# Dependabot's PR body: "| [axios](https://...) | `1.5.0` | `1.6.0` |", "Updates `axios` from" and
+# "Removes `zod`" (a dependency dropped by the update also resolves its alerts).
+PR_TABLE_ROW_RE = re.compile(r"^\|\s*\[?([^\]|(]+?)\]?(?:\([^)]*\))?\s*\|\s*`[^`]+`\s*\|", re.M)
+PR_UPDATES_LINE_RE = re.compile(r"^(?:Updates `([^`]+)` from|Removes `([^`]+)`)", re.M)
+
+
 @dataclass
 class DependabotPR:
     repo: str
@@ -88,6 +94,7 @@ class DependabotPR:
     title: str
     html_url: str
     created_at: datetime
+    body: str = ""
     age_days: int = 0
     ci_state: str | None = None  # SUCCESS | FAILURE | ERROR | PENDING | EXPECTED | None
     mergeable: str | None = None  # MERGEABLE | CONFLICTING | UNKNOWN
@@ -104,6 +111,7 @@ class DependabotPR:
             title=raw["title"],
             html_url=raw["html_url"],
             created_at=parse_time(raw["created_at"]),
+            body=raw.get("body") or "",
             ci_state=raw.get("ci_state"),
             mergeable=raw.get("mergeable"),
             draft=bool(raw.get("draft")),
@@ -111,8 +119,14 @@ class DependabotPR:
 
     @property
     def packages(self) -> set[str]:
-        # "Bump lodash from 4.17.20 to 4.17.21", "Bump the npm group ... with 3 updates"
-        return {m.lower() for m in re.findall(r"[Bb]ump (\S+) from", self.title)}
+        """A single update names its package in the title ("Bump lodash from 4.17.20 to
+        4.17.21"). A grouped or multi-package PR ("Bump the npm group ... with 3 updates", "Bump
+        zod and next") lists them in the body, as a table or as "Updates `x` from" and
+        "Removes `x`" lines."""
+        found = re.findall(r"[Bb]ump (\S+) from", self.title)
+        found += PR_TABLE_ROW_RE.findall(self.body)
+        found += [name for pair in PR_UPDATES_LINE_RE.findall(self.body) for name in pair if name]
+        return {name.strip().lower() for name in found}
 
     @property
     def ci_passing(self) -> bool:
