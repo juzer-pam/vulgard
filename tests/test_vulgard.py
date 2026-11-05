@@ -149,6 +149,22 @@ def test_a_multi_package_pr_covers_what_it_updates_and_what_it_removes(config):
     assert [a.fix_pr.number for a in reports["api"].alerts] == [9, 9]
 
 
+def test_a_table_inside_release_notes_does_not_add_packages(config):
+    body = (
+        "Bumps [lodash](https://x) from 4.17.20 to 4.17.21.\n"
+        "<details>\n<summary>Release notes</summary>\n"
+        "| [minimist](https://x) | `1.2.5` | `1.2.6` |\n</details>\n"
+    )
+    reports = evaluate(
+        config,
+        [alert(1, "api", "high", 1, package="minimist")],
+        [pr(9, "api", "Bump lodash from 4.17.20 to 4.17.21", 1, body=body)],
+        ["api"],
+        NOW,
+    )
+    assert reports["api"].alerts[0].fix_pr is None
+
+
 def test_a_pr_body_that_only_mentions_a_package_does_not_cover_it(config):
     body = "Release notes: fixes a bug reported against `lodash`.\n"
     reports = evaluate(

@@ -82,7 +82,8 @@ class AlertRef:
 
 
 # Dependabot's PR body: "| [axios](https://...) | `1.5.0` | `1.6.0` |", "Updates `axios` from" and
-# "Removes `zod`" (a dependency dropped by the update also resolves its alerts).
+# "Removes `zod`" (a dependency dropped by the update also resolves its alerts). The table comes
+# before the first <details>; release notes inside <details> can hold tables of their own.
 PR_TABLE_ROW_RE = re.compile(r"^\|\s*\[?([^\]|(]+?)\]?(?:\([^)]*\))?\s*\|\s*`[^`]+`\s*\|", re.M)
 PR_UPDATES_LINE_RE = re.compile(r"^(?:Updates `([^`]+)` from|Removes `([^`]+)`)", re.M)
 
@@ -124,7 +125,7 @@ class DependabotPR:
         zod and next") lists them in the body, as a table or as "Updates `x` from" and
         "Removes `x`" lines."""
         found = re.findall(r"[Bb]ump (\S+) from", self.title)
-        found += PR_TABLE_ROW_RE.findall(self.body)
+        found += PR_TABLE_ROW_RE.findall(self.body.split("<details>", 1)[0])
         found += [name for pair in PR_UPDATES_LINE_RE.findall(self.body) for name in pair if name]
         return {name.strip().lower() for name in found}
 
