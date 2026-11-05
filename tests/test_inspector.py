@@ -1139,10 +1139,29 @@ def test_aws_inspector_reads_runners_from_lambda_and_ecs():
 def test_aws_inspector_wraps_runner_errors_in_scan_error():
     lambda_client = client_for("lambda")
     with Stubber(lambda_client) as stubber:
-        stubber.add_client_error("list_functions", "AccessDeniedException")
+        stubber.add_client_error("list_functions", "ThrottlingException")
         session = StubClients(**{"lambda": lambda_client})
         with pytest.raises(ScanError, match="Image runner scan failed"):
             AwsInspector(session, ["us-east-1"], "high").runners()
+
+
+def test_a_role_without_runner_permissions_warns_and_still_reads_the_rest(capsys):
+    lambda_client, ecs_client = client_for("lambda"), client_for("ecs")
+    family = "arn:aws:ecs:us-east-1:111122223333:task-definition/web"
+    with Stubber(lambda_client) as lambda_stub, Stubber(ecs_client) as ecs_stub:
+        lambda_stub.add_client_error("list_functions", "AccessDeniedException")
+        ecs_stub.add_response(
+            "list_task_definitions", {"taskDefinitionArns": [f"{family}:1"]}, {"status": "ACTIVE"}
+        )
+        ecs_stub.add_response(
+            "describe_task_definition",
+            describe_task_definition("web", [f"{REGISTRY}/sst-asset:abc"], {STACK: "api-dev"}),
+            {"taskDefinition": f"{family}:1", "include": ["TAGS"]},
+        )
+        session = StubClients(**{"lambda": lambda_client, "ecs": ecs_client})
+        found = AwsInspector(session, ["us-east-1"], "high").runners()
+    assert found == [task_runner("web", {STACK: "api-dev"}, tag="abc")]
+    assert "can't trace shared-repository images" in capsys.readouterr().err
 
 
 def test_aws_inspector_wraps_aws_errors_in_scan_error():

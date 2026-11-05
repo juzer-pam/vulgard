@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Any, assert_never
@@ -313,6 +314,9 @@ class AwsScanner:
         return found
 
 
+ACCESS_DENIED = ("AccessDenied", "AccessDeniedException")
+
+
 class AwsInspector:
     """Active package-vulnerability findings from Amazon Inspector in every configured region.
     Severities below `min_severity` are filtered by Inspector itself: an account can hold tens of
@@ -362,11 +366,20 @@ class AwsInspector:
         function, one ListTaskDefinitions page per 100 ACTIVE revisions and one
         DescribeTaskDefinition per task definition family (its latest ACTIVE revision only)."""
         found: list[ImageRunner] = []
-        try:
-            for region in self._regions:
-                found += self._lambda_runners(region) + self._ecs_runners(region)
-        except (BotoCoreError, ClientError) as e:
-            raise ScanError(f"Image runner scan failed: {e}") from e
+        for region in self._regions:
+            for read in (self._lambda_runners, self._ecs_runners):
+                try:
+                    found += read(region)
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") not in ACCESS_DENIED:
+                        raise ScanError(f"Image runner scan failed: {e}") from e
+                    print(
+                        f"warning: can't trace shared-repository images ({e}); they stay "
+                        "shared_asset_repository until the role can read them",
+                        file=sys.stderr,
+                    )
+                except BotoCoreError as e:
+                    raise ScanError(f"Image runner scan failed: {e}") from e
         return found
 
     def _lambda_runners(self, region: str) -> list[ImageRunner]:
