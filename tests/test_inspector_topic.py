@@ -418,7 +418,7 @@ def listed_line(body, package):
 def heading_over(body, package):
     lines = body.splitlines()
     at = lines.index(listed_line(body, package))
-    return next(line for line in reversed(lines[:at]) if line.startswith("###"))
+    return next(line for line in reversed(lines[:at]) if line.startswith("**"))
 
 
 def test_a_deadline_counts_from_the_first_run_that_listed_the_item():
@@ -433,13 +433,13 @@ def test_a_deadline_counts_from_the_first_run_that_listed_the_item():
 def test_a_status_change_does_not_reset_the_deadline():
     world = Org(org(finding("api")))
     world.run()
-    assert "a person has to look" in heading_over(world.github_issue("api")["body"], "axios")
+    assert "Needs a person to look" in heading_over(world.github_issue("api")["body"], "axios")
     purl = {"referenceType": "purl", "referenceLocator": "pkg:npm/left-pad@1.3.0"}
     other = {"name": "left-pad", "versionInfo": "1.3.0", "externalRefs": [purl]}
     world.gh.data["sboms"] = {"api": {"sbom": {"packages": [other]}}}
     world.run(days=10)
     body = world.github_issue("api")["body"]
-    assert heading_over(body, "axios") == "### Fixed on the default branch: redeploy (1)"
+    assert heading_over(body, "axios") == "**Redeploy: already fixed on the default branch (1)**"
     assert "due in 20d" in listed_line(body, "axios")
 
 
@@ -517,7 +517,7 @@ def test_slack_lines_link_the_linear_sub_issue_and_count_what_items_need():
     for repo in ("api", "site"):
         url = world.sub_issue(repo)["url"]
         assert f"<{url}|{repo}>" in text
-    assert "1 package(s) (1 high)" in text and "for a person to check" not in text
+    assert "🟧 1" in text and "check" not in text
 
 
 # --- scope, report-only and dry runs

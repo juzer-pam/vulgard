@@ -23,7 +23,7 @@ from .inspector import (
 from .inspector_sla import InspectorMemory, InspectorRepo, TrackedItem
 from .plan import TrackingState
 from .policy import SlaStatus
-from .render import SEVERITY_ICON, format_table, severity_summary
+from .render import SEVERITY_ICON, format_table
 
 MAX_ITEMS = 40  # per issue, so a busy repo's issue stays under GitHub's body limit
 MAX_LISTED = 5  # resources and vulnerability ids shown per item
@@ -153,87 +153,95 @@ def report_json(report: InspectorReport) -> dict[str, Any]:
 # --- nag: issues, Linear and the step summary
 
 
-def _first(names: list[str]) -> str:
-    shown = ", ".join(f"`{name}`" for name in names[:MAX_LISTED])
+def _first(names: list[str], code: bool = True) -> str:
+    shown = ", ".join(f"`{name}`" if code else name for name in names[:MAX_LISTED])
     more = len(names) - MAX_LISTED
     return shown + (f" and {more} more" if more > 0 else "")
 
 
-def _next_step(item: FixItem) -> str:
-    match item.status:
+def status_label(status: FixStatus) -> str:
+    """What items with `status` need, in a word or two, for counts and table columns."""
+    match status:
         case FixStatus.NEEDS_DEPLOY:
             return "redeploy"
         case FixStatus.NEEDS_PR_MERGE:
-            assert item.pr is not None
-            return f"merge [#{item.pr.number}]({item.pr.html_url}), then redeploy"
+            return "merge PR"
         case FixStatus.NEEDS_FIX:
-            return "upgrade the package on the default branch"
+            return "upgrade"
         case FixStatus.NEEDS_OS_UPDATE:
-            return "use a newer base image or runtime"
+            return "base image"
         case FixStatus.UNKNOWN:
-            return "needs a person to look"
+            return "check"
         case _ as unreachable:
             assert_never(unreachable)
 
 
-def status_heading(status: FixStatus) -> str:
+def _status_heading(status: FixStatus) -> str:
     match status:
         case FixStatus.NEEDS_DEPLOY:
-            return "Fixed on the default branch: redeploy"
+            return "Redeploy: already fixed on the default branch"
         case FixStatus.NEEDS_PR_MERGE:
-            return "Fix PR open: merge it, then redeploy"
+            return "Merge the fix PR, then redeploy"
         case FixStatus.NEEDS_FIX:
-            return "Upgrade the package on the default branch"
+            return "Upgrade on the default branch"
         case FixStatus.NEEDS_OS_UPDATE:
-            return "Operating system packages: use a newer base image or runtime"
+            return "Use a newer base image or runtime"
         case FixStatus.UNKNOWN:
-            return "vulgard can't tell what these need, so a person has to look"
+            return "Needs a person to look"
         case _ as unreachable:
             assert_never(unreachable)
 
 
-def status_count(status: FixStatus, count: int) -> str:
-    """A count of items with `status`, for Slack digests."""
-    match status:
-        case FixStatus.NEEDS_DEPLOY:
-            return f"{count} to redeploy"
-        case FixStatus.NEEDS_PR_MERGE:
-            return f"{count} with a fix PR to merge"
-        case FixStatus.NEEDS_FIX:
-            return f"{count} to upgrade"
-        case FixStatus.NEEDS_OS_UPDATE:
-            return f"{count} needing a newer base image"
-        case FixStatus.UNKNOWN:
-            return f"{count} for a person to check"
-        case _ as unreachable:
-            assert_never(unreachable)
+def severity_icons(severities: Counter[str]) -> str:
+    """Severity counts as icons, worst first, such as "🟥 1 critical · 🟧 12 high"."""
+    return " · ".join(
+        f"{SEVERITY_ICON[severity]} {severities[severity]} {severity}"
+        for severity in SEVERITIES
+        if severities[severity]
+    )
 
 
-def item_line(item: FixItem, due: str | None = None, step: bool = True) -> str:
-    """One fix item as a bullet: what it is, the fix and, when tracked, its due date, with its
-    vulnerability ids and where it runs on a nested bullet. `step` adds what the item needs
-    next, for lists that aren't already under its status heading."""
-    ecosystem = item.ecosystem or item.findings[0].package_manager
-    parts = [f"- {SEVERITY_ICON[item.severity]} **{item.severity}** `{item.package}` ({ecosystem})"]
-    if item.main_versions:
-        parts.append(f"default branch has {_first(sorted(item.main_versions))}")
-    parts.append(f"fixed in `{item.fixed_in}`" if item.fixed_in else "no fixed version known")
-    if item.exploit_available:
-        parts.append("🔥 exploit available")
-    if step:
-        parts.append(_next_step(item))
-    elif item.status is FixStatus.NEEDS_PR_MERGE:
+def _version_change(item: FixItem) -> str:
+    if not item.fixed_in:
+        return "no fix yet"
+    fixed = f"→ `{item.fixed_in}`"
+    return f"{_first(sorted(item.main_versions))} {fixed}" if item.main_versions else fixed
+
+
+def item_line(
+    item: FixItem, due: str | None = None, step: bool = True, resources: bool = False
+) -> str:
+    """One fix item on one line: severity, package, version change and, when tracked, its due
+    date. `step` adds what the item needs, for lists that aren't under its status heading."""
+    fire = " 🔥" if item.exploit_available else ""
+    parts = [f"- {SEVERITY_ICON[item.severity]} `{item.package}` {_version_change(item)}{fire}"]
+    if item.status is FixStatus.NEEDS_PR_MERGE:
         assert item.pr is not None
         parts.append(f"merge [#{item.pr.number}]({item.pr.html_url})")
+    elif step:
+        parts.append(status_label(item.status))
+    if resources:
+        parts.append(f"on {_first(item.resources)}")
     if due:
         parts.append(due)
-    details = [", ".join(item.vulnerability_ids[:MAX_LISTED]), f"on {_first(item.resources)}"]
-    return " · ".join(parts) + "\n  - " + " · ".join(details)
+    return " · ".join(parts)
+
+
+def _detail_line(item: FixItem) -> str:
+    ids = _first(item.vulnerability_ids, code=False)
+    return f"- `{item.package}`: {ids} · on {_first(item.resources)}"
+
+
+def _collapsed(title: str, lines: list[str], linear: bool) -> list[str]:
+    """A section that starts closed: Linear's `+++` toggle, or GitHub's `<details>`."""
+    if linear:
+        return ["", f"+++ {title}", "", *lines, "", "+++"]
+    return ["", f"<details><summary>{title}</summary>", "", *lines, "", "</details>"]
 
 
 def _due(tracked: TrackedItem, relative: bool) -> str:
     if not relative:
-        return f"due {tracked.deadline:%Y-%m-%d}"
+        return f"due {tracked.deadline:%b} {tracked.deadline.day}"
     if tracked.status is SlaStatus.OVERDUE:
         return f"**{-tracked.days_left}d overdue**"
     return f"due in {tracked.days_left}d"
@@ -251,11 +259,18 @@ def _by_status[T](
     return [(status, group) for status, group in groups if group]
 
 
-def _item_lines(repo: InspectorRepo, relative: bool) -> list[str]:
+def _summary(items: list[FixItem], what: str) -> str:
+    """The bold lead line: how many packages, by severity, and the 🔥 legend when it's used."""
+    severities = severity_icons(Counter(i.severity for i in items))
+    line = f"**{len(items)} vulnerable package(s) {what}** · {severities}"
+    return line + (" · 🔥 = known exploit" if any(i.exploit_available for i in items) else "")
+
+
+def _item_lines(repo: InspectorRepo, relative: bool, linear: bool) -> list[str]:
     shown = repo.items[:MAX_ITEMS]
     lines: list[str] = []
     for status, group in _by_status(shown, lambda t: t.item.status):
-        lines += ["", f"### {status_heading(status)} ({len(group)})", ""]
+        lines += ["", f"**{_status_heading(status)} ({len(group)})**"]
         lines += [item_line(t.item, _due(t, relative), step=False) for t in group]
     if len(repo.items) > MAX_ITEMS:
         more = len(repo.items) - MAX_ITEMS
@@ -264,34 +279,26 @@ def _item_lines(repo: InspectorRepo, relative: bool) -> list[str]:
             f"…and {more} more. `vulgard report --topic inspector --repo {repo.repo}` lists "
             "them all.",
         ]
-    return lines
-
-
-def _counts(repo: InspectorRepo) -> str:
-    return severity_summary(Counter(i.item.severity for i in repo.items))
+    details = [_detail_line(t.item) for t in shown]
+    return lines + _collapsed("CVEs and where they run", details, linear)
 
 
 def render_body(
     repo: InspectorRepo, config: Config, state: TrackingState[InspectorMemory], now: datetime
 ) -> str:
     severities = severities_at_least(config.inspector.min_severity)
-    days = ", ".join(f"{config.sla_days[s]} for {s}" for s in severities)
-    lines = [
-        "Amazon Inspector found vulnerable packages in what this repo runs in AWS. Each item is "
-        "one package: one upgrade and a redeploy fix every finding listed under it. An item is "
-        f"due a number of days after vulgard first listed it here: {days}.",
-    ]
+    days = ", ".join(f"{config.sla_days[s]}d for {s}" for s in severities)
+    about = [f"Found by Amazon Inspector. Due {days} after first listed."]
     if repo.owners:
-        lines += ["", f"Owners: {' '.join(repo.owners)}"]
+        about.append(f"Owners: {' '.join(repo.owners)}.")
     if state.linear:
-        lines += ["", f"Tracked in Linear: [{state.linear.identifier}]({state.linear.url})"]
-    lines += _item_lines(repo, relative=True)
+        about.append(f"Linear: [{state.linear.identifier}]({state.linear.url}).")
+    lines = [_summary([t.item for t in repo.items], "running in AWS"), "", " ".join(about)]
+    lines += _item_lines(repo, relative=True, linear=False)
     lines += [
         "",
-        "---",
-        f"_Updated by vulgard on {now:%Y-%m-%d %H:%M} UTC. This issue closes itself once "
-        "Inspector no longer finds these packages. Please don't edit it by hand; changes are "
-        "overwritten._",
+        f"_Updated by vulgard {now:%Y-%m-%d %H:%M} UTC. Closes itself once Inspector stops "
+        "finding these. Edits are overwritten._",
         state.to_comment(),
     ]
     return "\n".join(lines)
@@ -300,14 +307,10 @@ def render_body(
 def repo_description(repo: InspectorRepo) -> str:
     return "\n".join(
         [
-            f"**{repo.repo}** has {len(repo.items)} vulnerable package(s) running in AWS: "
-            f"{_counts(repo)}.",
-            *_item_lines(repo, relative=False),
+            _summary([t.item for t in repo.items], "running in AWS"),
+            *_item_lines(repo, relative=False, linear=True),
             "",
-            "---",
-            "_Synced by vulgard from Amazon Inspector. The description, priority and due date are "
-            "overwritten on each run, and the issue closes itself once Inspector no longer finds "
-            "these packages._",
+            "_Synced by vulgard from Amazon Inspector. Edits are overwritten._",
         ]
     )
 
@@ -320,22 +323,20 @@ def _status_cells(repo: InspectorRepo) -> list[str]:
 def parent_description(repos: list[InspectorRepo]) -> str:
     """A team's parent issue: one row per repo with items, most overdue first."""
     ranked = sorted(repos, key=lambda r: (-len(r.overdue), -len(r.items), r.repo))
-    header = ["Repo", "Items", "Overdue", *FixStatus]
+    header = ["Repo", "Packages", "Overdue", *(status_label(s).capitalize() for s in FixStatus)]
     total = InspectorRepo("Total", [i for r in repos for i in r.items], github=False)
     rows = [[r.repo, *_status_cells(r)] for r in ranked]
     rows.append(["**Total**", *_status_cells(total)])
     return "\n".join(
         [
-            "Vulnerable packages that Amazon Inspector found running in AWS, in this team's "
-            "repos. Each repo has a sub-issue with its fix items and their due dates.",
+            "Vulnerable packages Amazon Inspector found running in AWS, by repo. Each repo's "
+            "sub-issue lists its packages.",
             "",
             "| " + " | ".join(header) + " |",
             "|" + "---|" * len(header),
             *("| " + " | ".join(row) + " |" for row in rows),
             "",
-            "---",
-            "_Synced by vulgard. This issue closes itself once none of the team's repos have "
-            "items._",
+            "_Synced by vulgard. Closes itself once no repo has packages left._",
         ]
     )
 
@@ -388,25 +389,24 @@ def _why_unattributed(reason: Reason) -> str:
 
 
 def unattributed_description(unattributed: Mapping[Reason, list[FixItem]]) -> str:
+    every = [item for items in unattributed.values() for item in items]
     lines = [
-        "Amazon Inspector found these vulnerable packages running in AWS, but vulgard can't tell "
-        "which repo deployed them, so no team is tracking them. Once a resource can be "
-        "attributed, its items move to their repo's issue.",
+        _summary(every, "with no repo"),
+        "",
+        "vulgard can't tell which repo deployed these, so no team tracks them. They move to "
+        "their repo's issue once attributed.",
     ]
+    shown: list[FixItem] = []
     for reason, items in unattributed.items():
-        heading = f"### {_reason_heading(reason)} ({len(items)})"
-        lines += ["", heading, "", _why_unattributed(reason)]
+        lines += ["", f"### {_reason_heading(reason)} ({len(items)})", _why_unattributed(reason)]
         for status, group in _by_status(items[:MAX_ITEMS], lambda item: item.status):
-            lines += ["", f"**{status_heading(status)} ({len(group)})**", ""]
-            lines += [item_line(item, step=False) for item in group]
+            lines += ["", f"**{_status_heading(status)} ({len(group)})**"]
+            lines += [item_line(item, step=False, resources=True) for item in group]
         if len(items) > MAX_ITEMS:
             lines += ["", f"…and {len(items) - MAX_ITEMS} more."]
-    lines += [
-        "",
-        "---",
-        "_Synced by vulgard from Amazon Inspector. This issue closes itself once every finding "
-        "has a repo or is gone._",
-    ]
+        shown += items[:MAX_ITEMS]
+    lines += _collapsed("CVEs", [_detail_line(item) for item in shown], linear=True)
+    lines += ["", "_Synced by vulgard from Amazon Inspector. Edits are overwritten._"]
     return "\n".join(lines)
 
 

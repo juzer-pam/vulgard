@@ -84,9 +84,9 @@ def _repo_line(run: RepoRun, config: Config) -> str:
     plan = run.plan
     match plan.op:
         case IssueOp.CREATE:
-            parts = ["_new tracking issue_"]
+            parts = ["_new issue_"]
         case IssueOp.REOPEN:
-            parts = ["_tracking issue reopened_"]
+            parts = ["_reopened_"]
         case IssueOp.UPDATE | IssueOp.CLOSE | IssueOp.NONE:
             parts = []
         case _ as unreachable:
