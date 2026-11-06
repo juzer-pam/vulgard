@@ -154,6 +154,7 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
         now=now,
         linear=linear,
         topics=tuple(topics),
+        redact=args.redact,
     )
     results = [RUNNERS[topic](ctx) for topic in topics]
     runs = [run for res in results for run in res.runs]
@@ -177,19 +178,20 @@ def cmd_nag(clients: Clients, config: Config, args: argparse.Namespace) -> int:
 
     prefix = "" if args.apply else "[dry-run] "
     taken = [a for a in actions if a.kind != ActionKind.NOOP]
+    failed = any(res.failed for res in results) or any(a.kind.is_error for a in actions)
     if args.redact:
-        for kind, n in sorted(Counter(a.kind for a in taken).items()):
-            print(f"{prefix}{kind}: {n}")
-    else:
-        for a in taken:
-            where = a.repo or ("linear" if a.kind.startswith("linear") else "slack")
-            print(f"{prefix}{where}: {a.kind} ({a.detail})")
-        for res in results:
-            if res.summary:
-                write_step_summary(res.summary, args.summary_file)
+        for kind in sorted({a.kind for a in taken if a.kind.is_error}):
+            print(f"{prefix}{kind}", file=sys.stderr)
+        print(f"{prefix}nag {'failed' if failed else 'finished'}.")
+        return 1 if failed else 0
+    for a in taken:
+        where = a.repo or ("linear" if a.kind.startswith("linear") else "slack")
+        print(f"{prefix}{where}: {a.kind} ({a.detail})")
+    for res in results:
+        if res.summary:
+            write_step_summary(res.summary, args.summary_file)
     repos = {repo for res in results for repo in res.repos}
     print(f"{prefix}{len(taken)} action(s) across {len(repos)} repos.")
-    failed = any(res.failed for res in results) or any(a.kind.is_error for a in actions)
     return 1 if failed else 0
 
 
@@ -342,7 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--redact",
         action="store_true",
-        help="print only action counts and skip the summary, for public workflow logs",
+        help="print no names, counts or summary, only error kinds, for public workflow logs",
     )
     p.add_argument(
         "--topic",

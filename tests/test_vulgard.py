@@ -867,8 +867,8 @@ def test_cli_nag_redact_hides_repo_names(capsys, tmp_path):
     main(["--config", str(EXAMPLES / "vulgard.yml"), *fixtures, "nag", "--redact",
           "--summary-file", str(summary)])
     out = capsys.readouterr().out
-    assert "create: " in out and "action(s) across" in out
-    assert "payments-api" not in out and not summary.exists()
+    assert out == "[dry-run] nag finished.\n"
+    assert not summary.exists()
 
 
 def test_cli_report_json(capsys):

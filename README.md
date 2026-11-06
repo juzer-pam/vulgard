@@ -292,8 +292,8 @@ commits to. This section is the reference. For an explanation from scratch, read
 - `vulgard report --topic stale` lists every stale deployment and inactive repo and writes
   nothing. To trial the topic org-wide, set `deployments.report_only: true`. `nag` then opens no
   issues, Linear issues or Slack messages. Run without `--redact`, it writes the findings to the
-  workflow summary. The scheduled job redacts its output, so it only logs how many repos would
-  get an issue. Use `report --topic stale` for the list.
+  workflow summary. The scheduled job redacts its output, so its log doesn't say which or how many
+  repos would get an issue. Use `report --topic stale` for the list.
 
 ### AWS roles for stale deployments
 

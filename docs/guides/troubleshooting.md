@@ -125,8 +125,10 @@ or the repo is simply stable, comment `/vulgard active until YYYY-MM-DD: why`.
 
 ## For admins
 
-**The scheduled run's log shows only counts.** The job runs with `--redact`, because logs on a
-public fork are public. For the details, run the same command from your laptop without
+**The scheduled run's log shows only whether it finished.** The job runs with `--redact`, because
+logs on a public fork are public, and even a count of issues or comments would hint at how many
+vulnerable repos the org has. If the run fails, the log names the kinds of error (for example
+`slack-error`) but not which repos they came from. For the details, run the same command from your laptop without
 `--redact`, or use `vulgard report` and `vulgard report --topic stale`.
 
 **"skipped stale deployments: AWS scan failed".** The `nag` job couldn't read AWS. Check

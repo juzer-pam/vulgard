@@ -86,6 +86,7 @@ class NagContext:
     now: datetime
     linear: LinearClient | None
     topics: tuple[Topic, ...] = ()  # the topics this run covers
+    redact: bool = False  # public logs: no counts that hint at how many repos are vulnerable
 
     @property
     def inspector_tracks_repos(self) -> bool:
@@ -256,7 +257,8 @@ def run_stale(ctx: NagContext) -> TopicResult:
         return TopicResult(failed=True)
     if cfg.report_only:
         n = sum(1 for r in reports.values() if r.findings)
-        print(f"Stale deployments are report-only: {n} repo(s) would get a tracking issue.")
+        detail = "" if ctx.redact else f": {n} repo(s) would get a tracking issue"
+        print(f"Stale deployments are report-only{detail}.")
     blocks: list[Block] = []
     if ctx.leaderboard and not cfg.report_only:
         blocks = stale_render.leaderboard_blocks(reports, runs, ctx.now)
@@ -430,8 +432,9 @@ def _inspector_pass(
     if linear is None:
         skipped = sum(1 for r in assessed.values() if r.items and not r.github)
         if skipped:
+            count = "" if ctx.redact else f"{skipped} "
             print(
-                f"Skipping {skipped} repo(s) that are tracked in Linear only: pass --linear.",
+                f"Skipping {count}repo(s) that are tracked in Linear only: pass --linear.",
                 file=sys.stderr,
             )
     else:
@@ -481,7 +484,8 @@ def run_inspector(ctx: NagContext) -> TopicResult:
         return TopicResult(failed=True)
     if cfg.report_only:
         n = sum(1 for r in repos if r.items)
-        print(f"Inspector findings are report-only: {n} repo(s) have fix items.")
+        detail = "" if ctx.redact else f": {n} repo(s) have fix items"
+        print(f"Inspector findings are report-only{detail}.")
     return TopicResult(
         runs=runs,
         actions=actions,

@@ -365,8 +365,7 @@ def test_the_fixture_run_closes_the_demo_issue_inspector_took_over(capsys):
     assert "web-storefront: create (1 alert(s))" in out
     assert "payments-api: create (3 alert(s))" not in out
     assert main([*FIXTURE_ARGS, "nag", "--topic", "vulns", "--topic", "inspector", "--redact"]) == 0
-    out = capsys.readouterr().out
-    assert "close: 1" in out and "inventory-service" not in out
+    assert capsys.readouterr().out == "[dry-run] nag finished.\n"
 
 
 def test_two_repos_routed_to_one_team_share_one_parent():
@@ -555,6 +554,8 @@ def test_report_only_writes_nothing_but_the_summary(tmp_path, capsys):
     assert "report-only: 3 repo(s) have fix items" in out
     assert "0 action(s)" in out
     assert "| payments-api | GitHub, Linear | 3 |" in summary.read_text()
+    assert main([*args, *nag, "--redact"]) == 0
+    assert capsys.readouterr().out == "Inspector findings are report-only.\nnag finished.\n"
 
 
 def test_a_disabled_topic_is_skipped_and_cannot_be_asked_for(tmp_path, capsys):
@@ -574,10 +575,7 @@ def test_the_fixture_run_tracks_the_demo_findings(capsys):
     assert f"linear: linear-create ({UNATTRIBUTED_TITLE} in team SEC)" in out
 
 
-def test_redacted_output_names_no_repo_or_resource(capsys):
+def test_redacted_output_has_no_names_or_counts(capsys):
     nag = ["nag", "--topic", "inspector", "--linear", "--slack", "--redact"]
     assert main([*FIXTURE_ARGS, *nag]) == 0
-    out = capsys.readouterr().out
-    assert "linear-create: 6" in out
-    for name in ("payments-api", "inventory", "sst-asset", "orphan-handler", "axios", "lin-"):
-        assert name not in out
+    assert capsys.readouterr().out == "[dry-run] nag finished.\n"

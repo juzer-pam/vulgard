@@ -75,7 +75,7 @@ repos:
 - "Inspector now tracks this repo's vulnerabilities." when the repo has Inspector fix items.
 - "This repo is no longer in vulgard's Dependabot scope (`include`)." when it no longer matches `include`.
 
-This happens only when `inspector.enabled` is true, `inspector.report_only` is false and the run includes the Inspector topic. So turning Inspector off never closes tickets. It finds those issues with one GitHub issue search for the vulns label (`issue.label`), not by opening every repo. A dry run (no `--apply`) only lists what it would close, and `--redact` prints just the counts. Repos in `exclude` and archived repos are left as they are. If Inspector's report can't be built (for example, AWS credentials expired), the vulns topic is skipped for that run and the run fails, because without Inspector's repo list it can't tell which repos to leave alone.
+This happens only when `inspector.enabled` is true, `inspector.report_only` is false and the run includes the Inspector topic. So turning Inspector off never closes tickets. It finds those issues with one GitHub issue search for the vulns label (`issue.label`), not by opening every repo. A dry run (no `--apply`) only lists what it would close, and `--redact` prints none of it. Repos in `exclude` and archived repos are left as they are. If Inspector's report can't be built (for example, AWS credentials expired), the vulns topic is skipped for that run and the run fails, because without Inspector's repo list it can't tell which repos to leave alone.
 
 ## Top-level settings
 
@@ -361,7 +361,7 @@ When every item of a repo clears, its GitHub issue and Linear sub-issue close. A
 
 **Linear is needed for public repos.** Without `--linear`, public repos and findings with no repo are skipped, and `nag` says how many repos it skipped.
 
-**Logs.** The scheduled workflow runs `nag --redact`, which prints only how many actions of each kind were taken, never repo, package or resource names.
+**Logs.** The scheduled workflow runs `nag --redact`, which prints only whether the run finished and the kinds of any errors. It never prints repo, package or resource names, or counts of anything, because a count alone hints at how many vulnerable repos the org has.
 
 ## Errors you may see
 
