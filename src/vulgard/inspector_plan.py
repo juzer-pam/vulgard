@@ -8,13 +8,14 @@ Pure, like `vulns.plan_repo`, whose skeleton it shares through the helpers in `p
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from .config import Config
 from .inspector import FixStatus
-from .inspector_render import render_body, repo_description, tracked_line
+from .inspector_render import render_body, repo_description, status_count, tracked_line
 from .inspector_sla import CLOSED, SPEC, TITLE, InspectorMemory, InspectorRepo, TrackedItem
 from .linear import PRIORITY
 from .plan import (
@@ -29,6 +30,7 @@ from .plan import (
     reminder_due,
     slack_summary,
 )
+from .render import severity_summary
 
 
 @dataclass(frozen=True)
@@ -62,16 +64,17 @@ class Changes:
 
 def _digest(repo: InspectorRepo, newly: int) -> str:
     statuses = repo.statuses
-    parts = [f"{len(repo.items)} item(s)"]
+    severities = severity_summary(Counter(i.item.severity for i in repo.items))
+    parts = [f"{len(repo.items)} package(s) ({severities})"]
     if newly:
         parts.append(f"*{newly} new*")
     if repo.overdue:
         parts.append(f"{len(repo.overdue)} overdue")
     if repo.due_soon:
         parts.append(f"{len(repo.due_soon)} due soon")
-    for status in (FixStatus.NEEDS_FIX, FixStatus.NEEDS_DEPLOY):
+    for status in (FixStatus.NEEDS_PR_MERGE, FixStatus.NEEDS_DEPLOY, FixStatus.NEEDS_FIX):
         if statuses[status]:
-            parts.append(f"{statuses[status]} {status}")
+            parts.append(status_count(status, statuses[status]))
     return ", ".join(parts)
 
 

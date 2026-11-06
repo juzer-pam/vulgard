@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any, assert_never
 
@@ -162,38 +162,73 @@ def _first(names: list[str]) -> str:
 def _next_step(item: FixItem) -> str:
     match item.status:
         case FixStatus.NEEDS_DEPLOY:
-            return "fixed on the default branch, so redeploy"
+            return "redeploy"
         case FixStatus.NEEDS_PR_MERGE:
             assert item.pr is not None
             return f"merge [#{item.pr.number}]({item.pr.html_url}), then redeploy"
         case FixStatus.NEEDS_FIX:
             return "upgrade the package on the default branch"
         case FixStatus.NEEDS_OS_UPDATE:
-            return "an operating system package: use a newer base image or runtime"
+            return "use a newer base image or runtime"
         case FixStatus.UNKNOWN:
-            return "vulgard can't tell what it needs, so a person has to look"
+            return "needs a person to look"
         case _ as unreachable:
             assert_never(unreachable)
 
 
-def item_line(item: FixItem, due: str | None = None) -> str:
-    """One fix item: what it is, what it needs next, where it runs and, when tracked, its due
-    date."""
+def status_heading(status: FixStatus) -> str:
+    match status:
+        case FixStatus.NEEDS_DEPLOY:
+            return "Fixed on the default branch: redeploy"
+        case FixStatus.NEEDS_PR_MERGE:
+            return "Fix PR open: merge it, then redeploy"
+        case FixStatus.NEEDS_FIX:
+            return "Upgrade the package on the default branch"
+        case FixStatus.NEEDS_OS_UPDATE:
+            return "Operating system packages: use a newer base image or runtime"
+        case FixStatus.UNKNOWN:
+            return "vulgard can't tell what these need, so a person has to look"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def status_count(status: FixStatus, count: int) -> str:
+    """A count of items with `status`, for Slack digests."""
+    match status:
+        case FixStatus.NEEDS_DEPLOY:
+            return f"{count} to redeploy"
+        case FixStatus.NEEDS_PR_MERGE:
+            return f"{count} with a fix PR to merge"
+        case FixStatus.NEEDS_FIX:
+            return f"{count} to upgrade"
+        case FixStatus.NEEDS_OS_UPDATE:
+            return f"{count} needing a newer base image"
+        case FixStatus.UNKNOWN:
+            return f"{count} for a person to check"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def item_line(item: FixItem, due: str | None = None, step: bool = True) -> str:
+    """One fix item as a bullet: what it is, the fix and, when tracked, its due date, with its
+    vulnerability ids and where it runs on a nested bullet. `step` adds what the item needs
+    next, for lists that aren't already under its status heading."""
     ecosystem = item.ecosystem or item.findings[0].package_manager
-    parts = [
-        f"- {SEVERITY_ICON[item.severity]} **{item.severity}** `{item.package}` ({ecosystem}): "
-        f"**{item.status}**, {_next_step(item)}"
-    ]
+    parts = [f"- {SEVERITY_ICON[item.severity]} **{item.severity}** `{item.package}` ({ecosystem})"]
     if item.main_versions:
         parts.append(f"default branch has {_first(sorted(item.main_versions))}")
     parts.append(f"fixed in `{item.fixed_in}`" if item.fixed_in else "no fixed version known")
     if item.exploit_available:
         parts.append("🔥 exploit available")
-    parts.append(", ".join(item.vulnerability_ids[:MAX_LISTED]))
-    parts.append(f"on {_first(item.resources)}")
+    if step:
+        parts.append(_next_step(item))
+    elif item.status is FixStatus.NEEDS_PR_MERGE:
+        assert item.pr is not None
+        parts.append(f"merge [#{item.pr.number}]({item.pr.html_url})")
     if due:
         parts.append(due)
-    return " · ".join(parts)
+    details = [", ".join(item.vulnerability_ids[:MAX_LISTED]), f"on {_first(item.resources)}"]
+    return " · ".join(parts) + "\n  - " + " · ".join(details)
 
 
 def _due(tracked: TrackedItem, relative: bool) -> str:
@@ -208,15 +243,27 @@ def tracked_line(tracked: TrackedItem, relative: bool = True) -> str:
     return item_line(tracked.item, _due(tracked, relative))
 
 
+def _by_status[T](
+    entries: list[T], status_of: Callable[[T], FixStatus]
+) -> list[tuple[FixStatus, list[T]]]:
+    """Entries grouped by status, in `FixStatus` order, skipping empty groups."""
+    groups = [(status, [e for e in entries if status_of(e) is status]) for status in FixStatus]
+    return [(status, group) for status, group in groups if group]
+
+
 def _item_lines(repo: InspectorRepo, relative: bool) -> list[str]:
-    lines = ["", f"### Fix items ({len(repo.items)})"]
-    lines += [tracked_line(i, relative) for i in repo.items[:MAX_ITEMS]]
+    shown = repo.items[:MAX_ITEMS]
+    lines: list[str] = []
+    for status, group in _by_status(shown, lambda t: t.item.status):
+        lines += ["", f"### {status_heading(status)} ({len(group)})", ""]
+        lines += [item_line(t.item, _due(t, relative), step=False) for t in group]
     if len(repo.items) > MAX_ITEMS:
         more = len(repo.items) - MAX_ITEMS
-        lines.append(
-            f"- …and {more} more. `vulgard report --topic inspector --repo {repo.repo}` lists "
-            "them all."
-        )
+        lines += [
+            "",
+            f"…and {more} more. `vulgard report --topic inspector --repo {repo.repo}` lists "
+            "them all.",
+        ]
     return lines
 
 
@@ -293,6 +340,22 @@ def parent_description(repos: list[InspectorRepo]) -> str:
     )
 
 
+def _reason_heading(reason: Reason) -> str:
+    match reason:
+        case Reason.SHARED_ASSET_REPOSITORY:
+            return "Image in the shared asset repository"
+        case Reason.RUNNERS_IN_SEVERAL_REPOS:
+            return "Image run by several repos"
+        case Reason.NO_DEPLOYMENT_TAGS:
+            return "No repo or deployment tags"
+        case Reason.DEPLOYMENT_NOT_FOUND:
+            return "Deployment not found"
+        case Reason.DEPLOYMENT_UNATTRIBUTED:
+            return "Deployment with no repo"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _why_unattributed(reason: Reason) -> str:
     match reason:
         case Reason.SHARED_ASSET_REPOSITORY:
@@ -331,10 +394,13 @@ def unattributed_description(unattributed: Mapping[Reason, list[FixItem]]) -> st
         "attributed, its items move to their repo's issue.",
     ]
     for reason, items in unattributed.items():
-        lines += ["", f"### {reason} ({len(items)})", _why_unattributed(reason), ""]
-        lines += [item_line(item) for item in items[:MAX_ITEMS]]
+        heading = f"### {_reason_heading(reason)} ({len(items)})"
+        lines += ["", heading, "", _why_unattributed(reason)]
+        for status, group in _by_status(items[:MAX_ITEMS], lambda item: item.status):
+            lines += ["", f"**{status_heading(status)} ({len(group)})**", ""]
+            lines += [item_line(item, step=False) for item in group]
         if len(items) > MAX_ITEMS:
-            lines.append(f"- …and {len(items) - MAX_ITEMS} more.")
+            lines += ["", f"…and {len(items) - MAX_ITEMS} more."]
     lines += [
         "",
         "---",

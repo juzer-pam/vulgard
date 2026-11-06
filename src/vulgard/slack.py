@@ -84,17 +84,17 @@ def _repo_line(run: RepoRun, config: Config) -> str:
     plan = run.plan
     match plan.op:
         case IssueOp.CREATE:
-            parts = ["new tracking issue"]
+            parts = ["_new tracking issue_"]
         case IssueOp.REOPEN:
-            parts = ["tracking issue reopened"]
+            parts = ["_tracking issue reopened_"]
         case IssueOp.UPDATE | IssueOp.CLOSE | IssueOp.NONE:
             parts = []
         case _ as unreachable:
             assert_never(unreachable)
     if plan.digest:
-        parts.append(plan.digest)
+        parts.insert(0, plan.digest)
     owners = _owner_mentions(plan.owners, config)
-    line = f"• *{_repo_link(config.org, run)}*: {', '.join(parts)}"
+    line = f"• *{_repo_link(config.org, run)}*: {' · '.join(parts)}"
     return line + (f" · {owners}" if owners else "")
 
 
