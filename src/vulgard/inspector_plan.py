@@ -8,13 +8,14 @@ Pure, like `vulns.plan_repo`, whose skeleton it shares through the helpers in `p
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from .config import Config
+from .config import SEVERITIES, Config
 from .inspector import FixStatus
-from .inspector_render import render_body, repo_description, tracked_line
+from .inspector_render import render_body, repo_description, status_label, tracked_line
 from .inspector_sla import CLOSED, SPEC, TITLE, InspectorMemory, InspectorRepo, TrackedItem
 from .linear import PRIORITY
 from .plan import (
@@ -29,6 +30,7 @@ from .plan import (
     reminder_due,
     slack_summary,
 )
+from .render import SEVERITY_ICON
 
 
 @dataclass(frozen=True)
@@ -62,17 +64,19 @@ class Changes:
 
 def _digest(repo: InspectorRepo, newly: int) -> str:
     statuses = repo.statuses
-    parts = [f"{len(repo.items)} item(s)"]
+    severities = Counter(i.item.severity for i in repo.items)
+    icons = [f"{SEVERITY_ICON[sev]} {severities[sev]}" for sev in SEVERITIES if severities[sev]]
+    parts = [" ".join(icons)]
     if newly:
         parts.append(f"*{newly} new*")
     if repo.overdue:
-        parts.append(f"{len(repo.overdue)} overdue")
+        parts.append(f"*{len(repo.overdue)} overdue*")
     if repo.due_soon:
         parts.append(f"{len(repo.due_soon)} due soon")
-    for status in (FixStatus.NEEDS_FIX, FixStatus.NEEDS_DEPLOY):
+    for status in (FixStatus.NEEDS_DEPLOY, FixStatus.NEEDS_PR_MERGE, FixStatus.NEEDS_FIX):
         if statuses[status]:
-            parts.append(f"{statuses[status]} {status}")
-    return ", ".join(parts)
+            parts.append(f"{statuses[status]} {status_label(status)}")
+    return " · ".join(parts)
 
 
 def _linear_content(repo: InspectorRepo, news: list[str], parent_id: str | None) -> LinearContent:
