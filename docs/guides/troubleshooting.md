@@ -164,6 +164,10 @@ vulnerable repos the org has. If the run fails, the log names the kinds of error
 read permissions in [Set up stale deployments](set-up-stale-deployments.md). The vulnerability
 topic keeps working when this happens.
 
+**"skipped vulnerable dependencies: GitHub API 502" (or 504).** GitHub timed out while vulgard
+was listing Dependabot alerts or pull requests. It's usually brief, and the next run tries again.
+The other topics keep working when this happens.
+
 **"skipped Inspector findings: AWS scan failed".** The `nag` job couldn't read Inspector, or
 couldn't read the deployments it attributes findings through. The message has AWS's reason. An
 `AccessDenied` names the missing action. Update the `VulgardLifecycle` role from

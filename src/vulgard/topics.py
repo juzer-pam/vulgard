@@ -138,8 +138,12 @@ def run_vulns(ctx: NagContext) -> TopicResult:
             )
             return TopicResult(failed=True)
         tracked_by_inspector = frozenset(repo for repo, items in found[1].by_repo.items() if items)
-    repos = dependabot_repos(config, ctx.repos, tracked_by_inspector)
-    reports = {r["name"]: ctx.reports[r["name"]] for r in repos}
+    try:
+        repos = dependabot_repos(config, ctx.repos, tracked_by_inspector)
+        reports = {r["name"]: ctx.reports[r["name"]] for r in repos}
+    except SCAN_ERRORS as e:
+        print(f"error: skipped vulnerable dependencies: {e}", file=sys.stderr)
+        return TopicResult(failed=True)
     runs = nag(gh, config, reports, apply=ctx.apply, now=ctx.now, linear=ctx.linear)
     if ctx.inspector_tracks_repos:
         runs += hand_over(
