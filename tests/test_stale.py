@@ -429,3 +429,14 @@ def test_stale_failure_does_not_stop_the_vulns_run(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "skipped stale deployments" in captured.err
     assert "create" in captured.out
+
+
+def test_vulns_failure_does_not_stop_the_stale_run(monkeypatch, capsys):
+    def timeout(self, org):
+        raise GitHubError(504, "We couldn't respond to your request in time.", "/graphql")
+
+    monkeypatch.setattr(FixtureGitHub, "list_dependabot_prs", timeout)
+    assert main([*FIXTURE_ARGS, "nag", "--topic", "vulns", "--topic", "stale"]) == 1
+    captured = capsys.readouterr()
+    assert "skipped vulnerable dependencies: GitHub API 504" in captured.err
+    assert "web-storefront: create" in captured.out

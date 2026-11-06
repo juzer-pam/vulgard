@@ -15,9 +15,11 @@ EMPTY_BODY_RETRIES = 2
 SEARCH_RESULT_CAP = 1000  # GitHub search returns at most this many results for one query
 SEARCH_START = datetime(2008, 1, 1, tzinfo=UTC)  # before any PR on GitHub was created
 
+# GitHub cuts off GraphQL requests after about 10 seconds. A 50-PR page of this query takes
+# 7 to 11, mostly computing `mergeable` and the CI rollup, and 20 takes about 4.
 DEPENDABOT_PRS_QUERY = """
 query($q: String!, $after: String) {
-  search(query: $q, type: ISSUE, first: 50, after: $after) {
+  search(query: $q, type: ISSUE, first: 20, after: $after) {
     issueCount
     pageInfo { hasNextPage endCursor }
     nodes {
