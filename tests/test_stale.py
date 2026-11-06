@@ -431,12 +431,16 @@ def test_stale_failure_does_not_stop_the_vulns_run(monkeypatch, capsys):
     assert "create" in captured.out
 
 
-def test_vulns_failure_does_not_stop_the_stale_run(monkeypatch, capsys):
+def test_vulns_failure_does_not_stop_the_stale_run(tmp_path, monkeypatch, capsys):
     def timeout(self, org):
         raise GitHubError(504, "We couldn't respond to your request in time.", "/graphql")
 
+    cfg = tmp_path / "vulgard.yml"
+    text = (EXAMPLES / "vulgard.yml").read_text()
+    cfg.write_text(text.replace('  auto:\n    repos: ["payments-*"]\n', "", 1))
     monkeypatch.setattr(FixtureGitHub, "list_dependabot_prs", timeout)
-    assert main([*FIXTURE_ARGS, "nag", "--topic", "vulns", "--topic", "stale"]) == 1
+    args = ["--fixtures", str(EXAMPLES / "demo-org.json"), "--config", str(cfg)]
+    assert main([*args, "nag", "--topic", "vulns", "--topic", "stale"]) == 1
     captured = capsys.readouterr()
     assert "skipped vulnerable dependencies: GitHub API 504" in captured.err
     assert "web-storefront: create" in captured.out
