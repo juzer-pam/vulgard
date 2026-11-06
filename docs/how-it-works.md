@@ -10,6 +10,7 @@ vulgard also tracks deployments nobody has updated in a while. That part has its
 If you're here because vulgard pinged you, these short guides tell you what to do:
 
 - [Fix the alerts on a vulgard tracking issue](guides/fix-vulnerability-alerts.md)
+- [Fix the items on an Inspector tracking issue](guides/fix-inspector-findings.md)
 - [Respond to a stale-deployments issue](guides/respond-to-stale-deployments.md)
 - [Troubleshooting](guides/troubleshooting.md)
 
@@ -29,6 +30,15 @@ The tooling works. The people part is where it breaks down. Alerts sit in a tab 
 at, PRs wait for a review that never comes, and nobody can say which of the 400 open alerts
 across the company actually matter. vulgard is the part that makes humans act.
 
+Dependabot also has a blind spot. It reads the dependency files in a repo, so it can't tell
+whether the vulnerable version is what actually runs. A fix merged last month that nobody
+deployed is still running the old version, and the operating system packages inside a container
+image aren't in any dependency file at all. **Amazon Inspector**, an AWS service, scans what is
+deployed instead. It covers Lambda functions, container images in ECR (AWS's container
+registry) and EC2 instances. So vulgard uses Inspector as its main source of vulnerabilities, and
+keeps Dependabot alerts for repos whose code Inspector can't see, such as sites hosted on Vercel or
+Amplify Hosting, and libraries.
+
 ## Words you'll see
 
 | Term | Meaning |
@@ -44,6 +54,9 @@ across the company actually matter. vulgard is the part that makes humans act.
 | Reusable workflow | A GitHub Actions workflow that other repos can call, so the logic lives in one place. |
 | Ruleset | An org-level GitHub setting that can require a check to pass before a PR merges. |
 | Dry run | Run the tool and print what it *would* do, without changing anything. vulgard does this unless you pass `--apply`. |
+| Amazon Inspector | The AWS service that scans deployed Lambda functions, container images and EC2 instances for packages with known vulnerabilities. Each problem it finds is a **finding**. |
+| Fix item | vulgard's unit of work for Inspector: one package in one repo. One upgrade and one redeploy fix every finding under it. |
+| Fix status | What a fix item needs next: `needs_deploy`, `needs_pr_merge`, `needs_fix`, `needs_os_update` or `unknown`. |
 
 ## The two halves
 
@@ -55,8 +68,9 @@ adds a package with a known vulnerability. An org ruleset makes the check requir
 can't merge while it fails.
 
 **2. Clean up the ones already there (nagging).** Once a day on weekdays, vulgard looks at
-every open alert in the org, works out which ones are late, and tells the owners through a
-GitHub issue, Slack, and Linear. It keeps reminding them until the alerts are gone.
+every Inspector finding in AWS and every open Dependabot alert in the repos Inspector doesn't
+cover. It works out which ones are late, and tells the owners through a GitHub issue, Slack, and
+Linear. It keeps reminding them until the vulnerabilities are gone.
 
 It also makes cleanup cheaper. It configures Dependabot to bundle small updates into one PR
 per ecosystem. Repos that opt in also auto-merge those PRs when CI passes. Fewer PRs and less
@@ -70,7 +84,8 @@ flowchart LR
         Check -->|clean| Merge[PR can merge]
     end
     subgraph nagging["Nagging (weekday schedule)"]
-        Alerts[Dependabot alerts] --> Nag[vulgard nag]
+        Inspector[Amazon Inspector findings] --> Nag[vulgard nag]
+        Alerts[Dependabot alerts] --> Nag
         Nag --> Issue[GitHub tracking issue]
         Nag --> Slack[Slack]
         Nag --> Linear[Linear]
@@ -91,11 +106,18 @@ vulgard is a Python command-line tool. Every command reads `vulgard.yml` for set
 `rollout`, `enforce`, and `nag` are dry runs unless you add `--apply`. Always look at the dry
 run first.
 
-`nag` handles one or more **topics**: vulnerabilities; stale deployments, when
-`deployments.enabled` is on; and Amazon Inspector findings, when `inspector.enabled` is on
-([details](configuration.md#what-nag-writes)). Each topic has its own tracking issue per repo, and they all share the same
-machinery for issues, reminders, escalation, Slack and Linear. This guide follows the
-vulnerabilities topic.
+`nag` handles one or more **topics**:
+
+- **Amazon Inspector findings**, when `inspector.enabled` is on. This topic covers every repo
+  that Inspector finds something in.
+- **Dependabot alerts** (the vulns topic), for the repos listed in `repos.include` that
+  Inspector isn't tracking.
+- **Stale deployments**, when `deployments.enabled` is on.
+
+Each topic has its own tracking issue per repo, and they all share the same machinery for
+issues, reminders, escalation, Slack and Linear. Most of this guide follows the Dependabot topic,
+because it's the simplest. [Inspector: what's running in AWS](#inspector-whats-running-in-aws)
+covers how the Inspector topic differs.
 
 ## Rollout: getting every repo set up
 
@@ -312,6 +334,40 @@ There are two honest ways to say so:
 
 Closing the tracking issue by hand doesn't help. vulgard reopens it on the next run.
 
+## Inspector: what's running in AWS
+
+The Inspector topic reuses the machinery above. What's different is where the data comes from
+and how a finding reaches a team.
+
+1. **Read the findings.** vulgard lists Inspector's active package findings at `high` or above
+   (`inspector.min_severity`), in each region in `inspector.regions`.
+2. **Find the repo.** A finding names a resource, such as the Lambda function
+   `payments-api-prod-handler`, never a repo. vulgard tries a repo tag on the resource
+   (`vulgard:repo`), then the deployment the resource belongs to (a CloudFormation stack, SST
+   stage or Amplify branch, found the same way as for stale deployments). For a container image
+   in a shared repository such as `sst-asset`, it looks at the ECS task definition that runs the
+   image. There is no map to maintain. Findings it can't place go on one Linear issue in
+   `linear.default_team`, grouped by the reason.
+3. **Group into fix items.** Two vulnerabilities in `axios` found on three functions of
+   `payments-api` are one item, because one upgrade fixes all of them.
+4. **Set a fix status.** vulgard compares the item with the repo's default branch, using GitHub's
+   dependency graph, and with its open Dependabot pull requests. If the default branch is
+   already fixed, the item is `needs_deploy`. If a Dependabot pull request fixes it, it's
+   `needs_pr_merge`. If neither, it's `needs_fix`. An operating system package is
+   `needs_os_update`.
+5. **Track it.** Each repo gets a GitHub issue labelled `vulgard-inspector` (private repos only,
+   because the data says what is vulnerable in production), a Linear sub-issue under its team's
+   parent issue, and Slack lines in its channel.
+
+An item's deadline counts from the day a vulgard issue first listed it, not from when the
+vulnerability was published, because that's when the team first heard about it. A repo with
+Inspector items leaves the Dependabot topic, and its old Dependabot issue closes, so nobody is
+asked for the same upgrade twice.
+
+The [configuration reference](configuration.md#inspector) has every rule in detail, and
+[Fix the items on an Inspector tracking issue](guides/fix-inspector-findings.md) is the guide for
+the people it pings.
+
 ## Running it on your laptop
 
 You don't need a GitHub token to try vulgard. The repo includes a fake org in
@@ -322,9 +378,10 @@ uv sync
 V="uv run vulgard --config examples/vulgard.yml --fixtures examples/demo-org.json"
 $V report                  # the table of repos and deadlines
 $V nag --slack --linear    # what it would post, using fake Slack and Linear
+$V report --topic inspector  # the fake org's Inspector findings, by repo
 ```
 
-`--fixtures` swaps the real GitHub, Slack, and Linear clients for in-memory fakes from
+`--fixtures` swaps the real GitHub, Slack, Linear and AWS clients for in-memory fakes from
 `fixtures.py`. The fake org's dates are written like `"@-19d"`, meaning "19 days ago", so the
 demo always shows a mix of overdue and fresh alerts.
 
@@ -350,6 +407,10 @@ The code is in `src/vulgard/`. Read it in this order, which follows a `nag` run:
    **`config.py`** loads `vulgard.yml` and rejects unknown keys, so a typo fails loudly instead
    of being ignored.
 
+The Inspector topic lives in **`inspector.py`** (findings, attribution, fix items and
+statuses), **`inspector_sla.py`** (deadlines), **`inspector_plan.py`** (the per-repo plan) and
+**`inspector_render.py`** (its markdown). `run_inspector` in `topics.py` runs it.
+
 The stale-deployments modules are covered in
 [How stale deployments work](stale-deployments.md#reading-the-code).
 
@@ -363,7 +424,8 @@ plan from fake data and looking at it, with no mocks.
 1. Change the code and add or update a test. Vulnerability tests are in
    `tests/test_vulgard.py`. Most of them build a report with the `alert()` and `pr()` helpers,
    call `plan_repo()`, and check the result. Stale-deployment tests are in `tests/test_stale.py`,
-   `tests/test_estate.py`, and `tests/test_lifecycle.py`.
+   `tests/test_estate.py`, and `tests/test_lifecycle.py`. Inspector tests are in
+   `tests/test_inspector.py` and `tests/test_inspector_topic.py`.
 2. If your change affects what vulgard writes, look at the demo output:
    `$V nag --slack --linear`.
 3. Push and open a PR. CI runs two jobs. `test` runs `ruff check` (lint), `pytest`, and dry

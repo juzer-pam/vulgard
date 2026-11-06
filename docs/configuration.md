@@ -49,7 +49,7 @@ Inspector is now the main source of vulnerabilities, because it reports what is 
 - The stale deployments topic looks at the commit history of every repo, and at critical Dependabot alerts in any repo to decide which personal deployments can be redeployed or deleted automatically.
 - The Inspector topic uses it to work out which repo deployed a resource, by reading each repo's file tree and its Serverless and SST manifests.
 
-**The Dependabot scope** is every repo that matches `include`, minus `exclude`, minus the repos the Inspector topic tracks. The vulns topic of `nag` tracks Dependabot alerts in these repos, and `vulgard report` prints them. Set `include` to the repos that do not deploy to AWS. With the default `["*"]`, every repo gets Dependabot tickets until Inspector finds something in it.
+**The Dependabot scope** is every repo that matches `include`, minus `exclude`, minus the repos the Inspector topic tracks. The vulns topic of `nag` tracks Dependabot alerts in these repos, and `vulgard report` prints them. Set `include` to the repos whose code Inspector can't see: sites hosted on Vercel or Amplify Hosting, libraries and internal tools. Inspector scans Lambda functions, ECR images and EC2 instances, and Amplify Hosting runs on none of them in your account. With the default `["*"]`, every repo gets Dependabot tickets until Inspector finds something in it.
 
 A repo leaves this scope as soon as Inspector has at least one fix item for it, because Inspector's ticket already tells the owners what to fix and a second ticket would ask for the same work twice. When the fix items clear, the repo is back in the Dependabot scope on the next run and its old issue reopens if alerts remain. The subtraction only happens when the run includes the Inspector topic and `inspector.report_only` is off. In a trial with `report_only: true`, or a run with `--topic vulns`, the vulns topic keeps every repo that matches `include`, so nothing goes untracked. `vulgard report` never talks to AWS, so it shows every repo that matches `include`.
 
@@ -287,7 +287,7 @@ inspector:
 |---|---|---|---|
 | `enabled` | bool | `false` | `nag` tracks the findings. Without it, `nag` skips this topic and `nag --topic inspector` stops with an error. `report` works either way. |
 | `report_only` | bool | `false` | `nag` writes the job summary only: no issues, Linear issues or Slack messages. |
-| `regions` | list | `[us-east-1]` | Regions to read findings from. Credentials come from the environment, through GitHub OIDC in CI. The role needs `inspector2:ListFindings`, and for images in shared repositories `ecs:ListTaskDefinitions` and `ecs:DescribeTaskDefinition`. The `VulgardLifecycle` role in `infra/` grants all of them. |
+| `regions` | list | `[us-east-1]` | Regions to read findings from. Credentials come from the environment, through GitHub OIDC in CI. The role needs `inspector2:ListFindings`, the reads that find deployments (`cloudformation:DescribeStacks` and `cloudformation:ListStacks`, the SST state reads and the Amplify reads), and for images in shared repositories `ecs:ListTaskDefinitions` and `ecs:DescribeTaskDefinition`. The `VulgardLifecycle` role in `infra/` grants all of them. |
 | `min_severity` | `critical`, `high`, `medium` or `low` | `high` | The least severe findings to report. Anything more severe is included too. See below for why it defaults to `high`. |
 | `ignore` | list of globs | `[]` | Resources never reported. Each glob is matched against the resource name (a Lambda function name, an ECR repository name or an EC2 instance id) and against its CloudFormation stack name. |
 
@@ -382,5 +382,6 @@ When every item of a repo clears, its GitHub issue and Linear sub-issue close. A
 | `deployments.severity: unknown tiers` | Use `production`, `shared` or `personal`. |
 | `inspector.min_severity must be one of` | Use `critical`, `high`, `medium` or `low`. |
 | `--topic inspector needs inspector.enabled in the config` | Set `inspector.enabled: true`, or leave out `--topic inspector`. |
+| `skipped Inspector findings: AWS scan failed` | vulgard couldn't read the deployments it attributes findings through. The message has AWS's reason, for example a missing `cloudformation:ListStacks` permission. Update the `VulgardLifecycle` role from `infra/vulgard-roles.yaml`. |
 | `Inspector scan failed` | Inspector couldn't be read. The message has AWS's reason, for example missing `inspector2:ListFindings` permission or expired credentials. |
 | `Image runner scan failed` | The ECS task definitions couldn't be read. The message has AWS's reason, for example a missing `ecs:DescribeTaskDefinition` permission. Update the `VulgardLifecycle` role from `infra/vulgard-roles.yaml`. |

@@ -123,6 +123,34 @@ after that, the delete didn't finish. Check the AWS console or Vercel.
 branch count, and bot commits such as Dependabot's don't. If the work is on a long-lived branch,
 or the repo is simply stable, comment `/vulgard active until YYYY-MM-DD: why`.
 
+## Amazon Inspector issues
+
+**An item says `needs_deploy`, but we deployed.** Inspector reports what it scanned most recently.
+Check that the deploy reached every resource the item lists, for example every stage or region.
+vulgard drops the item on the first run after Inspector stops reporting the old version.
+
+**An item says `needs_fix`, but we merged the upgrade.** vulgard reads versions from GitHub's
+dependency graph for the default branch. Check that the upgrade landed on the default branch and
+that the lockfile changed, since a range in `package.json` alone doesn't change the installed
+version. Once the graph shows the fixed version, the item becomes `needs_deploy`.
+
+**A resource is listed under the wrong repo, or under "No repo".** vulgard finds the repo from
+the resource's tags, then from the deployment (CloudFormation stack, SST stage or Amplify branch)
+the resource belongs to, then, for images in shared asset repositories such as `sst-asset`, from
+the ECS task definition that runs the image. The quickest fix is a `vulgard:repo=<repo-name>` tag
+on the stack that creates the resource, because CloudFormation copies stack tags onto everything
+the stack creates. The issue for findings with no repo, in `linear.default_team`, lists each item
+under the reason vulgard couldn't place it. The
+[configuration reference](../configuration.md#findings-with-no-repo) says what to do for each
+reason.
+
+**Our repo has no GitHub issue, only a Linear one.** The repo is public. vulgard never writes
+Inspector data where the public can read it.
+
+**Our Dependabot issue closed with "Inspector now tracks this repo's vulnerabilities".** That's
+expected. A repo with Inspector items is tracked by Inspector only, so the same upgrade isn't
+asked for twice. See [Fix the items on an Inspector tracking issue](fix-inspector-findings.md).
+
 ## For admins
 
 **The scheduled run's log shows only whether it finished.** The job runs with `--redact`, because
@@ -135,6 +163,13 @@ vulnerable repos the org has. If the run fails, the log names the kinds of error
 `VULGARD_AWS_ROLE`, the role's trust policy (it must allow `repo:<org>/vulgard:*`), and the
 read permissions in [Set up stale deployments](set-up-stale-deployments.md). The vulnerability
 topic keeps working when this happens.
+
+**"skipped Inspector findings: AWS scan failed".** The `nag` job couldn't read Inspector, or
+couldn't read the deployments it attributes findings through. The message has AWS's reason. An
+`AccessDenied` names the missing action. Update the `VulgardLifecycle` role from
+`infra/vulgard-roles.yaml`, which grants every read vulgard makes. When Inspector is meant to be
+tracking repos, the Dependabot topic is skipped in that run too, because it needs Inspector's repo
+list to know which repos to leave alone.
 
 **`rollout --lifecycle` skipped a repo.** The reason is printed next to it. The most common are
 "set deployments.aws.deploy_role_arn first", "no Serverless, SST or CDK app", and "uses

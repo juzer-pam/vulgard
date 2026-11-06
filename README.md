@@ -7,6 +7,7 @@ Turning on Dependabot isn't enough if nobody merges its PRs. vulgard covers the 
 |---|---|
 | Alerts pile up and nobody owns them | Opens **one tracking issue per repo**, assigns and mentions the owners, and **comments when an alert goes past its SLA**. Re-pings on a schedule and **escalates** to security leads when criticals or highs stay overdue. |
 | GitHub notifications get ignored | Posts **one Slack message per team channel** per run, sends each owner one DM covering all their repos, and posts escalations to a security channel. **Mirrors each tracking issue into Linear** in the owning team, with priority and due date taken from the worst alert. If someone closes the Linear issue while alerts are still open, vulgard reopens it. |
+| Dependabot can't see what actually runs | Reads **Amazon Inspector findings** on deployed Lambda functions, container images and EC2 instances, and **works out which repo deployed each one** from tags and deployments, with no repo map to maintain. Groups them into one **fix item per package** with a status that says what's next: redeploy, merge the Dependabot PR, upgrade, or update the base image. Tracks them in a GitHub issue (private repos only), a Linear sub-issue under each team's parent issue, and Slack. |
 | Everything looks equally urgent | Alerts whose CVE is on **CISA's Known Exploited Vulnerabilities** list get a 3-day deadline and escalate as soon as they're overdue. |
 | "Won't fix" decisions are invisible and permanent | **Exceptions in `vulgard.yml` need a reason and an expiry date.** Accepted risks stay listed in the tracking issue and come back when they expire. The leaderboard names anyone who dismissed a critical or high alert without a comment. |
 | Fixes go unnoticed | A **leaderboard** in the org-wide Slack channel ranks teams by alerts fixed in the last 7 days and by alerts past deadline. |
@@ -33,6 +34,7 @@ to the project.
 **If vulgard pinged you:**
 
 - [Fix the alerts on a vulgard tracking issue](docs/guides/fix-vulnerability-alerts.md)
+- [Fix the items on an Inspector tracking issue](docs/guides/fix-inspector-findings.md)
 - [Respond to a stale-deployments issue](docs/guides/respond-to-stale-deployments.md)
 - [Use your own deploy workflow](docs/guides/use-your-own-deploy-workflow.md), if vulgard's
   generic one can't deploy your repo
@@ -117,8 +119,15 @@ the demo never goes stale.
    are masked. Secrets can't be read back, so keep `org.yml` somewhere private (a private
    repo or a password manager) as the source of truth. The
    [configuration reference](docs/configuration.md) describes every key. Settings to fill
-   in: SLA days, owners, escalation contacts, included and excluded repos, `rollout.engine`
-   (see the caveats below), `rollout.auto_merge`, and the `slack` and `linear` routing:
+   in: SLA days, owners, escalation contacts, included and excluded repos, `inspector`,
+   `rollout.engine` (see the caveats below), `rollout.auto_merge`, and the `slack` and `linear`
+   routing:
+   - `repos.include` lists the repos that get Dependabot-alert tracking issues: the ones whose
+     code Amazon Inspector can't see, such as sites on Vercel or Amplify Hosting, and libraries.
+     Every other repo is covered by Inspector. `repos.exclude` takes a repo out of everything.
+   - `inspector.enabled: true` turns on Inspector tracking. Start with
+     `inspector.report_only: true`, which writes nothing, and turn it off once a dry run looks
+     right. See [Amazon Inspector](#amazon-inspector) below.
    - `rollout.auto_merge` lists the repos (names or globs like `web-*`) whose minor and
      patch Dependabot PRs merge automatically. It's empty by default, so nothing
      auto-merges until a repo is added. `["*"]` turns it on everywhere.
@@ -181,7 +190,8 @@ the demo never goes stale.
    directly, with no per-repo files.
 
 7. **Turn on the nag job.** `nag.yml` runs weekdays at 15:00 UTC with `--slack --linear`.
-   Trigger it once manually with *apply* unchecked to preview.
+   Trigger it once manually with *apply* unchecked to preview. With Inspector on, set the
+   `VULGARD_AWS_ROLE` variable first (see [AWS roles](#aws-roles)), or the job skips AWS.
 
 ## How nagging works
 
@@ -225,6 +235,28 @@ exceptions:
     reason: Not reachable from user input; see SEC-123
     expires: 2027-03-31
 ```
+
+## Amazon Inspector
+
+With `inspector.enabled`, `nag` tracks Amazon Inspector's package findings. This is the short
+reference. [The configuration reference](docs/configuration.md#inspector) has the full rules, and
+[How vulgard works](docs/how-it-works.md#inspector-whats-running-in-aws) explains it from scratch.
+
+- vulgard reads active findings at `inspector.min_severity` (default `high`) and above.
+- Each finding gets the repo from a `vulgard:repo` tag on the resource, else from the deployment
+  it belongs to (CloudFormation stack, SST stage, Amplify branch), else, for images in shared
+  repositories like `sst-asset`, from the ECS task definition that runs it.
+- Findings are grouped into **fix items**, one per package per repo. Each gets a status:
+  `needs_deploy`, `needs_pr_merge`, `needs_fix`, `needs_os_update` or `unknown`.
+- Each repo with items gets a GitHub issue labelled `vulgard-inspector` (private repos only), a
+  Linear sub-issue under its team's parent issue, and Slack lines. Findings with no repo go on
+  one Linear issue in `linear.default_team`.
+- An item is due `sla_days[severity]` days after a vulgard issue first listed it, and escalates
+  like an overdue alert.
+- A repo with Inspector items leaves the Dependabot topic, and its old Dependabot issue closes
+  with a comment pointing to Inspector.
+- `vulgard report --topic inspector` lists the findings by repo and writes nothing.
+  `inspector.report_only: true` makes `nag` write nothing for this topic, for a trial run.
 
 ## Stale deployments
 
@@ -295,20 +327,20 @@ commits to. This section is the reference. For an explanation from scratch, read
   workflow summary. The scheduled job redacts its output, so its log doesn't say which or how many
   repos would get an issue. Use `report --topic stale` for the list.
 
-### AWS roles for stale deployments
+### AWS roles
 
-The `nag` job assumes `VULGARD_AWS_ROLE` (repo variable) through GitHub OIDC. The
+Stale deployments and Amazon Inspector both read AWS. The `nag` job assumes `VULGARD_AWS_ROLE` (repo variable) through GitHub OIDC. The
 CloudFormation template `infra/vulgard-roles.yaml` creates both roles below, with no install
 needed. It starts read-only, and the `Writes=true` parameter adds the write permissions. See
 [Set up stale deployments](docs/guides/set-up-stale-deployments.md#step-1-create-the-aws-roles)
 for the options.
 
 - `VulgardLifecycle`, trusted by the vulgard repo's workflows:
-  - Reads: `cloudformation:DescribeStacks`, `DescribeStackEvents`; `ssm:GetParameter` on
+  - Reads: `cloudformation:DescribeStacks`, `ListStacks`, `DescribeStackEvents`; `ssm:GetParameter` on
     `/sst/bootstrap`; `s3:ListBucket` and `s3:GetObject` on the SST state bucket;
     `amplify:ListApps`, `ListBranches`, `ListJobs`, `GetApp`, `GetBranch`;
     `inspector2:ListFindings`, `ecs:ListTaskDefinitions`, `ecs:DescribeTaskDefinition`, for
-    `report --topic inspector`.
+    the Inspector topic.
   - Writes: `cloudformation:DeleteStack`; `iam:PassRole` on `VulgardStackDelete` only;
     `s3:ListBucketVersions`, `s3:DeleteObject` and `s3:DeleteObjectVersion` on
     `arn:aws:s3:::*-serverlessdeploymentbucket-*`; `amplify:StartJob`, `amplify:DeleteBranch`.
@@ -362,13 +394,14 @@ lives in `src/vulgard/`.
 | Module | What it holds |
 |---|---|
 | `cli.py` | Command-line parsing and the four commands |
-| `topics.py` | One `nag` runner per topic: `run_vulns` and `run_stale` |
+| `topics.py` | One `nag` runner per topic: `run_vulns`, `run_stale` and `run_inspector` |
 | `plan.py` | Plan types shared by every topic, and the state stored in tracking issues |
 | `nag.py` | The engine: writes tracking issues and comments, and syncs Linear, for every topic |
 | `vulns.py` | Vulnerabilities topic: collecting alerts, `plan_repo`, the leaderboard |
 | `policy.py` | SLA evaluation, exceptions, escalation rules, the weekly fixed and dismissed summary |
 | `render.py` | Issue, comment, and summary markdown for vulnerabilities |
 | `stale.py`, `stale_plan.py`, `stale_render.py` | Stale topic: findings and SLAs, the per-repo plan, and its markdown |
+| `inspector.py`, `inspector_sla.py`, `inspector_plan.py`, `inspector_render.py` | Inspector topic: findings, attribution and fix items; deadlines; the per-repo plan; and its markdown |
 | `estate.py` | Deployment types, `classify` (repo, tier, person), and `discover` |
 | `aws.py`, `vercel.py` | Deployment scanners and native operations |
 | `baseline.py` | Parsing `/vulgard` commands and folding a comment thread into decisions |
